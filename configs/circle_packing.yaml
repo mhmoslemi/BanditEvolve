@@ -31,10 +31,10 @@ llm_backend: unsloth
 llm_model: "Qwen/Qwen3-8B"
 max_seq_length: 32000
 load_in_4bit: false
-enable_thinking: false
+enable_thinking: true
 gen_batch_size: 8
 temperature: 1.0
 top_p: 1.0
-max_new_tokens: 6000
+# max_new_tokens: 6000
 
 seed: 42

@@ -5,6 +5,13 @@ Entry point.
     python main.py --problem circle_packing --llm-backend dummy   # offline wiring test
 """
 
+import os
+import warnings
+
+# transformers emits FutureWarnings (attention-mask API) on every generate; mute.
+warnings.filterwarnings("ignore", category=FutureWarning)
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+
 from config import load_config
 from llm import make_llm
 from engine import Engine

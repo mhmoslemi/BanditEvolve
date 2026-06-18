@@ -54,6 +54,13 @@ class UnslothLLM(BaseLLM):
         if tokenizer.pad_token_id is None:
             tokenizer.pad_token = tokenizer.eos_token
         tokenizer.padding_side = "left"              # left-pad for batched gen
+        # The model ships a generation_config with max_length set (e.g. 40960).
+        # Passing max_new_tokens alongside it triggers a transformers warning and
+        # an ambiguous cap. Null it so only our explicit max_new_tokens applies.
+        gc = getattr(model, "generation_config", None)
+        if gc is not None:
+            gc.max_length = None
+            gc.max_new_tokens = None
         self.model = model
         self.tokenizer = tokenizer
         self.device = next(model.parameters()).device

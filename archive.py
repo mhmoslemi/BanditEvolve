@@ -84,6 +84,7 @@ class Archive:
         # sterile + invalid live here (never selectable); kept for diagnostics
         self.nonparents = deque(maxlen=int(max_nonparents))
         self.counts = {VALID: 0, STERILE: 0, INVALID: 0}
+        self.last_picks_info = []
 
     # ---------------------------------------------------------------- inserts
     def _insert_selectable(self, s: State):
@@ -157,6 +158,7 @@ class Archive:
 
     def select_parents(self, num: int) -> List[State]:
         cands = self._selectable()
+        self.last_picks_info = []
         if not cands:
             return []
 
@@ -173,26 +175,31 @@ class Archive:
             n = self._n.get(s.id, 0)
             qn = (q - qmin) / span
             bonus = self.uct_c * math.sqrt(logT / (1.0 + n))
-            scored.append((qn + bonus, s.value, s))
+            info = {"value": s.value, "n": n, "Q": q, "qn": qn,
+                    "bonus": bonus, "score": qn + bonus, "is_seed": s.is_seed}
+            scored.append((qn + bonus, s.value, s, info))
         scored.sort(key=lambda x: (x[0], x[1]), reverse=True)
 
         cm = self._children_map()
-        blocked, picks = set(), []
-        for _, _, s in scored:
+        blocked, picks, info_out = set(), [], []
+        for _, _, s, info in scored:
             if s.id in blocked:
                 continue
             picks.append(s)
+            info_out.append(info)
             blocked |= self._lineage(s.id, cm)
             if len(picks) >= num:
                 break
         if len(picks) < num:                       # top up without blocking
             have = {s.id for s in picks}
-            for _, _, s in scored:
+            for _, _, s, info in scored:
                 if len(picks) >= num:
                     break
                 if s.id not in have:
                     picks.append(s)
+                    info_out.append(info)
                     have.add(s.id)
+        self.last_picks_info = info_out
         return picks
 
     # ----------------------------------------------------------- exemplars
@@ -216,6 +223,10 @@ class Archive:
 
     def size(self) -> int:
         return len(self._order)
+
+    @property
+    def T(self) -> int:
+        return self._T
 
     # -------------------------------------------------------------- pruning
     def _prune(self):
