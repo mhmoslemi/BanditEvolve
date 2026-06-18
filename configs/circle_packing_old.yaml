@@ -26,13 +26,12 @@ parent_sim_threshold: 0.97
 novelty_threshold: 0.95
 novelty_topk: 10
 
-# llm (frozen policy, loaded in-process via Unsloth; --llm-backend dummy to wire-test offline)
-llm_backend: unsloth
+# llm (frozen policy served by vLLM; set --llm-backend dummy to wire-test offline)
+llm_backend: openai
 llm_model: "Qwen/Qwen3-8B"
-max_seq_length: 32000
-load_in_4bit: false
-enable_thinking: false
-gen_batch_size: 8
+llm_base_url: "http://localhost:8000/v1"
+llm_api_key_env: LLM_API_KEY
+llm_concurrency: 8
 temperature: 1.0
 top_p: 1.0
 max_new_tokens: 6000

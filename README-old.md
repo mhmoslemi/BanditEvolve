@@ -6,6 +6,12 @@ adaptation lives in two stacked bandits:
 1. **UCT over parents** picks which archived program to expand next.
 2. **Per-band Thompson sampling over mutation prompts** picks how to mutate it.
 
+Both are driven by a per-iteration reflection step that reads the rollouts,
+finds the dominant failure mode, and grows the mutation-prompt pool of the
+relevant score band.
+
+
+
 ## The algorithm, step by step, and where each lives
 
 1. **Generate n valid independent seeds and evaluate them.**
@@ -53,15 +59,17 @@ adaptation lives in two stacked bandits:
 
 ## Running it
 
-The frozen policy is loaded in-process with Unsloth (no server). Unsloth must be
-importable, and it is imported before transformers on the code path, so just:
+Frozen policy served by vLLM (or any OpenAI-compatible endpoint):
 
 ```bash
+# serve the model first, e.g.
+#   vllm serve Qwen/Qwen3-8B --port 8000
+export LLM_API_KEY=EMPTY
 python main.py --problem circle_packing
 ```
 
-Offline wiring test with no model (returns a stub program, exercising the full
-loop):
+Offline wiring test with no endpoint (returns a stub program, so it exercises
+the full loop without a real model):
 
 ```bash
 python main.py --problem circle_packing --llm-backend dummy --num-iters 1
@@ -69,9 +77,7 @@ python main.py --problem circle_packing --llm-backend dummy --num-iters 1
 
 Config precedence is defaults in `config.py` < `configs/circle_packing.yaml` <
 CLI flags (`--num-iters`, `--num-parents`, `--rollouts-per-parent`,
-`--explore-eps`, `--seed`, `--llm-backend`). The Unsloth knobs (`llm_model`,
-`max_seq_length`, `load_in_4bit`, `enable_thinking`, `gen_batch_size`,
-`temperature`, `top_p`, `max_new_tokens`) live in the YAML.
+`--explore-eps`, `--seed`, `--llm-backend`).
 
 ## Design rationale (the non-obvious parts)
 
