@@ -1,0 +1,25 @@
+banditevolve/
+├── README.md
+├── main.py                    entry point
+├── config.py                  Config dataclass + loader (defaults < yaml < CLI)
+├── configs/
+│   └── circle_packing.yaml
+├── engine.py                  the search loop; all 9 steps live here
+├── archive.py                 State + Archive: UCT select_parents, lineage, sterile/invalid
+├── bands.py                   BandAssigner (quantile) + BandStats (within-band z-score)
+├── prompt_bandit.py           PromptBandit: NIG Thompson sampling over prompt arms
+├── mutation.py                builds the mutation chat messages
+├── validation.py              the child gate (parse / entrypoint / static / no-op / novelty)
+├── codetools.py               AST parse, normalized dump, similarity, entrypoint discovery
+├── evaluation.py              multi-seed eval -> per-seed rewards -> paired (dmu, dsigma)
+├── reflection.py              end-of-iteration LLM reflection -> new band prompt
+├── prompts.py                 band freedom, seed arm templates, evolution block, reflection
+├── llm.py                     frozen-model client (OpenAI-compatible + offline dummy)
+├── sandbox.py                 reused subprocess sandbox
+├── reward.py                  reused code extractor
+└── problems/
+    ├── __init__.py
+    ├── base.py                Problem ABC: build_prompt, build_seed_prompt, preprocess,
+    │                          score, static_check, seed_states, run_one
+    ├── registry.py            get_problem; circle_packing implemented, others port over
+    └── circle_packing.py      worked example (validator byte-for-byte from TTT)
