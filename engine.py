@@ -7,17 +7,24 @@ steps. The model is frozen throughout; all adaptation lives in two bandits:
   - UCT over parents              (archive.select_parents)
   - per-band Thompson sampling    (PromptBandit) over mutation prompts
 
-A note on the interaction, since it is the subtle part: UCT estimates which
-parents are worth expanding while the prompt bandit is simultaneously changing
-the conditional reward of every parent (the prompt determines child quality).
-That is a non-stationary bandit feeding a non-stationary bandit. Q(s) here is the
-max child reward (best-outcome, not average), which is the right target for a
-discovery objective, but be aware that early UCT statistics are computed over a
-mutation operator that is still being tuned.
+SPEED (the TTT way):
+  1. Every generation in an iteration is planned first, then issued as ONE
+     batched generate() through llm.complete_batch. The GPU is never idled on a
+     single-sequence call inside a loop.
+  2. The slow part is the sandbox: each candidate runs a real optimizer in a
+     subprocess. TTT hid this by evaluating rewards on a CPU ThreadPoolExecutor
+     while the GPU worked, so dozens of sandboxes run at once instead of one at
+     a time. We do the same: extract + gate in-process (cheap), then fan ALL
+     surviving candidates' evaluations out across the pool, collect, then do the
+     archive / bandit bookkeeping single-threaded (so the archive is never
+     mutated concurrently). run_code writes unique temp files, so concurrent
+     sandboxes are safe.
 """
 
+import os
 import random
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import List, Optional
 
@@ -68,6 +75,14 @@ class Engine:
         self.rng = random.Random(cfg.seed)
         self.goal = getattr(problem, "goal", problem.metric_name)
 
+        # CPU threadpool for parallel sandbox evaluation (the TTT reward pool).
+        nw = int(getattr(cfg, "reward_workers", 0) or 0)
+        if nw <= 0:
+            nw = max(2, (os.cpu_count() or 8))
+        self.reward_workers = nw
+        print(f"[init] reward pool: {self.reward_workers} parallel sandboxes",
+              flush=True)
+
     # ---------------------------------------------------------------- run
     def run(self) -> Optional[State]:
         self._bootstrap_seeds()                          # step 1
@@ -75,62 +90,107 @@ class Engine:
             self._iteration(it)                          # steps 2-9
         return self.archive.best_state()
 
-    # ----------------------------------------------------- step 1: seeds
-    def _gen_fresh(self) -> Optional[str]:
-        messages = self.problem.build_seed_prompt()
-        return extract_python_code(self.llm.complete(messages))
+    # --------------------------------------------- parallel eval helper
+    def _eval_many(self, jobs):
+        """jobs: list of (key, code, seeds, parent_ctx).
+        Returns {key: EvalResult}, all sandboxes run concurrently."""
+        results = {}
+        if not jobs:
+            return results
+        with ThreadPoolExecutor(max_workers=self.reward_workers) as pool:
+            futs = {}
+            for key, code, seeds, pctx in jobs:
+                fut = pool.submit(evaluate_candidate, self.problem, code,
+                                  seeds, self.cfg.timeout, pctx)
+                futs[fut] = key
+            for fut in futs:
+                key = futs[fut]
+                try:
+                    results[key] = fut.result()
+                except Exception as e:  # a single bad sandbox must not kill the run
+                    from evaluation import EvalResult
+                    results[key] = EvalResult(valid=False, msg=f"eval_exc:{e}")
+        return results
 
+    # ----------------------------------------------------- step 1: seeds
     def _bootstrap_seeds(self):
+        """Generate `num_seeds` valid seeds. Problem code seeds first (free).
+        The rest are generated in BATCHES and EVALUATED IN PARALLEL, so the
+        bootstrap is not a per-seed serial crawl."""
         target = self.cfg.num_seeds
         made = 0
         print(f"[init] bootstrapping {target} seeds "
-              f"(each = 1 generation + {len(self.eval_seeds)}-seed eval) ...",
-              flush=True)
+              f"({len(self.eval_seeds)}-seed eval, parallel) ...", flush=True)
 
-        # problem-provided code seeds first (free, no generation)
-        for ss in self.problem.seed_states():
-            if made >= target:
-                break
-            if not (ss.code and ss.code.strip()):
-                continue
-            ev = evaluate_candidate(self.problem, ss.code, self.eval_seeds,
-                                    self.cfg.timeout)
-            if ev.valid:
-                self.archive.add_seed(State.make(
-                    ss.code, ev.value, 0, is_seed=True, raw_score=ev.raw,
-                    per_seed=ev.per_seed, construction=ss.construction))
-                made += 1
-                print(f"[init] seed {made}/{target}: canned, value={ev.value:.4f}",
-                      flush=True)
+        # canned code seeds (still parallel-evaluated)
+        canned = [ss for ss in self.problem.seed_states()
+                  if ss.code and ss.code.strip()]
+        if canned:
+            jobs = [(i, ss.code, self.eval_seeds, None)
+                    for i, ss in enumerate(canned)]
+            evs = self._eval_many(jobs)
+            for i, ss in enumerate(canned):
+                if made >= target:
+                    break
+                ev = evs.get(i)
+                if ev and ev.valid:
+                    self.archive.add_seed(State.make(
+                        ss.code, ev.value, 0, is_seed=True, raw_score=ev.raw,
+                        per_seed=ev.per_seed, construction=ss.construction))
+                    made += 1
+                    print(f"[init] seed {made}/{target}: canned, "
+                          f"value={ev.value:.4f}", flush=True)
 
-        attempts = 0
-        max_attempts = max(target, 1) * self.cfg.seed_max_attempts
-        while made < target and attempts < max_attempts:
-            attempts += 1
-            print(f"[init] seed {made + 1}/{target}: generating "
-                  f"(attempt {attempts}/{max_attempts}) ...", flush=True)
-            code = self._gen_fresh()
-            if code is None:
-                print("[init]   -> no code extracted, retrying", flush=True)
-                continue
-            gate = quick_gate(code, self.problem)
-            if not gate.ok:
-                print(f"[init]   -> rejected ({gate.reason}), retrying", flush=True)
-                continue
-            ev = evaluate_candidate(self.problem, code, self.eval_seeds,
-                                    self.cfg.timeout)
-            if ev.valid:
-                self.archive.add_seed(State.make(
-                    code, ev.value, 0, is_seed=True, raw_score=ev.raw,
-                    per_seed=ev.per_seed))
-                made += 1
-                print(f"[init]   -> valid, value={ev.value:.4f}", flush=True)
-            else:
-                print(f"[init]   -> invalid eval ({ev.msg[:50]}), retrying",
+        # generated seeds, batched gen + parallel eval
+        seed_prompt = self.problem.build_seed_prompt()
+        batch = max(1, int(getattr(self.cfg, "gen_batch_size", 8)))
+        max_rounds = max(target, 1) * self.cfg.seed_max_attempts
+        rounds = 0
+        while made < target and rounds < max_rounds:
+            rounds += 1
+            need = target - made
+            n = min(batch, max(need, 1))
+            print(f"[init] seeds {made}/{target}: gen batch {n} "
+                  f"(round {rounds}/{max_rounds}) ...", flush=True)
+            completions = self.llm.complete_batch([seed_prompt for _ in range(n)])
+
+            from collections import Counter
+            fails = Counter()
+            jobs, codes = [], {}
+            for j, raw in enumerate(completions):
+                code = extract_python_code(raw)
+                if code is None:
+                    fails["no_code"] += 1
+                    snippet = (raw or "").strip().replace("\n", " ")[:160]
+                    print(f"[init]   no_code; raw[:160]={snippet!r}", flush=True)
+                    continue
+                gate = quick_gate(code, self.problem)
+                if not gate.ok:
+                    fails[f"gate:{gate.reason}"] += 1
+                    continue
+                jobs.append((j, code, self.eval_seeds, None))
+                codes[j] = code
+
+            evs = self._eval_many(jobs)                     # PARALLEL
+            for j, code in codes.items():
+                if made >= target:
+                    break
+                ev = evs.get(j)
+                if ev and ev.valid:
+                    self.archive.add_seed(State.make(
+                        code, ev.value, 0, is_seed=True, raw_score=ev.raw,
+                        per_seed=ev.per_seed))
+                    made += 1
+                    print(f"[init]   -> seed {made}/{target} valid, "
+                          f"value={ev.value:.4f}", flush=True)
+                elif ev is not None:
+                    fails[f"eval:{ev.msg[:40]}"] += 1
+            if fails:
+                print(f"[init]   round {rounds} rejections: {dict(fails)}",
                       flush=True)
 
         print(f"[init] seeds: {made}/{target} valid "
-              f"(archive size {self.archive.size()})", flush=True)
+              f"(archive {self.archive.size()})", flush=True)
         if made == 0:
             raise RuntimeError("could not produce any valid seed; check the "
                                "LLM endpoint and the problem definition")
@@ -142,7 +202,6 @@ class Engine:
         valid_values = self.archive.valid_values()
         rollouts: List[RolloutRecord] = []
 
-        # ---- parent pick table (UCT internals) ----
         print(f"\n[iter {it}] parents picked: {len(parents)}  "
               f"(T={self.archive.T} archive={self.archive.size()})")
         bands_for = []
@@ -154,27 +213,141 @@ class Engine:
                   f"band={band:9s} n={info['n']:<4d} Q={info['Q']:.4f} "
                   f"bonus={info['bonus']:.4f} score={info['score']:.4f}")
 
-        # ---- rollouts ----
-        total = len(parents) * self.cfg.rollouts_per_parent
-        bar = make_bar(total, f"iter {it} rollouts")
-        try:
-            for i, parent in enumerate(parents):
-                self.archive.record_expansion(parent, count=self.cfg.rollouts_per_parent)
-                band = bands_for[i]
-                parent.band = band
-                group = []
-                for k in range(self.cfg.rollouts_per_parent):         # step 3
-                    if self.rng.random() < self.cfg.explore_eps:      # step 4a
-                        rec = self._do_explore(it)
-                    else:                                             # step 4b
-                        rec = self._do_mutate(it, parent, band)
-                    group.append(rec)
-                    rollouts.append(rec)
-                    bar.update(1)
-                    bar.write(self._fmt_rollout(i, k, rec))
-                bar.write(self._fmt_group(i, band, group))
-        finally:
-            bar.close()
+        # ---- PLAN every rollout up front (steps 3-6), NO generation yet ----
+        plans = []
+        for i, parent in enumerate(parents):
+            self.archive.record_expansion(parent, count=self.cfg.rollouts_per_parent)
+            band = bands_for[i]
+            parent.band = band
+            for k in range(self.cfg.rollouts_per_parent):             # step 3
+                if self.rng.random() < self.cfg.explore_eps:          # step 4a
+                    plans.append({
+                        "pidx": i, "k": k, "kind": "explore", "band": None,
+                        "parent": None, "arm_idx": None, "arm": None,
+                        "messages": self.problem.build_seed_prompt(),
+                    })
+                else:                                                 # step 4b
+                    idx, arm = self.bandit.sample(band)               # step 5
+                    gp_code = self.archive.grandparent_code_of(parent)   # step 6
+                    best = self.archive.best_state()
+                    worst = self.archive.worst_valid_state()
+                    messages = build_mutation_messages(
+                        self.problem, _parent_ctx(parent), gp_code,
+                        best.code if best else "", worst.code if worst else "",
+                        band, arm.template, max_chars=self.cfg.max_code_chars)
+                    plans.append({
+                        "pidx": i, "k": k, "kind": "mutate", "band": band,
+                        "parent": parent, "arm_idx": idx, "arm": arm,
+                        "messages": messages,
+                    })
+
+        # ---- ONE batched generate() for the whole iteration ----
+        completions = self.llm.complete_batch([p["messages"] for p in plans])
+
+        # ---- Phase A: extract + gate in-process (cheap), collect eval jobs ----
+        recs = [None] * len(plans)         # final RolloutRecord per plan
+        eval_jobs = []                     # (plan_idx, code, seeds, parent_ctx)
+        meta = {}                          # plan_idx -> (code, gate stuff)
+        for pi, (plan, raw) in enumerate(zip(plans, completions)):
+            code = extract_python_code(raw)
+            if plan["kind"] == "explore":
+                rec = RolloutRecord(kind="explore")
+                if code is None:
+                    rec.outcome = "no_code"
+                    recs[pi] = rec
+                    continue
+                gate = quick_gate(code, self.problem)
+                if not gate.ok:
+                    self.archive.add_nonparent(
+                        State.make(code, 0.0, it, status=INVALID), INVALID)
+                    rec.outcome = f"invalid:{gate.reason}"
+                    recs[pi] = rec
+                    continue
+                recs[pi] = rec
+                meta[pi] = code
+                eval_jobs.append((pi, code, self.eval_seeds, None))
+            else:
+                parent, band, arm = plan["parent"], plan["band"], plan["arm"]
+                rec = RolloutRecord(kind="mutate", band=band,
+                                    arm_idx=plan["arm_idx"],
+                                    arm_source=arm.source)
+                if code is None:
+                    self.archive.add_nonparent(
+                        State.make("", 0.0, it, parents=child_lineage(parent),
+                                   status=INVALID), INVALID)
+                    rec.outcome = "no_code"
+                    recs[pi] = rec
+                    continue
+                gp_code = self.archive.grandparent_code_of(parent)
+                gate = validate_child(code, parent, gp_code, self.archive,
+                                      self.problem, self.cfg)
+                if gate.sterile:
+                    self.archive.add_nonparent(
+                        State.make(code, 0.0, it, parents=child_lineage(parent),
+                                   status=STERILE), STERILE)
+                    rec.outcome = f"sterile:{gate.reason}"
+                    recs[pi] = rec
+                    continue
+                if gate.invalid:
+                    self.archive.add_nonparent(
+                        State.make(code, 0.0, it, parents=child_lineage(parent),
+                                   status=INVALID), INVALID)
+                    rec.outcome = f"invalid:{gate.reason}"
+                    recs[pi] = rec
+                    continue
+                recs[pi] = rec
+                meta[pi] = code
+                seeds = list(parent.per_seed.keys()) or self.eval_seeds
+                eval_jobs.append((pi, code, seeds, _parent_ctx(parent)))
+
+        # ---- Phase B: evaluate ALL survivors in parallel (the slow part) ----
+        evs = self._eval_many(eval_jobs)
+
+        # ---- Phase C: bookkeeping single-threaded (archive + bandit) ----
+        for pi, plan in enumerate(plans):
+            rec = recs[pi]
+            if pi not in meta:             # already finalized (no_code / gate)
+                continue
+            code = meta[pi]
+            ev = evs.get(pi)
+            if plan["kind"] == "explore":
+                if ev and ev.valid:
+                    self.archive.add_root(State.make(
+                        code, ev.value, it, parents=[], raw_score=ev.raw,
+                        per_seed=ev.per_seed))
+                    rec.outcome, rec.value = "valid", ev.value
+                else:
+                    self.archive.add_nonparent(
+                        State.make(code, 0.0, it, status=INVALID), INVALID)
+                    rec.outcome = "invalid:eval"
+            else:
+                parent, band, idx = plan["parent"], plan["band"], plan["arm_idx"]
+                if not (ev and ev.valid):
+                    self.archive.add_nonparent(
+                        State.make(code, 0.0, it, parents=child_lineage(parent),
+                                   status=INVALID), INVALID)
+                    rec.outcome = "invalid:eval"
+                    continue
+                dmu, dsigma = paired_delta(ev.per_seed, parent.per_seed)
+                child = State.make(code, ev.value, it,
+                                   parents=child_lineage(parent),
+                                   raw_score=ev.raw, per_seed=ev.per_seed)
+                self.archive.add_child(child)
+                self.archive.record_child_reward(parent, ev.value)
+                self.band_stats.update(band, dmu)
+                self.bandit.update(band, idx, self.band_stats.normalize(band, dmu))
+                rec.outcome, rec.value = "valid", ev.value
+                rec.dmu, rec.dsigma = dmu, dsigma
+
+        # ---- logging ----
+        groups = {}
+        for plan, rec in zip(plans, recs):
+            rollouts.append(rec)
+            groups.setdefault(plan["pidx"], []).append(rec)
+            print(self._fmt_rollout(plan["pidx"], plan["k"], rec), flush=True)
+        for pidx, group in groups.items():
+            band = bands_for[pidx] if pidx < len(bands_for) else "?"
+            print(self._fmt_group(pidx, band, group), flush=True)
 
         # ---- reflection (step 9) ----
         print("  reflecting on iteration ...", flush=True)
@@ -187,94 +360,6 @@ class Engine:
             print("  reflection -> no parseable suggestion")
 
         self._log_iter(it, rollouts, time.time() - t0)
-
-    # ----------------------------------------------------- step 4a: explore
-    def _do_explore(self, it: int) -> RolloutRecord:
-        rec = RolloutRecord(kind="explore")
-        code = self._gen_fresh()
-        if code is None:
-            rec.outcome = "no_code"
-            return rec
-        gate = quick_gate(code, self.problem)
-        if not gate.ok:
-            self.archive.add_nonparent(State.make(code, 0.0, it, status=INVALID),
-                                       INVALID)
-            rec.outcome = f"invalid:{gate.reason}"
-            return rec
-        ev = evaluate_candidate(self.problem, code, self.eval_seeds, self.cfg.timeout)
-        if ev.valid:
-            self.archive.add_root(State.make(
-                code, ev.value, it, parents=[], raw_score=ev.raw,
-                per_seed=ev.per_seed))
-            rec.outcome, rec.value = "valid", ev.value
-        else:
-            self.archive.add_nonparent(State.make(code, 0.0, it, status=INVALID),
-                                       INVALID)
-            rec.outcome = "invalid:eval"
-        return rec
-
-    # ----------------------------------------------------- step 4b: mutate
-    def _do_mutate(self, it: int, parent: State, band: str) -> RolloutRecord:
-        idx, arm = self.bandit.sample(band)                            # step 5
-        rec = RolloutRecord(kind="mutate", band=band, arm_idx=idx,
-                            arm_source=arm.source)
-
-        gp_code = self.archive.grandparent_code_of(parent)             # step 6
-        best = self.archive.best_state()
-        worst = self.archive.worst_valid_state()
-        messages = build_mutation_messages(
-            self.problem, _parent_ctx(parent), gp_code,
-            best.code if best else "", worst.code if worst else "",
-            band, arm.template, max_chars=self.cfg.max_code_chars)
-
-        code = extract_python_code(self.llm.complete(messages))
-        if code is None:
-            self.archive.add_nonparent(
-                State.make("", 0.0, it, parents=child_lineage(parent),
-                           status=INVALID), INVALID)
-            rec.outcome = "no_code"
-            return rec
-
-        gate = validate_child(code, parent, gp_code, self.archive,        # steps 6-7
-                              self.problem, self.cfg)
-        if gate.sterile:
-            self.archive.add_nonparent(
-                State.make(code, 0.0, it, parents=child_lineage(parent),
-                           status=STERILE), STERILE)
-            rec.outcome = f"sterile:{gate.reason}"
-            return rec
-        if gate.invalid:
-            self.archive.add_nonparent(
-                State.make(code, 0.0, it, parents=child_lineage(parent),
-                           status=INVALID), INVALID)
-            rec.outcome = f"invalid:{gate.reason}"
-            return rec
-
-        # step 8: evaluate the child on the SAME seeds the parent used
-        seeds = list(parent.per_seed.keys()) or self.eval_seeds
-        ev = evaluate_candidate(self.problem, code, seeds, self.cfg.timeout,
-                                parent_ctx=_parent_ctx(parent))
-        if not ev.valid:
-            self.archive.add_nonparent(
-                State.make(code, 0.0, it, parents=child_lineage(parent),
-                           status=INVALID), INVALID)
-            rec.outcome = "invalid:eval"
-            return rec
-
-        dmu, dsigma = paired_delta(ev.per_seed, parent.per_seed)
-        child = State.make(code, ev.value, it, parents=child_lineage(parent),
-                           raw_score=ev.raw, per_seed=ev.per_seed)
-        self.archive.add_child(child)
-        self.archive.record_child_reward(parent, ev.value)
-
-        # bandit reward = within-band standardized improvement (see bands.py)
-        self.band_stats.update(band, dmu)
-        reward = self.band_stats.normalize(band, dmu)
-        self.bandit.update(band, idx, reward)
-
-        rec.outcome, rec.value = "valid", ev.value
-        rec.dmu, rec.dsigma = dmu, dsigma
-        return rec
 
     # ------------------------------------------------------------- logging
     def _fmt_rollout(self, pidx, k, rec):

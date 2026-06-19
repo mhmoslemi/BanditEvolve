@@ -14,6 +14,11 @@ Interface:
 Import-order note: Unsloth must be imported before transformers / peft. Nothing
 on the path before make_llm() pulls in transformers, so importing unsloth inside
 UnslothLLM.__init__ keeps it first.
+
+PERFORMANCE: generation is genuinely batched here (one generate() over up to
+gen_batch_size prompts via left padding), which is what keeps the GPU busy. If a
+batch OOMs, the batch size is halved and retried, same as the TTT runner, so the
+engine can hand us a big iteration batch without us crashing on it.
 """
 
 from typing import List
@@ -81,7 +86,8 @@ class UnslothLLM(BaseLLM):
                 messages, tokenize=False, add_generation_prompt=True,
             )
 
-    def _generate(self, prompts):
+    def _generate_one_batch(self, prompts):
+        """Generate completions for a list of prompts in ONE generate() call."""
         torch = self.torch
         enc = self.tokenizer(prompts, return_tensors="pt",
                              padding=True).to(self.device)
@@ -102,6 +108,26 @@ class UnslothLLM(BaseLLM):
                 gen = gen[: gen.index(self.eos_id) + 1]
             texts.append(self.tokenizer.decode(gen, skip_special_tokens=True))
         return texts
+
+    def _generate(self, prompts):
+        """Generate a chunk of prompts, halving the sub-batch on CUDA OOM and
+        retrying, so a large iteration batch never hard-crashes the run."""
+        torch = self.torch
+        results = []
+        i = 0
+        sub = max(1, len(prompts))
+        while i < len(prompts):
+            chunk = prompts[i:i + sub]
+            try:
+                results.extend(self._generate_one_batch(chunk))
+                i += len(chunk)
+            except torch.cuda.OutOfMemoryError:
+                torch.cuda.empty_cache()
+                if sub == 1:
+                    raise
+                sub = max(1, sub // 2)
+                print(f"  [oom] halving generation sub-batch to {sub}", flush=True)
+        return results
 
     def complete_batch(self, list_of_messages):
         if not list_of_messages:

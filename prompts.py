@@ -94,8 +94,16 @@ def evolution_block(parent_code, grandparent_code, best_code, worst_code,
         parts += ["", "## A valid but weak program (a negative exemplar: avoid "
                   "what makes this one weak)",
                   f"```python\n{trunc(worst_code)}\n```"]
-    parts += ["", "Return one improved program. It must be a genuinely different "
-              "program from the parent, not a reformatting or comment change."]
+    parts += [
+        "",
+        "Return ONE improved, complete program and NOTHING else. It must define "
+        "the same entrypoint function, must be genuinely different from the "
+        "parent (not a reformatting or comment change), and must still satisfy "
+        "every hard requirement and the validator above.",
+        "",
+        "Output format (CRITICAL): start your reply with ```python on its own "
+        "line and end it with ```. No prose before or after the code block.",
+    ]
     return "\n".join(parts)
 
 

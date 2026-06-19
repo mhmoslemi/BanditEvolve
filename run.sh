@@ -6,7 +6,7 @@
 
 
 
-CUDA_VISIBLE_DEVICES=7 python main.py --problem circle_packing 
+CUDA_VISIBLE_DEVICES=6,7 python main.py --problem circle_packing 
 
 
 

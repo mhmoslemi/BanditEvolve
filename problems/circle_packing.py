@@ -6,6 +6,11 @@ kept byte-for-byte so results stay comparable. The seed is injected into the
 sandbox prelude (numpy / random seeded) so a stochastic search produces genuine
 per-seed variation, which makes the paired dsigma in step 8 meaningful even
 though the scoring of a fixed packing is itself deterministic.
+
+The prompt is deliberately blunt: one job, one function, one fenced block. The
+model is told to emit NOTHING but the code block, because anything that wraps
+the program in prose or never closes the fence shows up as "no_code" and wastes
+a whole generation.
 """
 
 from __future__ import annotations
@@ -57,38 +62,57 @@ class CirclePacking(Problem):
             self.target = 2.636 if self.num_circles == 26 else 2.940
 
     # ----------------------------------------------------------- prompts
-    def _rules(self) -> str:
-        n = self.num_circles
-        return f"""Rules:
-- Define run_packing() -> tuple[np.ndarray, np.ndarray, float] returning
-  (centers, radii, sum_radii) with centers shape ({n}, 2) and radii shape ({n},).
-- Centers in [0,1]^2, radii nonnegative, no overlaps, inside the unit square.
-- scipy, numpy, cvxpy, math are available. Top-level helpers only, no closures,
-  no lambdas. No filesystem or network IO.
-- Use print() to log progress; your stdout is shown back to you.
-Return the final program between ```python and ```."""
-
     def build_prompt(self, parent: ParentContext) -> List[dict]:
         n = self.num_circles
-        ctx = render_state_context(self.metric_name, self.target, parent,
-                                   maximize=self.maximize)
-        body = (parent.code if (parent.code and parent.code.strip())
-                else "(no current program)")
-        user = f"""You are an expert in circle packing and computational geometry.
-Pack {n} circles in the unit square [0,1]x[0,1] to maximize the sum of radii.
+        has_parent = bool(parent.code and parent.code.strip())
 
-We run this validator (read-only):
+        if has_parent:
+            shown = (parent.raw_score if parent.raw_score is not None
+                     else parent.value)
+            state = (f"Here is the current best program "
+                     f"(sum of radii = {shown:.6f}). Improve it:\n\n"
+                     f"```python\n{parent.code}\n```\n")
+            task = "Write an improved version that achieves a larger sum of radii."
+        else:
+            state = ""
+            task = ("Write a Python program from scratch that finds a good "
+                    "packing.")
+
+        user = f"""You are an expert in circle packing and numerical optimization.
+
+Task: pack {n} non-overlapping circles inside the unit square [0,1]x[0,1] and
+maximize the sum of their radii. {task}
+
+Hard requirements for your program:
+- Define exactly this function: def run_packing() -> tuple[np.ndarray, np.ndarray, float]
+- It returns (centers, radii, sum_radii): centers has shape ({n}, 2),
+  radii has shape ({n},), sum_radii is float(radii.sum()).
+- Every circle must lie inside the unit square and no two may overlap. The
+  result is checked by this exact validator (do not redefine it):
+
 ```python
 {_VALIDATOR_SRC}
 ```
 
-{ctx}
-Current program:
-```python
-{body}
-```
+- numpy (as np), math, and scipy.optimize.minimize are already importable.
+- Top-level helper functions only. No lambdas, no nested closures, no classes.
+- No file or network IO.
+- A strong approach: place centers on a structured grid or hexagonal layout,
+  then run scipy.optimize.minimize (SLSQP) to grow the radii and nudge centers
+  while respecting the boundary and non-overlap constraints.
 
-{self._rules()}"""
+{state}
+Output format (CRITICAL): respond with ONE Python code block and NOTHING else.
+Start your reply with ```python on its own line and end it with ```. Do not
+write any explanation before or after the code block.
+
+```python
+import numpy as np
+
+def run_packing():
+    ...
+    return centers, radii, float(radii.sum())
+```"""
         return [{"role": "user", "content": user}]
 
     def build_seed_prompt(self) -> List[dict]:

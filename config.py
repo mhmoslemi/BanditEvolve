@@ -30,9 +30,10 @@ class Config:
     rollouts_per_parent: int = 4       # k rollouts per parent  (n*k per iter)
     num_seeds: int = 8                 # initial independent seeds (step 1)
     seed_max_attempts: int = 6         # LLM tries per seed before giving up
-    num_eval_seeds: int = 5            # evaluation seeds for paired deltas
+    num_eval_seeds: int = 1            # evaluation seeds for paired deltas
     explore_eps: float = 0.1           # probability a rollout makes a fresh seed
-    timeout: float = 100.0             # per-evaluation sandbox timeout (s)
+    timeout: float = 30.0              # per-evaluation sandbox timeout (s)
+    reward_workers: int = 0            # parallel sandbox evals; 0 = auto (cpu count)
 
     # UCT / archive
     uct_c: float = 1.0
@@ -76,6 +77,7 @@ def _parser():
     p.add_argument("--num-parents", type=int, default=None)
     p.add_argument("--rollouts-per-parent", type=int, default=None)
     p.add_argument("--explore-eps", type=float, default=None)
+    p.add_argument("--reward-workers", type=int, default=None)
     p.add_argument("--seed", type=int, default=None)
     return p
 
