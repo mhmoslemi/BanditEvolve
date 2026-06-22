@@ -11,6 +11,18 @@ The prompt is deliberately blunt: one job, one function, one fenced block. The
 model is told to emit NOTHING but the code block, because anything that wraps
 the program in prose or never closes the fence shows up as "no_code" and wastes
 a whole generation.
+
+Two robustness fixes vs the original:
+  1. score() rejects a DEGENERATE packing (sum of radii ~ 0). A program that
+     returns all-zero radii passes validate_packing (zero-radius circles never
+     overlap and are trivially in-bounds) but is worthless, and a flood of these
+     value=0.0 "valid" programs collapses the score bands (every quantile becomes
+     0, so every parent lands in one band) and gives the search nothing to climb.
+     Treat it as invalid so it never enters the archive.
+  2. seed_states() returns ONE canned valid packing (a 6x5 grid, sum ~ 2.16) plus
+     empty slots. Bootstrap no longer depends entirely on cold one-shot
+     generation clearing the validator, so the archive always has a real nonzero
+     anchor to band against and to mutate from.
 """
 
 from __future__ import annotations
@@ -49,11 +61,33 @@ def validate_packing(centers, radii):
 _VALIDATOR_SRC = inspect.getsource(validate_packing)
 
 
+# A guaranteed-valid canned seed: 6x5 grid, radii = half the smallest spacing
+# minus a margin, so nothing overlaps and nothing leaves the square. Sum of radii
+# is ~2.16, a real nonzero anchor for the archive / bands / mutations.
+_GRID_SEED = '''
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols, rows = 6, 5
+    xs = [(i + 0.5) / cols for i in range(cols)]
+    ys = [(j + 0.5) / rows for j in range(rows)]
+    pts = [(x, y) for y in ys for x in xs][:n]
+    centers = np.array(pts, dtype=float)
+    r = min(1.0 / (2 * cols), 1.0 / (2 * rows)) - 1e-4
+    radii = np.full(n, r, dtype=float)
+    return centers, radii, float(radii.sum())
+'''
+
+
 class CirclePacking(Problem):
     name = "circle_packing"
     entrypoint = "run_packing"
     metric_name = "sum of radii"
     maximize = True
+
+    # a packing whose radii sum below this is degenerate (treated as invalid)
+    min_sum_radii = 1e-3
 
     def __init__(self, cfg: dict):
         super().__init__(cfg)
@@ -152,11 +186,19 @@ def run_packing():
             res.msg = f"bad_shape:{centers.shape},{radii.shape}"
             return res
         valid, msg = validate_packing(centers, radii)
-        res.valid, res.msg = valid, msg
         if valid:
             s = float(np.sum(radii))
+            # Degenerate guard: a zero-radius packing is "valid" but worthless and
+            # collapses the score bands. Reject it so it never enters the archive.
+            if s < self.min_sum_radii:
+                res.valid = False
+                res.msg = f"degenerate_sum_radii:{s:.3e}"
+                return res
+            res.valid, res.msg = True, msg
             res.reward = s
             res.raw = s
+        else:
+            res.valid, res.msg = False, msg
         return res
 
     # --------------------------------------------------------- static gate
@@ -169,5 +211,9 @@ def run_packing():
 
     # -------------------------------------------------------------- seeds
     def seed_states(self) -> List[Seed]:
-        # No canned code: bootstrap will ask the LLM to write seeds from scratch.
-        return [Seed(code="") for _ in range(self.num_seed_states)]
+        # One guaranteed-valid canned packing as a nonzero anchor; the remaining
+        # slots are generated from scratch by the LLM during bootstrap.
+        n = max(1, self.num_seed_states)
+        seeds = [Seed(code=_GRID_SEED)]
+        seeds += [Seed(code="") for _ in range(n - 1)]
+        return seeds

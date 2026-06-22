@@ -14,7 +14,7 @@ running mean/std of the deltas it observes and reports a standardized z-score as
 the bandit reward. Each band's arms are then compared on that band's own scale.
 """
 
-import numpy as np
+import numpy as np # type: ignore
 
 WEAK, GOOD, ELITE, NEAR_SOTA = "weak", "good", "elite", "near_sota"
 BANDS = [WEAK, GOOD, ELITE, NEAR_SOTA]

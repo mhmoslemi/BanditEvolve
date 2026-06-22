@@ -16,7 +16,7 @@ others, exactly the signal the prompt bandit and the design should care about.
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
-import numpy as np
+import numpy as np # type: ignore
 
 from problems.base import ParentContext
 

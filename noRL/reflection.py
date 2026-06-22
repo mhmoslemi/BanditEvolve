@@ -6,19 +6,11 @@ name the single dominant failure mode, the band it belongs to, and a new
 mutation prompt to counter it. The returned prompt is appended as a new arm to
 that band's pool, where the Thompson-sampling bandit will explore it on later
 iterations.
-
-This now builds the user message with build_reflection_user(...). The rewritten
-prompts.py template carries extra fields (band instruction/task, the existing
-arms in the pool); calling REFLECTION_USER_TEMPLATE.format(goal=, rollout_log=)
-against it raises KeyError. The optional existing_arms_by_band / target_band are
-defaulted so the frozen engine's reflect(self.llm, self.goal, rollouts) call
-keeps working unchanged, while the RL path can pass the current pools so the
-controller avoids emitting near-duplicate arms.
 """
 
-from typing import Optional
+from typing import List, Optional
 
-from prompts import REFLECTION_SYSTEM, build_reflection_user, parse_reflection
+from BanditEvolve.noRL.prompts import REFLECTION_SYSTEM, REFLECTION_USER_TEMPLATE, parse_reflection
 
 
 def _format_log(rollouts) -> str:
@@ -38,20 +30,10 @@ def _format_log(rollouts) -> str:
     return "\n".join(lines) if lines else "(no rollouts)"
 
 
-def reflect(llm, goal: str, rollouts, existing_arms_by_band=None,
-            target_band=None) -> Optional[dict]:
+def reflect(llm, goal: str, rollouts) -> Optional[dict]:
     """Returns {failure_mode, band, prompt} or None if the LLM response is
-    unparseable. Never raises: a failed reflection just skips growing the pools.
-
-    existing_arms_by_band: optional {band: [arm_text, ...]} passed to the
-        controller so it does not re-propose an arm already in the pool.
-    target_band: optional band to force (enables caller-side band rotation).
-    """
-    user = build_reflection_user(
-        goal, _format_log(rollouts),
-        existing_arms_by_band=existing_arms_by_band,
-        target_band=target_band,
-    )
+    unparseable. Never raises: a failed reflection just skips growing the pools."""
+    user = REFLECTION_USER_TEMPLATE.format(goal=goal, rollout_log=_format_log(rollouts))
     messages = [{"role": "system", "content": REFLECTION_SYSTEM},
                 {"role": "user", "content": user}]
     try:
