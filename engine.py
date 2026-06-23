@@ -108,6 +108,11 @@ class Engine:
                       "(dummy backend?). Running the RL loop STRUCTURE with NO "
                       "weight updates.", flush=True)
 
+    # ---- existing arm templates per band, for reflection dedup (step 9) ----
+    def _existing_arms_by_band(self):
+        return {b: [a.template for a in arms]
+                for b, arms in self.bandit.pools.items()}
+
     # ---------------------------------------------------------------- run
     def run(self) -> Optional[State]:
         self._bootstrap_seeds()                          # step 1
@@ -365,7 +370,9 @@ class Engine:
             print(self._fmt_group(pidx, band, group), flush=True)
 
         print("  reflecting on iteration ...", flush=True)
-        ref = reflect(self.llm, self.goal, rollouts)
+        existing = self._existing_arms_by_band()
+        ref = reflect(self.llm, self.goal, rollouts,
+                      existing_arms_by_band=existing)
         if ref is not None:
             self.bandit.add_arm(ref["band"], ref["prompt"], source="reflection")
             print(f"  reflection -> +arm[{ref['band']}]  "
@@ -555,10 +562,9 @@ class Engine:
             band = bands_for[pidx] if pidx < len(bands_for) else "?"
             print(self._fmt_group(pidx, band, group), flush=True)
 
-        # ---- reflection (step 9), now with existing-arm dedup context ----
+        # ---- reflection (step 9), with existing-arm dedup context ----
         print("  reflecting on iteration ...", flush=True)
-        existing = {b: [a.template for a in arms]
-                    for b, arms in self.bandit.pools.items()}
+        existing = self._existing_arms_by_band()
         ref = reflect(self.llm, self.goal, rollouts, existing_arms_by_band=existing)
         if ref is not None:
             self.bandit.add_arm(ref["band"], ref["prompt"], source="reflection")

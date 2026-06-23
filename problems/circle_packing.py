@@ -12,7 +12,7 @@ model is told to emit NOTHING but the code block, because anything that wraps
 the program in prose or never closes the fence shows up as "no_code" and wastes
 a whole generation.
 
-Two robustness fixes vs the original:
+Robustness fixes vs the original:
   1. score() rejects a DEGENERATE packing (sum of radii ~ 0). A program that
      returns all-zero radii passes validate_packing (zero-radius circles never
      overlap and are trivially in-bounds) but is worthless, and a flood of these
@@ -22,7 +22,8 @@ Two robustness fixes vs the original:
   2. seed_states() returns ONE canned valid packing (a 6x5 grid, sum ~ 2.16) plus
      empty slots. Bootstrap no longer depends entirely on cold one-shot
      generation clearing the validator, so the archive always has a real nonzero
-     anchor to band against and to mutate from.
+     anchor to band against and to mutate from. The remaining seeds are still
+     generated independently by the LLM (step 1).
 """
 
 from __future__ import annotations
@@ -121,6 +122,9 @@ Hard requirements for your program:
 - Define exactly this function: def run_packing() -> tuple[np.ndarray, np.ndarray, float]
 - It returns (centers, radii, sum_radii): centers has shape ({n}, 2),
   radii has shape ({n},), sum_radii is float(radii.sum()).
+- N IS EXACTLY {n}. Every array you build and every bounds list you pass to an
+  optimizer must have a length consistent with {n} circles. Do not hardcode a
+  different count and do not let the variable vector and the bounds list disagree.
 - Every circle must lie inside the unit square and no two may overlap. The
   result is checked by this exact validator (do not redefine it):
 
@@ -128,12 +132,59 @@ Hard requirements for your program:
 {_VALIDATOR_SRC}
 ```
 
-- numpy (as np), math, and scipy.optimize.minimize are already importable.
+- numpy (as np) and math are already imported. scipy.optimize.minimize is
+  available as the name `minimize` (already imported for you). Do NOT re-import
+  scipy; just use `minimize(...)`.
 - Top-level helper functions only. No lambdas, no nested closures, no classes.
 - No file or network IO.
-- A strong approach: place centers on a structured grid or hexagonal layout,
-  then run scipy.optimize.minimize (SLSQP) to grow the radii and nudge centers
-  while respecting the boundary and non-overlap constraints.
+
+A correct, self-consistent optimizer pattern you may adapt (note how the decision
+vector v has length 3*{n} and the bounds list has the SAME length 3*{n}; this is
+the mismatch that most commonly breaks programs):
+
+```python
+def run_packing():
+    n = {n}
+    # decision vector v = [x0,y0,r0, x1,y1,r1, ...], length 3*n
+    cols = int(np.ceil(np.sqrt(n)))
+    xs = (np.arange(n) % cols + 0.5) / cols
+    ys = (np.arange(n) // cols + 0.5) / cols
+    r0 = 0.5 / cols - 1e-3
+    v0 = np.empty(3 * n)
+    v0[0::3] = xs
+    v0[1::3] = ys
+    v0[2::3] = r0
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]   # length 3*n, matches v
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    cons = []
+    for i in range(n):
+        cons.append({{"type": "ineq", "fun": (lambda i: lambda v: v[3*i]   - v[3*i+2])(i)}})
+        cons.append({{"type": "ineq", "fun": (lambda i: lambda v: 1.0 - v[3*i]   - v[3*i+2])(i)}})
+        cons.append({{"type": "ineq", "fun": (lambda i: lambda v: v[3*i+1] - v[3*i+2])(i)}})
+        cons.append({{"type": "ineq", "fun": (lambda i: lambda v: 1.0 - v[3*i+1] - v[3*i+2])(i)}})
+    for i in range(n):
+        for j in range(i + 1, n):
+            cons.append({{"type": "ineq",
+                          "fun": (lambda i, j: lambda v:
+                                  (v[3*i]-v[3*j])**2 + (v[3*i+1]-v[3*j+1])**2
+                                  - (v[3*i+2]+v[3*j+2])**2)(i, j)}})
+
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={{"maxiter": 500, "ftol": 1e-9}})
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())
+```
+
+You do not have to use this exact method, but whatever you do, keep the variable
+vector and the bounds list the same length, and return exactly {n} circles.
 
 {state}
 Output format (CRITICAL): respond with ONE Python code block and NOTHING else.
@@ -161,10 +212,7 @@ def run_packing():
             f"SEED = {int(seed)}\n"
             "np.random.seed(SEED)\n"
             "random.seed(SEED)\n"
-            "try:\n"
-            "    from scipy.optimize import minimize\n"
-            "except ImportError:\n"
-            "    minimize = None\n\n"
+            "from scipy.optimize import minimize\n\n"
             + _VALIDATOR_SRC + "\n"
         )
         return prelude + "\n# ---- model code below ----\n" + code
@@ -212,7 +260,7 @@ def run_packing():
     # -------------------------------------------------------------- seeds
     def seed_states(self) -> List[Seed]:
         # One guaranteed-valid canned packing as a nonzero anchor; the remaining
-        # slots are generated from scratch by the LLM during bootstrap.
+        # slots are generated independently from scratch by the LLM (step 1).
         n = max(1, self.num_seed_states)
         seeds = [Seed(code=_GRID_SEED)]
         seeds += [Seed(code="") for _ in range(n - 1)]

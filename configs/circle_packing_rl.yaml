@@ -3,14 +3,14 @@ num_circles: 26
 target: 2.635983
 
 # search budget
-num_iters: 50
+num_iters: 20
 num_parents: 4              # n parents per iteration (UCT, no repeat)
-num_seeds: 4                # initial independent seeds
+num_seeds: 8                # initial independent seeds
 num_eval_seeds: 1           # circle packing is deterministic per packing
 
 # rollouts_per_parent is NOT used in RL mode. Per parent we sample ONE arm and
 # generate rl_group_size completions from that single prompt = one GRPO group.
-rollouts_per_parent: 4
+rollouts_per_parent: 10
 
 explore_eps: 0.1            # P(a parent does a fresh-seed explore instead of a group)
 timeout: 30.0
@@ -24,13 +24,20 @@ topk_children: 3
 # bands
 q_good: 0.50
 q_elite: 0.85
-q_near: 0.98
+q_near: 0.99
 
 # gate
-parent_sim_threshold: 0.97
-novelty_threshold: 0.95
+parent_sim_threshold: 0.9
+novelty_threshold: 0.8
 novelty_topk: 10
-max_code_chars: 4000
+
+# PROMPT LENGTH BUDGET. The mutation prompt embeds up to 4 programs (parent,
+# grandparent, best, worst) plus the task prompt and the validator source. At
+# 4000 chars/program that overflowed the 8192 window (observed 8796 tokens) and
+# Unsloth silently truncated, desyncing the captured completion from the prompt.
+# 1200 chars/program keeps prompt + a 2048-token completion under 8192. If you
+# still overflow, lower this further or raise max_seq_length.
+max_code_chars: 2400
 
 # llm (LoRA-trainable; --llm-backend dummy to wire-test the RL loop offline)
 llm_backend: unsloth
@@ -45,7 +52,7 @@ load_in_4bit: false
 enable_thinking: false
 max_new_tokens: 2048
 max_seq_length: 8192        # prompt (parent + exemplars) + 2048-token completion
-gen_batch_size: 8
+gen_batch_size: 32
 
 temperature: 1.0            # top_p=1.0 + temp=1.0 => logprobs match sampling exactly
 top_p: 1.0
@@ -59,12 +66,12 @@ rl_adapter_per_band: true   # separate LoRA adapter per band (false = one shared
 rl_group_size: 8            # G: clean same-prompt group per parent
 rl_train_every: 1           # update every iteration (most on-policy)
 rl_ppo_epochs: 1            # 1 => REINFORCE + group baseline + KL leash; >1 => clipped reuse
-rl_lr: 1.0e-6
+rl_lr: 5.0e-5
 rl_kl_coef: 0.05
 rl_clip_eps: 0.2
 rl_grad_clip: 1.0
 rl_max_completion_tokens: 2048
-rl_lora_r: 16
+rl_lora_r: 32
 rl_lora_alpha: 32
 rl_lora_dropout: 0.0
 rl_reward_nocode: -0.2

@@ -1,5 +1,5 @@
 """
-State archive with UCT parent selection and lineage bookkeeping.
+State archive with UCT parent selection.
 
 Only VALID states (initial seeds and explore roots are VALID too) are selectable
 as parents. STERILE children (ran-but-redundant: failed novelty) and INVALID
@@ -19,8 +19,8 @@ UCT selection score for a candidate s:
   n(s)   = expansions of s or any descendant
   T      = total expansions
 
-Batch selection blocks the full ancestor+descendant lineage of each pick, so a
-single iteration's parents do not all collapse onto one promising thread.
+Batch selection is UCT, sampled WITHOUT REPLACEMENT: the top `num` distinct
+candidates by UCT score are returned.
 """
 
 import math
@@ -130,33 +130,13 @@ class Archive:
             return self.code_of(parent.parents[0]["id"])
         return ""
 
-    def _children_map(self) -> Dict[str, set]:
-        cm: Dict[str, set] = {}
-        for sid in self._order:
-            for p in self._by_id[sid].parents:
-                cm.setdefault(p["id"], set()).add(sid)
-        return cm
-
-    def _lineage(self, sid: str, cm: Dict[str, set]) -> set:
-        lin = {sid}
-        s = self._by_id.get(sid)
-        if s:
-            for p in s.parents:
-                lin.add(p["id"])
-        q = [sid]
-        while q:
-            cur = q.pop()
-            for c in cm.get(cur, ()):
-                if c not in lin:
-                    lin.add(c)
-                    q.append(c)
-        return lin
-
     # ------------------------------------------------------------- selection
     def _selectable(self) -> List[State]:
         return [self._by_id[i] for i in self._order]
 
     def select_parents(self, num: int) -> List[State]:
+        """UCT selection, sampled WITHOUT REPLACEMENT: return the top `num`
+        distinct candidates by UCT score."""
         cands = self._selectable()
         self.last_picks_info = []
         if not cands:
@@ -180,25 +160,12 @@ class Archive:
             scored.append((qn + bonus, s.value, s, info))
         scored.sort(key=lambda x: (x[0], x[1]), reverse=True)
 
-        cm = self._children_map()
-        blocked, picks, info_out = set(), [], []
+        picks, info_out = [], []
         for _, _, s, info in scored:
-            if s.id in blocked:
-                continue
             picks.append(s)
             info_out.append(info)
-            blocked |= self._lineage(s.id, cm)
             if len(picks) >= num:
                 break
-        if len(picks) < num:                       # top up without blocking
-            have = {s.id for s in picks}
-            for _, _, s, info in scored:
-                if len(picks) >= num:
-                    break
-                if s.id not in have:
-                    picks.append(s)
-                    info_out.append(info)
-                    have.add(s.id)
         self.last_picks_info = info_out
         return picks
 

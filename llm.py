@@ -26,6 +26,14 @@ Trainable interface adds:
     client.zero_grad(band) / client.step(band, grad_clip) / client.set_train(mode)
     client._adapter_for(band)            # band -> adapter name (identity, or 'shared')
 
+LENGTH SAFETY: the model has a hard max_seq_length. generate() truncates the
+prompt to fit if it overflows, which would desync the captured completion_ids
+from the prompt the model actually saw. token_logprobs therefore clamps the
+(prompt + completion) sequence to max_seq_length, truncating the PROMPT from the
+LEFT (keep the most recent prompt tokens and the whole completion, which is what
+the model conditions on when scoring the action), and aligns targets to the
+actual number of logit rows returned so the gather can never size-mismatch.
+
 Import-order note: Unsloth must be imported before transformers / peft. Nothing
 on the path before make_llm() pulls in transformers, so importing unsloth inside
 the LLM __init__ keeps it first.
@@ -69,6 +77,7 @@ class UnslothLLM(BaseLLM):
         self.temperature = float(temperature)
         self.top_p = float(top_p)
         self.max_new_tokens = int(max_new_tokens)
+        self.max_seq_length = int(max_seq_length)
         self.enable_thinking = bool(enable_thinking)
         self.gen_batch_size = int(gen_batch_size)
 
@@ -108,8 +117,11 @@ class UnslothLLM(BaseLLM):
 
     def _generate_one_batch(self, prompts):
         torch = self.torch
-        enc = self.tokenizer(prompts, return_tensors="pt",
-                             padding=True).to(self.device)
+        # cap the prompt so prompt + max_new_tokens fits the model window; left
+        # truncation keeps the most recent (most relevant) prompt tokens.
+        max_prompt = max(8, self.max_seq_length - self.max_new_tokens)
+        enc = self.tokenizer(prompts, return_tensors="pt", padding=True,
+                             truncation=True, max_length=max_prompt).to(self.device)
         input_len = enc.input_ids.shape[1]
         with torch.inference_mode():
             out = self.model.generate(
@@ -174,6 +186,10 @@ class TrainableLLM(BaseLLM):
     * Memory: never materialize an [L, vocab] tensor. _completion_logits runs the
       trunk and applies the LM head ONLY to the ~comp_len positions predicting
       completion tokens; logsumexp gives the normalizer without a second alloc.
+    * Length safety: the (prompt + completion) sequence is clamped to
+      max_seq_length, truncating the PROMPT from the LEFT so the completion the
+      model actually scored is preserved, and targets are aligned to the returned
+      logit rows so the gather never size-mismatches.
     """
 
     def __init__(self, model_name, max_seq_length=8192, load_in_4bit=False,
@@ -188,6 +204,7 @@ class TrainableLLM(BaseLLM):
         self.temperature = float(temperature)
         self.top_p = float(top_p)
         self.max_new_tokens = int(max_new_tokens)
+        self.max_seq_length = int(max_seq_length)
         self.enable_thinking = bool(enable_thinking)
         self.gen_batch_size = int(gen_batch_size)
         self.lr = float(lr)
@@ -309,7 +326,13 @@ class TrainableLLM(BaseLLM):
     # --------------------------------------------------------- generation
     def _gen_batch(self, prompts):
         torch = self.torch
-        enc = self.tokenizer(prompts, return_tensors="pt", padding=True).to(self.device)
+        # cap the prompt so prompt + max_new_tokens fits the window; left
+        # truncation keeps the most recent prompt tokens. This makes the captured
+        # prompt_ids consistent with what the model actually conditioned on, so
+        # token_logprobs reconstructs the same sequence.
+        max_prompt = max(8, self.max_seq_length - self.max_new_tokens)
+        enc = self.tokenizer(prompts, return_tensors="pt", padding=True,
+                             truncation=True, max_length=max_prompt).to(self.device)
         attn = enc.attention_mask
         input_len = enc.input_ids.shape[1]
         self.model.eval()
@@ -372,17 +395,36 @@ class TrainableLLM(BaseLLM):
         return [m.text for m in self.generate_with_meta(list_of_messages, band=None)]
 
     # --------------------------------------------------------- logprobs
-    def _completion_logits(self, full_ids, prompt_len, with_grad):
+    def _clamp_sequence(self, prompt_ids, completion_ids):
+        """Clamp prompt+completion to max_seq_length, truncating the PROMPT from
+        the LEFT so the whole completion (the action being scored) is preserved.
+        Returns (full_ids_list, prompt_len). If the completion alone exceeds the
+        window, the completion is right-truncated as a last resort."""
+        cap = int(self.max_seq_length)
+        comp = list(completion_ids)
+        prm = list(prompt_ids)
+        if len(comp) >= cap:                      # pathological: action longer than window
+            comp = comp[:cap - 1] if cap > 1 else comp[:1]
+            prm = prm[-1:]                        # keep at least one prompt token
+        elif len(prm) + len(comp) > cap:
+            keep_prompt = cap - len(comp)
+            prm = prm[-keep_prompt:] if keep_prompt > 0 else prm[-1:]
+        return prm + comp, len(prm)
+
+    def _completion_logits(self, full_ids, prompt_len, comp_len, with_grad):
         """Logits for exactly the positions that PREDICT completion tokens.
         full_ids: 1D LongTensor [L] = prompt_ids ++ completion_ids. Returns
-        [comp_len, vocab]; row k is the distribution over token (prompt_len+k).
-        Applies the LM head to only comp_len hidden states, never all L."""
+        [<=comp_len, vocab]; row k is the distribution over token (prompt_len+k).
+        Applies the LM head to only those positions, never all L. The slice is
+        clamped to L-1 so it can never request a row that does not exist."""
         torch = self.torch
         from contextlib import nullcontext
         ids = full_ids.unsqueeze(0)
         attn = torch.ones_like(ids)
         L = full_ids.shape[0]
-        sl = slice(prompt_len - 1, L - 1)
+        start = max(0, prompt_len - 1)
+        end = min(L - 1, start + comp_len)
+        sl = slice(start, end)
         ctx = nullcontext() if with_grad else torch.no_grad()
         with ctx:
             try:
@@ -390,7 +432,7 @@ class TrainableLLM(BaseLLM):
                 trunk = getattr(inner, "model", inner)  # CausalLM.model = trunk
                 head = self.model.get_output_embeddings()
                 hidden = trunk(input_ids=ids, attention_mask=attn).last_hidden_state[0]
-                return head(hidden[sl])               # [comp_len, vocab]
+                return head(hidden[sl])               # [<=comp_len, vocab]
             except Exception:
                 logits = self.model(input_ids=ids, attention_mask=attn).logits[0]
                 return logits[sl]
@@ -399,21 +441,27 @@ class TrainableLLM(BaseLLM):
                        use_reference=False):
         """Per-token logprob of each completion token. use_reference => the shared
         base (all adapters disabled), always no-grad. Otherwise the band's
-        adapter."""
+        adapter. The (prompt + completion) sequence is clamped to max_seq_length
+        (prompt left-truncated), and targets are aligned to the actual number of
+        logit rows so the gather can never size-mismatch."""
         torch = self.torch
-        prompt_len = len(prompt_ids)
-        comp_len = len(completion_ids)
-        if prompt_len < 1 or comp_len < 1:
+        if len(prompt_ids) < 1 or len(completion_ids) < 1:
             return torch.zeros(0, device=self.device,
                                requires_grad=bool(with_grad))
-        full = torch.tensor(list(prompt_ids) + list(completion_ids),
-                            dtype=torch.long, device=self.device)
-        targets = full[prompt_len:prompt_len + comp_len]
+        full_ids, prompt_len = self._clamp_sequence(prompt_ids, completion_ids)
+        comp_len = len(full_ids) - prompt_len
+        if comp_len < 1:
+            return torch.zeros(0, device=self.device,
+                               requires_grad=bool(with_grad))
+        full = torch.tensor(full_ids, dtype=torch.long, device=self.device)
 
         def _logp():
-            logits = self._completion_logits(full, prompt_len, with_grad).float()
+            logits = self._completion_logits(full, prompt_len, comp_len, with_grad).float()
             logits = logits / self.temperature
-            tgt = logits.gather(-1, targets.unsqueeze(-1)).squeeze(-1)
+            rows = logits.shape[0]                 # actual number of predicted positions
+            # targets are the completion tokens aligned to those rows
+            tgt_tokens = full[prompt_len:prompt_len + rows]
+            tgt = logits.gather(-1, tgt_tokens.unsqueeze(-1)).squeeze(-1)
             logz = torch.logsumexp(logits, dim=-1)
             return tgt - logz
 
