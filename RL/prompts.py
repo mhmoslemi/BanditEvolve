@@ -113,12 +113,15 @@ def _truncate_code(code: Optional[str], max_chars: int = 4000) -> str:
     tail = code[tail_start:].lstrip("\n")
     return f"{head}\n\n# ... [middle truncated to fit context] ...\n\n{tail}"
 
-
 # ---------------------------------------------------------------- mutation
 def evolution_block(parent_code, grandparent_code, best_code, worst_code,
                     band, arm_template, max_chars=4000,
                     include_strategy_scaffold=True, worst_diagnosis=None):
     """Build the exemplar + directive block appended to the task prompt.
+
+
+    Per step 6, the mutation context always includes parent, grandparent,
+    archive-best, and worst-but-valid (when available), for every band.
 
     include_strategy_scaffold: if your generation backend runs Qwen3 with native
         thinking enabled, set this False so you do not get a redundant second
@@ -129,11 +132,6 @@ def evolution_block(parent_code, grandparent_code, best_code, worst_code,
     """
     def trunc(c):
         return _truncate_code(c, max_chars)
-
-    # At NEAR_SOTA the parent is almost always the SOTA itself, so showing the
-    # SOTA block and telling the model "do not copy verbatim" directly fights
-    # the conservatism directive. Suppress both there.
-    show_sota = bool(best_code) and band != NEAR_SOTA
 
     parts = [
         "---",
@@ -155,18 +153,12 @@ def evolution_block(parent_code, grandparent_code, best_code, worst_code,
             f"```python\n{trunc(grandparent_code)}\n```",
         ]
 
-    if show_sota:
+    if best_code:
         parts += [
             "",
             "## GLOBAL SOTA (Reference Only)",
             "This is the current best known solution. Understand its logic, but DO NOT copy it verbatim. Use it as an architectural north star.",
             f"```python\n{trunc(best_code)}\n```",
-        ]
-    elif best_code and band == NEAR_SOTA:
-        parts += [
-            "",
-            "## NOTE",
-            "The target program above is at or near the global frontier. Preserve its structure exactly and refine additively.",
         ]
 
     if worst_code:
@@ -332,3 +324,6 @@ def parse_reflection(text: str) -> Optional[dict]:
         "band": band,
         "prompt": prompt,
     }
+
+
+

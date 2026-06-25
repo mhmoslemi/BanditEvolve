@@ -1,0 +1,92 @@
+[log] writing run to /work/mohammad/BanditEvolve/logs/circle_packing_20260625_155716.log
+🦥 Unsloth: Will patch your computer to enable 2x faster free finetuning.
+🦥 Unsloth Zoo will now patch everything to make training faster!
+[llm] loading Qwen/Qwen3-8B via Unsloth (4bit=False) ...
+==((====))==  Unsloth 2026.6.9: Fast Qwen3 patching. Transformers: 5.5.0.
+   \\   /|    NVIDIA H100 80GB HBM3. Num GPUs = 4. Max memory: 79.189 GB. Platform: Linux.
+O^O/ \_/ \    Torch: 2.10.0+cu129. CUDA: 9.0. CUDA Toolkit: 12.9. Triton: 3.6.0
+\        /    Bfloat16 = TRUE. FA [Xformers = None. FA2 = False]
+ "-____-"     Free license: http://github.com/unslothai/unsloth
+Unsloth: Fast downloading is enabled - ignore downloading bars which are red colored!
+Loading weights:   0%|                                                                                                                                                                                                                           | 0/399 [00:00<?, ?it/s]Loading weights:   0%|▌                                                                                                                                                                                                                  | 1/399 [00:00<01:01,  6.45it/s]Loading weights:   1%|█                                                                                                                                                                                                                  | 2/399 [00:00<01:06,  5.99it/s]Loading weights:   5%|██████████▌                                                                                                                                                                                                       | 20/399 [00:00<00:05, 64.20it/s]Loading weights:  10%|████████████████████▍                                                                                                                                                                                            | 39/399 [00:00<00:03, 102.84it/s]Loading weights:  15%|███████████████████████████████▉                                                                                                                                                                                 | 61/399 [00:00<00:02, 136.02it/s]Loading weights:  21%|███████████████████████████████████████████▍                                                                                                                                                                     | 83/399 [00:00<00:02, 157.49it/s]Loading weights:  26%|██████████████████████████████████████████████████████▋                                                                                                                                                         | 105/399 [00:00<00:01, 170.41it/s]Loading weights:  32%|█████████████████████████████████████████████████████████████████▋                                                                                                                                              | 126/399 [00:00<00:01, 181.65it/s]Loading weights:  37%|█████████████████████████████████████████████████████████████████████████████▏                                                                                                                                  | 148/399 [00:01<00:01, 185.57it/s]Loading weights:  43%|████████████████████████████████████████████████████████████████████████████████████████▌                                                                                                                       | 170/399 [00:01<00:01, 191.49it/s]Loading weights:  48%|████████████████████████████████████████████████████████████████████████████████████████████████████                                                                                                            | 192/399 [00:01<00:01, 194.37it/s]Loading weights:  54%|███████████████████████████████████████████████████████████████████████████████████████████████████████████████▌                                                                                                | 214/399 [00:01<00:00, 197.33it/s]Loading weights:  59%|███████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████                                                                                     | 236/399 [00:01<00:00, 199.13it/s]Loading weights:  64%|█████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████▉                                                                          | 257/399 [00:01<00:00, 195.37it/s]Loading weights:  70%|█████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████▍                                                              | 279/399 [00:01<00:00, 201.61it/s]Loading weights:  75%|████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████▉                                                   | 301/399 [00:01<00:00, 200.09it/s]Loading weights:  81%|████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████▍                                       | 323/399 [00:01<00:00, 199.35it/s]Loading weights:  86%|███████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████▊                            | 345/399 [00:02<00:00, 199.65it/s]Loading weights:  92%|███████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████▎                | 367/399 [00:02<00:00, 200.39it/s]Loading weights:  97%|██████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████▊     | 389/399 [00:02<00:00, 201.54it/s]Loading weights: 100%|████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 399/399 [00:02<00:00, 163.97it/s]
+unsloth/Qwen3-8B does not have a padding token! Will use pad_token = <|PAD_TOKEN|>.
+[llm] ready on cuda:0
+================================================================
+Band-bandit evolutionary search
+  problem        : circle_packing
+  metric         : sum of radii (maximize)
+  llm            : unsloth:Qwen/Qwen3-8B
+  iters          : 2
+  parents x roll : 2 x 2 = 4/iter
+  eval seeds     : 1   explore eps: 0.1
+================================================================
+[init] reward pool: 20 parallel sandboxes
+[init] bootstrapping 2 seeds (1-seed eval, parallel) ...
+[init] seed 1/2: canned, value=2.1641
+[init] seeds 1/2: gen batch 1 (round 1/12) ...
+[init]   -> seed 2/2 valid, value=2.1407
+[init] seeds: 2/2 valid (archive 2)
+
+[iter 0] parents picked: 2  (T=0 archive=2)
+  parent 0 [seed    ] value=2.1641 band=good      n=0    Q=2.1641 bonus=0.0000 score=1.0000
+  parent 1 [seed    ] value=2.1407 band=good      n=0    Q=2.1407 bonus=0.0000 score=0.0000
+Traceback (most recent call last):
+  File "/work/mohammad/BanditEvolve/main.py", line 94, in main
+    _run(cfg, merged)
+    ~~~~^^^^^^^^^^^^^
+  File "/work/mohammad/BanditEvolve/main.py", line 131, in _run
+    best = engine.run()
+  File "/work/mohammad/BanditEvolve/engine.py", line 90, in run
+    self._iteration(it)                          # steps 2-9
+    ~~~~~~~~~~~~~~~^^^^
+  File "/work/mohammad/BanditEvolve/engine.py", line 245, in _iteration
+    completions = self.llm.complete_batch([p["messages"] for p in plans])
+  File "/work/mohammad/BanditEvolve/llm.py", line 139, in complete_batch
+    out.extend(self._generate(prompts[s:s + bs]))
+               ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^
+  File "/work/mohammad/BanditEvolve/llm.py", line 122, in _generate
+    results.extend(self._generate_one_batch(chunk))
+                   ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^
+  File "/work/mohammad/BanditEvolve/llm.py", line 96, in _generate_one_batch
+    out = self.model.generate(
+        **enc,
+    ...<4 lines>...
+        pad_token_id=self.pad_id,
+    )
+  File "/work/mohammad/LoraBandit/unsloth_env/lib/python3.13/site-packages/unsloth/models/llama.py", line 2192, in unsloth_fast_generate
+    output = self._old_generate(*args, **kwargs)
+  File "/work/mohammad/LoraBandit/unsloth_env/lib/python3.13/site-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+    return func(*args, **kwargs)
+  File "/work/mohammad/LoraBandit/unsloth_env/lib/python3.13/site-packages/transformers/generation/utils.py", line 2543, in generate
+    result = decoding_method(
+        self,
+    ...<5 lines>...
+        **model_kwargs,
+    )
+  File "/work/mohammad/LoraBandit/unsloth_env/lib/python3.13/site-packages/transformers/generation/utils.py", line 2750, in _sample
+    outputs = model_forward(**model_inputs, return_dict=True)
+  File "/work/mohammad/LoraBandit/unsloth_env/lib/python3.13/site-packages/torch/nn/modules/module.py", line 1776, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/work/mohammad/LoraBandit/unsloth_env/lib/python3.13/site-packages/torch/nn/modules/module.py", line 1787, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/work/mohammad/LoraBandit/unsloth_env/lib/python3.13/site-packages/unsloth/models/llama.py", line 1377, in _CausalLM_fast_forward
+    outputs = fast_forward_inference(
+        self,
+    ...<4 lines>...
+        **kwargs,
+    )
+  File "/work/mohammad/LoraBandit/unsloth_env/lib/python3.13/site-packages/unsloth/models/llama.py", line 1307, in LlamaModel_fast_forward_inference_custom
+    X, present_key_value = attention_fast_forward_inference(
+                           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        decoder_layer.self_attn,
+        ^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<5 lines>...
+        rotary_seq_len = rotary_seq_len,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/work/mohammad/LoraBandit/unsloth_env/lib/python3.13/site-packages/unsloth/models/qwen3.py", line 296, in Qwen3Attention_fast_forward_inference
+    self.paged_attention_K[seq_len] = Kn.permute(2, 0, 1, 3)
+                                      ~~~~~~~~~~^^^^^^^^^^^^
+KeyboardInterrupt

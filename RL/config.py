@@ -9,13 +9,16 @@ target=2.635983 must never sit in the generic config, because Problem.__init__
 reads `self.cfg.get("target")` and a non-None value there silences each problem's
 own target-defaulting logic, so the wrong target would leak into every other
 problem's run.
+
+RL (GRPO) knobs live on the dataclass too, all gated behind rl_enabled=False, so
+a normal frozen run is byte-for-byte unaffected. See grpo.py / llm.TrainableLLM.
 """
 
 import argparse
 import os
 from dataclasses import dataclass, fields
 
-import yaml
+import yaml # type: ignore
 
 
 @dataclass
@@ -49,7 +52,7 @@ class Config:
     parent_sim_threshold: float = 0.97  # >= this vs parent -> sterile (too similar)
     novelty_threshold: float = 0.95     # >= this vs ref set -> sterile (not novel)
     novelty_topk: int = 10
-    max_code_chars: int = 10000
+    max_code_chars: int = 4000
 
     # llm (frozen policy, loaded in-process via Unsloth)
     llm_backend: str = "unsloth"        # "unsloth" | "dummy"
@@ -61,6 +64,29 @@ class Config:
     temperature: float = 1.0
     top_p: float = 1.0
     max_new_tokens: int = 4000
+
+    # ----- RL (GRPO) fine-tuning of the mutator; all inert unless rl_enabled ----
+    rl_enabled: bool = False            # flips UnslothLLM -> TrainableLLM + GRPO
+    rl_algo: str = "grpo"               # informational; GRPO is what is implemented
+    rl_group_size: int = 8              # G completions per (parent, arm) = one group
+    rl_train_every: int = 1             # run a GRPO update every N iterations
+    rl_ppo_epochs: int = 1              # passes over the buffer per update (>1 uses the ratio)
+    rl_lr: float = 1e-6
+    rl_kl_coef: float = 0.05            # beta on the KL-to-reference (base model)
+    rl_clip_eps: float = 0.2            # PPO ratio clip
+    rl_grad_clip: float = 1.0
+    rl_max_completion_tokens: int = 2048  # cap on action length used for the loss
+    rl_lora_r: int = 16
+    rl_lora_alpha: int = 32
+    rl_lora_dropout: float = 0.0        # 0 => behavior/update logprobs consistent
+    rl_adapter_per_band: bool = True    # one LoRA adapter per band; False = one shared
+    # reward shaping over the full outcome space (group-normalized, so only the
+    # order/spacing matters): no_code < invalid < sterile < (valid, by dmu)
+    rl_reward_nocode: float = -0.2
+    rl_reward_invalid: float = -0.1
+    rl_reward_sterile: float = -0.05
+    rl_adv_eps: float = 1e-6            # advantage = (r-mean)/(std+eps)
+    rl_min_group_std: float = 1e-8      # skip zero-variance groups (no signal)
 
     # misc
     seed: int = 42
@@ -79,6 +105,23 @@ def _parser():
     p.add_argument("--explore-eps", type=float, default=None)
     p.add_argument("--reward-workers", type=int, default=None)
     p.add_argument("--seed", type=int, default=None)
+
+    # RL flags. default=None so an absent flag NEVER clobbers a YAML value (the
+    # merge loop skips None). --rl uses store_const for the same reason: a plain
+    # store_true would default False and override rl_enabled: true in the YAML.
+    p.add_argument("--rl", dest="rl_enabled", action="store_const", const=True,
+                   default=None, help="enable GRPO fine-tuning of the mutator")
+    p.add_argument("--rl-group-size", type=int, default=None)
+    p.add_argument("--rl-train-every", type=int, default=None)
+    p.add_argument("--rl-lr", type=float, default=None)
+    p.add_argument("--rl-kl-coef", type=float, default=None)
+    p.add_argument("--rl-ppo-epochs", type=int, default=None)
+    # collapse the per-band adapters into a single shared adapter (the fallback if
+    # the Unsloth/peft build dislikes multi-adapter). default=None so absence does
+    # not clobber the YAML.
+    p.add_argument("--rl-shared-adapter", dest="rl_adapter_per_band",
+                   action="store_const", const=False, default=None,
+                   help="use ONE shared LoRA adapter for all bands")
     return p
 
 

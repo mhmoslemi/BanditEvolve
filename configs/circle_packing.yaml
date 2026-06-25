@@ -1,0 +1,60 @@
+problem: circle_packing
+num_circles: 26
+target: 2.635983
+
+# search budget
+num_iters: 10
+num_parents: 8              # n parents per iteration (UCT, no repeat)
+rollouts_per_parent: 16      # k rollouts per parent -> 16 rollouts / iteration
+num_seeds: 8                # initial independent seeds
+
+# Circle-packing scoring is DETERMINISTIC for a fixed packing, so multiple eval
+# seeds all return the identical value (dsigma=0). 1 seed = same signal, 5x less
+# sandbox work. Bump this only for a genuinely stochastic problem.
+num_eval_seeds: 1
+
+explore_eps: 0.1            # P(a rollout makes a fresh seed instead of mutating)
+
+# Per-sandbox wall-clock cap. Was 100: a slow/looping generated optimizer could
+# block a worker for 100s. 30 matches the TTT default and keeps the pool moving.
+timeout: 100.0
+
+# Parallel sandbox evaluation (the TTT reward pool). 0 = auto (= cpu count).
+reward_workers: 20
+
+# UCT / archive
+uct_c: 1.0
+max_archive: 2000
+topk_children: 3
+
+# bands
+q_good: 0.30
+q_elite: 0.70
+q_near: 0.98
+
+# gate
+parent_sim_threshold: 0.99
+novelty_threshold: 0.95
+novelty_topk: 10
+
+# llm (frozen policy, loaded in-process via Unsloth; --llm-backend dummy to wire-test offline)
+llm_backend: unsloth
+llm_model: "Qwen/Qwen3-8B"
+max_seq_length: 32000
+load_in_4bit: false
+
+# Thinking ON, per request. This is now the dominant cost: every rollout decodes
+# thousands of <think> tokens before the code. The token budget below must be
+# large enough to think AND emit the program, or you get truncated "no_code".
+# If you want raw TTT speed, set enable_thinking: false (TTT ran with it off).
+enable_thinking: false
+max_new_tokens: 16000
+
+# Bigger thinking budget x batch = VRAM. llm.py halves the batch on OOM; you can
+# also drop this. Larger batch = better GPU utilization on the decode.
+gen_batch_size: 16
+
+temperature: 1.0
+top_p: 1.0
+
+seed: 42

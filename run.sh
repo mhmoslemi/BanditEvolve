@@ -3,10 +3,10 @@
 
 
 
-# CUDA_VISIBLE_DEVICES=6,7 python main.py --problem circle_packing 
+CUDA_VISIBLE_DEVICES=1,2,3,4 python main.py --problem circle_packing 
 
-cd /work/mohammad/BanditEvolve
-CUDA_VISIBLE_DEVICES=5 python main.py --config configs/circle_packing_rl.yaml
+# cd /work/mohammad/BanditEvolve
+# CUDA_VISIBLE_DEVICES=5 python main.py --config configs/circle_packing_rl.yaml
 
 # reinforce
 

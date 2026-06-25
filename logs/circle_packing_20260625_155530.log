@@ -1,0 +1,43 @@
+[log] writing run to /work/mohammad/BanditEvolve/logs/circle_packing_20260625_155530.log
+🦥 Unsloth: Will patch your computer to enable 2x faster free finetuning.
+🦥 Unsloth Zoo will now patch everything to make training faster!
+[llm] loading Qwen/Qwen3-8B via Unsloth (4bit=False) ...
+2026-06-25 15:55:41,689 INFO httpx: HTTP Request: HEAD https://huggingface.co/unsloth/Qwen3-8B/resolve/main/config.json "HTTP/1.1 307 Temporary Redirect"
+2026-06-25 15:55:41,694 INFO httpx: HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/unsloth/Qwen3-8B/946bc9ac74a6c1f8cf012497c503a119b2fcf2eb/config.json "HTTP/1.1 200 OK"
+2026-06-25 15:55:41,794 INFO httpx: HTTP Request: HEAD https://huggingface.co/unsloth/Qwen3-8B/resolve/main/adapter_config.json "HTTP/1.1 404 Not Found"
+Traceback (most recent call last):
+  File "/work/mohammad/BanditEvolve/main.py", line 101, in main
+    _run(cfg, merged)
+    ~~~~^^^^^^^^^^^^^
+  File "/work/mohammad/BanditEvolve/main.py", line 122, in _run
+    llm = make_llm(cfg)
+  File "/work/mohammad/BanditEvolve/llm.py", line 179, in make_llm
+    return UnslothLLM(
+        model_name=cfg.llm_model,
+    ...<6 lines>...
+        gen_batch_size=getattr(cfg, "gen_batch_size", 8),
+    )
+  File "/work/mohammad/BanditEvolve/llm.py", line 52, in __init__
+    model, tokenizer = FastLanguageModel.from_pretrained(
+                       ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        model_name=model_name,
+        ^^^^^^^^^^^^^^^^^^^^^^
+    ...<2 lines>...
+        dtype=torch.bfloat16,
+        ^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/work/mohammad/LoraBandit/unsloth_env/lib/python3.13/site-packages/unsloth/models/loader.py", line 754, in from_pretrained
+    use_gradient_checkpointing = apply_unsloth_gradient_checkpointing(
+        use_gradient_checkpointing, max_seq_length, dtype
+    )
+  File "/work/mohammad/LoraBandit/unsloth_env/lib/python3.13/site-packages/unsloth/models/_utils.py", line 322, in apply_unsloth_gradient_checkpointing
+    patch_unsloth_smart_gradient_checkpointing(dtype = dtype)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^
+  File "/work/mohammad/LoraBandit/unsloth_env/lib/python3.13/site-packages/unsloth_zoo/gradient_checkpointing.py", line 831, in patch_unsloth_smart_gradient_checkpointing
+    initialize_unsloth_gradient_checkpointing(dtype)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^
+  File "/work/mohammad/LoraBandit/unsloth_env/lib/python3.13/site-packages/unsloth_zoo/gradient_checkpointing.py", line 385, in initialize_unsloth_gradient_checkpointing
+    GPU_BUFFERS = tuple([torch.empty(INITIAL_GPU_BUFFER_SIZE, dtype = dtype, device = f"{DEVICE_TYPE_TORCH}:{i}") for i in range(n_gpus)])
+                         ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+KeyboardInterrupt
