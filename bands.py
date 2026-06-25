@@ -46,13 +46,33 @@ class BandStats:
 
 
 class BandAssigner:
-    def __init__(self, q_good=0.30, q_elite=0.70, q_near=0.90):
+    """Assign a value to a score band, in one of two modes.
+
+    quantile (default, absolute=False): thresholds are quantiles of the current
+        valid archive rewards, so a band is RELATIVE to what the search has found
+        so far. With only a few tied top seeds, the 99.5th percentile is just the
+        running max, so the best-so-far seeds land in near_sota regardless of how
+        far they are from the real target.
+
+    absolute (absolute=True, target set): q_good/q_elite/q_near are read as
+        FRACTIONS OF THE KNOWN TARGET ("known best result"). near_sota means
+        value >= q_near * target, etc., so a band means the same absolute score
+        for the whole run. Falls back to quantile mode if no target is given.
+    """
+
+    def __init__(self, q_good=0.30, q_elite=0.70, q_near=0.90,
+                 absolute=False, target=None):
         self.q = (q_good, q_elite, q_near)
+        self.target = float(target) if target is not None else None
+        self.absolute = bool(absolute) and self.target is not None
 
     def assign(self, value: float, valid_values) -> str:
-        if valid_values is None or len(valid_values) < 4:
-            return GOOD                    # cold start
-        lo, mid, hi = np.quantile(np.asarray(valid_values, dtype=float), self.q)
+        if self.absolute:
+            lo, mid, hi = (c * self.target for c in self.q)
+        else:
+            if valid_values is None or len(valid_values) < 4:
+                return GOOD                # cold start
+            lo, mid, hi = np.quantile(np.asarray(valid_values, dtype=float), self.q)
         if value >= hi:
             return NEAR_SOTA
         if value >= mid:

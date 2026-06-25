@@ -69,7 +69,9 @@ class Engine:
         self.llm = llm
         self.archive = Archive(uct_c=cfg.uct_c, max_size=cfg.max_archive,
                                topk_children=cfg.topk_children)
-        self.bander = BandAssigner(cfg.q_good, cfg.q_elite, cfg.q_near)
+        self.bander = BandAssigner(cfg.q_good, cfg.q_elite, cfg.q_near,
+                                   absolute=getattr(cfg, "bands_absolute", False),
+                                   target=getattr(problem, "target", None))
         self.band_stats = BandStats()
         self.bandit = PromptBandit(SEED_TEMPLATES,
                                    rng=np.random.default_rng(cfg.seed))

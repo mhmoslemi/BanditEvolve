@@ -28,8 +28,13 @@ max_archive: 2000
 topk_children: 3
 
 # bands
-q_good: 0.30
-q_elite: 0.70
+# bands_absolute: true => q_* are FRACTIONS OF THE KNOWN TARGET (here 2.635983),
+# so near_sota = value >= q_near*target = 2.622, elite >= 0.90*target = 2.372,
+# good >= 0.70*target = 1.845. false => q_* are quantiles of the live archive
+# (the old relative behavior, where the best-so-far seeds land in near_sota).
+bands_absolute: true
+q_good: 0.70
+q_elite: 0.90
 q_near: 0.995
 
 # gate

@@ -1,0 +1,21 @@
+{
+  "record": {
+    "kind": "explore",
+    "band": null,
+    "arm_idx": null,
+    "arm_source": null,
+    "outcome": "invalid:eval",
+    "value": null,
+    "dmu": null,
+    "dsigma": null
+  },
+  "eval": {
+    "per_seed": {
+      "0": 0.0
+    },
+    "value": 0.0,
+    "valid": false,
+    "raw": null,
+    "msg": "run_failed:run_packing.<locals>.<lambda>() missing 2 required positional arguments: 'i' and 'expr'"
+  }
+}

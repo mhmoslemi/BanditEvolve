@@ -1,0 +1,39 @@
+[log] writing run to /work/mohammad/BanditEvolve/logs/circle_packing_20260625_185826.log
+[llm] spawning 4 replicas on GPUs [0, 1, 2, 3] ...
+[llm] replica ready on GPU 3
+[llm] replica ready on GPU 1
+[llm] replica ready on GPU 0
+[llm] replica ready on GPU 2
+================================================================
+Band-bandit evolutionary search
+  problem        : circle_packing
+  metric         : sum of radii (maximize)
+  llm            : unsloth:Qwen/Qwen3-8B
+  iters          : 10
+  parents x roll : 8 x 12 = 96/iter
+  eval seeds     : 1   explore eps: 0.1
+================================================================
+[init] reward pool: 20 parallel sandboxes
+[init] saving per-rollout artifacts under runs/circle_packing_20260625_185844/
+[init] bootstrapping 8 seeds (1-seed eval, parallel) ...
+[init] seed 1/8: canned, value=2.1641
+[init] seeds 1/8: gen batch 4 (round 1/48) ...
+[init]   -> seed 2/8 valid, value=2.1407
+[init]   -> seed 3/8 valid, value=2.1407
+[init]   -> seed 4/8 valid, value=2.1407
+[init]   -> seed 5/8 valid, value=2.1407
+[init] seeds 5/8: gen batch 3 (round 2/48) ...
+[init]   -> seed 6/8 valid, value=2.5921
+[init]   -> seed 7/8 valid, value=2.1407
+[init]   -> seed 8/8 valid, value=2.1407
+[init] seeds: 8/8 valid (archive 8)
+
+[iter 0] parents picked: 8  (T=0 archive=8)
+  parent 0 [seed    ] value=2.5921 band=elite     n=0    Q=2.5921 bonus=0.0000 score=1.0000
+  parent 1 [seed    ] value=2.1641 band=good      n=0    Q=2.1641 bonus=0.0000 score=0.0518
+  parent 2 [seed    ] value=2.1407 band=good      n=0    Q=2.1407 bonus=0.0000 score=0.0000
+  parent 3 [seed    ] value=2.1407 band=good      n=0    Q=2.1407 bonus=0.0000 score=0.0000
+  parent 4 [seed    ] value=2.1407 band=good      n=0    Q=2.1407 bonus=0.0000 score=0.0000
+  parent 5 [seed    ] value=2.1407 band=good      n=0    Q=2.1407 bonus=0.0000 score=0.0000
+  parent 6 [seed    ] value=2.1407 band=good      n=0    Q=2.1407 bonus=0.0000 score=0.0000
+  parent 7 [seed    ] value=2.1407 band=good      n=0    Q=2.1407 bonus=0.0000 score=0.0000

@@ -44,6 +44,10 @@ class Config:
     q_good: float = 0.30
     q_elite: float = 0.70
     q_near: float = 0.90
+    # If true, q_good/q_elite/q_near are read as FRACTIONS OF THE KNOWN TARGET
+    # (absolute bands: near_sota = value >= q_near * target) instead of quantiles
+    # of the current archive. Lets a band mean a fixed absolute score for the run.
+    bands_absolute: bool = False
 
     # gate thresholds
     parent_sim_threshold: float = 0.97  # >= this vs parent -> sterile (too similar)
