@@ -19,8 +19,15 @@ PERFORMANCE: generation is genuinely batched here (one generate() over up to
 gen_batch_size prompts via left padding), which is what keeps the GPU busy. If a
 batch OOMs, the batch size is halved and retried, same as the TTT runner, so the
 engine can hand us a big iteration batch without us crashing on it.
+
+MULTI-GPU: the frozen policy can be replicated across several GPUs (data
+parallel, NOT tensor parallel). MultiGPUUnslothLLM spawns one process per GPU,
+each loading its own full copy of the model, and complete_batch() shards the
+iteration's prompts round-robin across the replicas so they decode concurrently.
+Enable it by passing gpu_ids (config gpu_ids / --gpu-ids / env BANDIT_GPUS).
 """
 
+import os
 from typing import List
 
 
@@ -140,6 +147,140 @@ class UnslothLLM(BaseLLM):
         return out
 
 
+def _resolve_gpu_ids(cfg):
+    """Explicit GPU list from env BANDIT_GPUS or cfg.gpu_ids. Accepts "0,3",
+    "0 3", or a YAML list [0, 3]. Empty -> [] (single-GPU path)."""
+    raw = os.environ.get("BANDIT_GPUS")
+    if raw is None or raw == "":
+        raw = getattr(cfg, "gpu_ids", "")
+    if raw is None or raw == "":
+        return []
+    if isinstance(raw, (list, tuple)):
+        return [int(x) for x in raw]
+    return [int(x) for x in str(raw).replace(",", " ").split()]
+
+
+def _gpu_worker(gpu_id, model_kwargs, in_q, out_q, ready_q):
+    """One process pinned to a single physical GPU.
+
+    CUDA_VISIBLE_DEVICES is set BEFORE unsloth/torch are imported (UnslothLLM's
+    ctor imports them), so this replica sees exactly one device as cuda:0. It
+    then loops: pull a (tag, messages) shard, generate, push (tag, texts, err).
+    """
+    os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
+    try:
+        llm = UnslothLLM(**model_kwargs)
+    except BaseException:
+        import traceback
+        ready_q.put(("error", gpu_id, traceback.format_exc()))
+        return
+    ready_q.put(("ok", gpu_id, None))
+    while True:
+        job = in_q.get()
+        if job is None:                     # shutdown sentinel
+            break
+        tag, messages = job
+        try:
+            out_q.put((tag, llm.complete_batch(messages), None))
+        except BaseException:
+            import traceback
+            out_q.put((tag, None, traceback.format_exc()))
+
+
+class MultiGPUUnslothLLM(BaseLLM):
+    """Data-parallel frozen policy: one full model copy per GPU, each in its own
+    process. complete_batch() shards prompts round-robin across the replicas and
+    reassembles the results in the original order. The weights are frozen, so the
+    replicas never need to be synchronised.
+
+    Worker stdout (the per-replica "[llm] loading ..." lines) goes to the
+    terminal; it is not threaded back into the main process's run log.
+    """
+
+    def __init__(self, gpu_ids, **model_kwargs):
+        import atexit
+        import multiprocessing as mp
+
+        self.gpu_ids = [int(g) for g in gpu_ids]
+        self.n = len(self.gpu_ids)
+        ctx = mp.get_context("spawn")        # CUDA requires spawn, not fork
+        self.out_q = ctx.Queue()
+        ready_q = ctx.Queue()
+        self.in_qs, self.procs = [], []
+
+        print(f"[llm] spawning {self.n} replicas on GPUs {self.gpu_ids} ...",
+              flush=True)
+        for gid in self.gpu_ids:
+            in_q = ctx.Queue()
+            p = ctx.Process(target=_gpu_worker,
+                            args=(gid, model_kwargs, in_q, self.out_q, ready_q),
+                            daemon=True)
+            p.start()
+            self.in_qs.append(in_q)
+            self.procs.append(p)
+
+        # block until every replica has loaded its model (or fail loudly)
+        for _ in range(self.n):
+            status, gid, err = self._get_live(ready_q, timeout=60.0)
+            if status == "error":
+                self.close()
+                raise RuntimeError(f"GPU {gid} replica failed to load:\n{err}")
+            print(f"[llm] replica ready on GPU {gid}", flush=True)
+        atexit.register(self.close)
+
+    def _get_live(self, q, timeout=120.0):
+        """Block on q, but periodically verify the workers are still alive so a
+        crashed replica raises instead of hanging the whole run forever."""
+        import queue as _queue
+        while True:
+            try:
+                return q.get(timeout=timeout)
+            except _queue.Empty:
+                dead = [g for g, p in zip(self.gpu_ids, self.procs)
+                        if not p.is_alive()]
+                if dead:
+                    raise RuntimeError(f"GPU replica(s) {dead} died unexpectedly")
+
+    def complete_batch(self, list_of_messages):
+        if not list_of_messages:
+            return []
+        # round-robin so each replica gets a balanced mix of prompt lengths
+        shards = [[] for _ in range(self.n)]
+        idx_map = [[] for _ in range(self.n)]
+        for i, m in enumerate(list_of_messages):
+            w = i % self.n
+            shards[w].append(m)
+            idx_map[w].append(i)
+
+        pending = 0
+        for w in range(self.n):
+            if shards[w]:
+                self.in_qs[w].put((w, shards[w]))
+                pending += 1
+
+        results = [None] * len(list_of_messages)
+        for _ in range(pending):
+            tag, out, err = self._get_live(self.out_q)
+            if err is not None:
+                raise RuntimeError(
+                    f"GPU replica {self.gpu_ids[tag]} generate failed:\n{err}")
+            for local_i, text in enumerate(out):
+                results[idx_map[tag][local_i]] = text
+        return results
+
+    def close(self):
+        for in_q in getattr(self, "in_qs", []):
+            try:
+                in_q.put(None)
+            except Exception:
+                pass
+        for p in getattr(self, "procs", []):
+            try:
+                p.join(timeout=5)
+            except Exception:
+                pass
+
+
 _DUMMY_PACKING = """```python
 import numpy as np
 def run_packing():
@@ -176,7 +317,7 @@ def make_llm(cfg):
     if backend in ("dummy", "offline"):
         return DummyLLM(entrypoint=getattr(cfg, "_entrypoint", "run_packing"))
     if backend in ("unsloth", "local", "hf"):
-        return UnslothLLM(
+        model_kwargs = dict(
             model_name=cfg.llm_model,
             max_seq_length=getattr(cfg, "max_seq_length", 32000),
             load_in_4bit=getattr(cfg, "load_in_4bit", False),
@@ -186,4 +327,11 @@ def make_llm(cfg):
             enable_thinking=getattr(cfg, "enable_thinking", False),
             gen_batch_size=getattr(cfg, "gen_batch_size", 8),
         )
+        gpu_ids = _resolve_gpu_ids(cfg)
+        if len(gpu_ids) >= 2:
+            return MultiGPUUnslothLLM(gpu_ids=gpu_ids, **model_kwargs)
+        if len(gpu_ids) == 1:
+            # pin the single replica before unsloth/torch import in UnslothLLM
+            os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_ids[0])
+        return UnslothLLM(**model_kwargs)
     raise ValueError(f"unknown llm_backend '{backend}'")

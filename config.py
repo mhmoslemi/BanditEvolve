@@ -62,6 +62,18 @@ class Config:
     top_p: float = 1.0
     max_new_tokens: int = 4000
 
+    # multi-GPU data parallelism: explicit physical GPU ids for frozen-policy
+    # replicas. "" or a single id -> one model on one GPU (current behavior).
+    # "0,3" (or YAML list [0, 3], or env BANDIT_GPUS) -> one full model copy per
+    # GPU, each in its own process, with rollout prompts sharded across them.
+    gpu_ids: str = ""
+
+    # per-rollout artifacts: each iteration writes a directory under
+    # <artifacts_dir>/<problem>_<ts>/ with one sub-dir per rollout holding the
+    # prompt, response, extracted code, and sandbox evaluation. Set to "" to
+    # disable.
+    artifacts_dir: str = "runs"
+
     # misc
     seed: int = 42
 
@@ -78,6 +90,8 @@ def _parser():
     p.add_argument("--rollouts-per-parent", type=int, default=None)
     p.add_argument("--explore-eps", type=float, default=None)
     p.add_argument("--reward-workers", type=int, default=None)
+    p.add_argument("--gpu-ids", default=None,
+                   help='comma-separated physical GPU ids, e.g. "0,3"')
     p.add_argument("--seed", type=int, default=None)
     return p
 

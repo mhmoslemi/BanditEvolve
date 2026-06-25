@@ -1,0 +1,62 @@
+[log] writing run to /work/mohammad/BanditEvolve/logs/circle_packing_20260625_174933.log
+================================================================
+Band-bandit evolutionary search
+  problem        : circle_packing
+  metric         : sum of radii (maximize)
+  llm            : dummy:Qwen/Qwen3-8B
+  iters          : 2
+  parents x roll : 2 x 2 = 4/iter
+  eval seeds     : 1   explore eps: 0.1
+================================================================
+[init] reward pool: 128 parallel sandboxes
+[init] saving per-rollout artifacts under /tmp/claude-449600052/-work-mohammad/650e9a5e-4e86-4c02-bd26-4d3e9a70d8d3/scratchpad/artruns/circle_packing_20260625_174933/
+[init] bootstrapping 2 seeds (1-seed eval, parallel) ...
+[init] seed 1/2: canned, value=2.1641
+[init] seeds 1/2: gen batch 1 (round 1/12) ...
+[init]   -> seed 2/2 valid, value=1.0400
+[init] seeds: 2/2 valid (archive 2)
+
+[iter 0] parents picked: 2  (T=0 archive=2)
+  parent 0 [seed    ] value=2.1641 band=good      n=0    Q=2.1641 bonus=0.0000 score=1.0000
+  parent 1 [seed    ] value=1.0400 band=good      n=0    Q=1.0400 bonus=0.0000 score=0.0000
+    p0 k0 mutate band=good      arm=0(seed) -> sterile:not_novel
+    p0 k1 explore  -> valid value=1.0400
+    p1 k0 mutate band=good      arm=1(seed) -> sterile:cosmetic_noop
+    p1 k1 mutate band=good      arm=0(seed) -> sterile:cosmetic_noop
+  group p0 [good]: {'sterile': 1, 'valid': 1}  mean_dmu=+0.0000 over 0 valid mutations
+  group p1 [good]: {'sterile': 2}  mean_dmu=+0.0000 over 0 valid mutations
+  reflecting on iteration ...
+  reflection -> no parseable suggestion
+[iter 0] outcomes={'sterile': 3, 'valid': 1}  reasons={'not_novel': 1, 'cosmetic_noop': 2}
+[iter 0] best=1.040000 raw=1.040000  archive=3  sterile=3 invalid=0  arms={'weak': 2, 'good': 2, 'elite': 2, 'near_sota': 2}  (0.4s)
+
+[iter 1] parents picked: 2  (T=4 archive=3)
+  parent 0 [seed    ] value=2.1641 band=good      n=2    Q=2.1641 bonus=0.7324 score=1.7324
+  parent 1 [expanded] value=1.0400 band=good      n=0    Q=1.0400 bonus=1.2686 score=1.2686
+    p0 k0 mutate band=good      arm=0(seed) -> sterile:not_novel
+    p0 k1 mutate band=good      arm=0(seed) -> sterile:not_novel
+    p1 k0 mutate band=good      arm=0(seed) -> sterile:cosmetic_noop
+    p1 k1 explore  -> valid value=1.0400
+  group p0 [good]: {'sterile': 2}  mean_dmu=+0.0000 over 0 valid mutations
+  group p1 [good]: {'sterile': 1, 'valid': 1}  mean_dmu=+0.0000 over 0 valid mutations
+  reflecting on iteration ...
+  reflection -> no parseable suggestion
+[iter 1] outcomes={'sterile': 3, 'valid': 1}  reasons={'not_novel': 2, 'cosmetic_noop': 1}
+[iter 1] best=1.040000 raw=1.040000  archive=4  sterile=6 invalid=0  arms={'weak': 2, 'good': 2, 'elite': 2, 'near_sota': 2}  (0.4s)
+
+================================================================
+best reward: 1.040000  (raw sum of radii = 1.040000)   found at iter 0
+band arms: {'weak': [{'src': 'seed', 'n': 0, 'mean': 0.0}, {'src': 'seed', 'n': 0, 'mean': 0.0}], 'good': [{'src': 'seed', 'n': 0, 'mean': 0.0}, {'src': 'seed', 'n': 0, 'mean': 0.0}], 'elite': [{'src': 'seed', 'n': 0, 'mean': 0.0}, {'src': 'seed', 'n': 0, 'mean': 0.0}], 'near_sota': [{'src': 'seed', 'n': 0, 'mean': 0.0}, {'src': 'seed', 'n': 0, 'mean': 0.0}]}
+band delta stats: {'weak': (0, 0.0), 'good': (0, 0.0), 'elite': (0, 0.0), 'near_sota': (0, 0.0)}
+
+--- best code ---
+import numpy as np
+def run_packing():
+    r = 0.04
+    xs = [0.08, 0.24, 0.40, 0.56, 0.72, 0.88]
+    ys = [0.08, 0.24, 0.40, 0.56, 0.72]
+    pts = [(x, y) for y in ys for x in xs][:26]
+    centers = np.array(pts, dtype=float)
+    radii = np.full(26, r, dtype=float)
+    return centers, radii, float(radii.sum())
+--- end ---

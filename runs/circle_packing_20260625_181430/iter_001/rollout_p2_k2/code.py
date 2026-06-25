@@ -1,0 +1,96 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = int(np.ceil(np.sqrt(n)))
+    xs = (np.arange(n) % cols + 0.5) / cols
+    ys = (np.arange(n) // cols + 0.5) / cols
+    r0 = 0.5 / cols - 1e-3
+    v0 = np.empty(3 * n)
+    v0[0::3] = xs
+    v0[1::3] = ys
+    v0[2::3] = r0
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    cons = []
+    for i in range(n):
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+    for i in range(n):
+        for j in range(i + 1, n):
+            def constraint(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                return dx*dx + dy*dy - (v[3*i+2] + v[3*j+2])**2
+            cons.append({"type": "ineq", "fun": constraint})
+
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 500, "ftol": 1e-9})
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    
+    # Final cleanup pass: attempt to increase radii slightly without moving centers
+    def cleanup(v):
+        new_v = np.copy(v)
+        for i in range(n):
+            r = new_v[3*i+2]
+            dx = new_v[3*i]
+            dy = new_v[3*i+1]
+            # Check if we can increase radius slightly without moving circle
+            # Check boundaries
+            if dx - r > 1e-12:
+                new_r = dx - 1e-5
+            elif dx + r < 1 - 1e-12:
+                new_r = 1 - dx - 1e-5
+            else:
+                new_r = r
+            if dy - r > 1e-12:
+                new_r = min(new_r, dy - 1e-5)
+            elif dy + r < 1 - 1e-12:
+                new_r = min(new_r, 1 - dy - 1e-5)
+            new_v[3*i+2] = new_r
+        return new_v
+
+    v_cleaned = cleanup(v)
+    # Validate the cleaned configuration
+    valid, msg = validate_packing(np.column_stack([v_cleaned[0::3], v_cleaned[1::3]]), np.clip(v_cleaned[2::3], 1e-6, None))
+    if valid:
+        v = v_cleaned
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    
+    # Controlled randomness pass: probabilistic perturbation
+    def perturb(v, std_dev=1e-4):
+        new_v = np.copy(v)
+        for i in range(n):
+            # Perturb x
+            if np.random.rand() < 0.1:
+                new_v[3*i] += np.random.normal(0, std_dev)
+                new_v[3*i] = np.clip(new_v[3*i], 0.0, 1.0)
+            # Perturb y
+            if np.random.rand() < 0.1:
+                new_v[3*i+1] += np.random.normal(0, std_dev)
+                new_v[3*i+1] = np.clip(new_v[3*i+1], 0.0, 1.0)
+            # Perturb radius
+            if np.random.rand() < 0.1:
+                new_v[3*i+2] += np.random.normal(0, std_dev)
+                new_v[3*i+2] = np.clip(new_v[3*i+2], 1e-6, 0.5)
+        return new_v
+
+    v_perturbed = perturb(v)
+    # Validate the perturbed configuration
+    valid_perturbed, msg_perturbed = validate_packing(np.column_stack([v_perturbed[0::3], v_perturbed[1::3]]), np.clip(v_perturbed[2::3], 1e-6, None))
+    if valid_perturbed:
+        v = v_perturbed
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())

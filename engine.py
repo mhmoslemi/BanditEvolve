@@ -21,6 +21,7 @@ SPEED (the TTT way):
      sandboxes are safe.
 """
 
+import datetime
 import os
 import random
 import time
@@ -30,6 +31,7 @@ from typing import List, Optional
 
 import numpy as np
 
+from artifacts import save_rollout
 from archive import Archive, State, child_lineage, STERILE, INVALID
 from bands import BandAssigner, BandStats
 from evaluation import evaluate_candidate, paired_delta
@@ -83,6 +85,17 @@ class Engine:
         print(f"[init] reward pool: {self.reward_workers} parallel sandboxes",
               flush=True)
 
+        # per-rollout artifacts root (one dir per run). "" disables it.
+        adir = getattr(cfg, "artifacts_dir", "runs")
+        if adir:
+            ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            self.run_dir = os.path.join(adir, f"{cfg.problem}_{ts}")
+            os.makedirs(self.run_dir, exist_ok=True)
+            print(f"[init] saving per-rollout artifacts under {self.run_dir}/",
+                  flush=True)
+        else:
+            self.run_dir = None
+
     # ---------------------------------------------------------------- run
     def run(self) -> Optional[State]:
         self._bootstrap_seeds()                          # step 1
@@ -111,6 +124,35 @@ class Engine:
                     from evaluation import EvalResult
                     results[key] = EvalResult(valid=False, msg=f"eval_exc:{e}")
         return results
+
+    # ------------------------------------------------- artifact dumping
+    def _save_iteration(self, it, plans, completions, recs, evs, extracted):
+        """Write one dir per rollout for iteration `it`: prompt, response,
+        extracted code, and sandbox evaluation. No-ops if artifacts disabled."""
+        if not self.run_dir:
+            return
+        it_dir = os.path.join(self.run_dir, f"iter_{it:03d}")
+        for pi, plan in enumerate(plans):
+            rollout_dir = os.path.join(
+                it_dir, f"rollout_p{plan['pidx']}_k{plan['k']}")
+            save_rollout(
+                rollout_dir,
+                messages=plan["messages"],
+                response=completions[pi],
+                rec=recs[pi],
+                ev=evs.get(pi),
+                code=extracted.get(pi),
+            )
+
+    def _save_seed_round(self, round_idx, seed_prompt, completions, codes, evs):
+        """Capture a bootstrap seed-generation round under seeds/round_<n>/."""
+        if not self.run_dir:
+            return
+        base = os.path.join(self.run_dir, "seeds", f"round_{round_idx:03d}")
+        for j, resp in enumerate(completions):
+            save_rollout(os.path.join(base, f"gen_{j}"),
+                         messages=seed_prompt, response=resp,
+                         rec=None, ev=evs.get(j), code=codes.get(j))
 
     # ----------------------------------------------------- step 1: seeds
     def _bootstrap_seeds(self):
@@ -172,6 +214,7 @@ class Engine:
                 codes[j] = code
 
             evs = self._eval_many(jobs)                     # PARALLEL
+            self._save_seed_round(rounds, seed_prompt, completions, codes, evs)
             for j, code in codes.items():
                 if made >= target:
                     break
@@ -247,9 +290,12 @@ class Engine:
         # ---- Phase A: extract + gate in-process (cheap), collect eval jobs ----
         recs = [None] * len(plans)         # final RolloutRecord per plan
         eval_jobs = []                     # (plan_idx, code, seeds, parent_ctx)
-        meta = {}                          # plan_idx -> (code, gate stuff)
+        meta = {}                          # plan_idx -> code (survivors -> eval)
+        extracted = {}                     # plan_idx -> code for EVERY plan w/ code
         for pi, (plan, raw) in enumerate(zip(plans, completions)):
             code = extract_python_code(raw)
+            if code is not None:
+                extracted[pi] = code
             if plan["kind"] == "explore":
                 rec = RolloutRecord(kind="explore")
                 if code is None:
@@ -338,6 +384,9 @@ class Engine:
                 self.bandit.update(band, idx, self.band_stats.normalize(band, dmu))
                 rec.outcome, rec.value = "valid", ev.value
                 rec.dmu, rec.dsigma = dmu, dsigma
+
+        # ---- per-rollout artifacts (prompt + response + sandbox eval) ----
+        self._save_iteration(it, plans, completions, recs, evs, extracted)
 
         # ---- logging ----
         groups = {}

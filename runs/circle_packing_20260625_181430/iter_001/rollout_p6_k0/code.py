@@ -1,0 +1,90 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = int(np.ceil(np.sqrt(n)))
+    xs = (np.arange(n) % cols + 0.5) / cols
+    ys = (np.arange(n) // cols + 0.5) / cols
+    r0 = 0.5 / cols - 1e-3
+    v0 = np.empty(3 * n)
+    v0[0::3] = xs
+    v0[1::3] = ys
+    v0[2::3] = r0
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    cons = []
+    for i in range(n):
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+
+    for i in range(n):
+        for j in range(i + 1, n):
+            def constraint(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                return dx*dx + dy*dy - (v[3*i+2] + v[3*j+2])**2
+            cons.append({"type": "ineq", "fun": constraint})
+
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 500, "ftol": 1e-9})
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+
+    # Cleanup pass: try to slightly increase radii without moving centers
+    def is_valid(centers, radii):
+        n = centers.shape[0]
+        if np.isnan(centers).any() or np.isnan(radii).any():
+            return False
+        for i in range(n):
+            if radii[i] < 0:
+                return False
+        for i in range(n):
+            x, y = centers[i]
+            r = radii[i]
+            if (x - r < -1e-12 or x + r > 1 + 1e-12
+                    or y - r < -1e-12 or y + r > 1 + 1e-12):
+                return False
+        for i in range(n):
+            for j in range(i + 1, n):
+                dist = np.sqrt(np.sum((centers[i] - centers[j]) ** 2))
+                if dist < radii[i] + radii[j] - 1e-12:
+                    return False
+        return True
+
+    if is_valid(centers, radii):
+        max_increase = 1e-5
+        new_radii = radii.copy()
+        for i in range(n):
+            r = new_radii[i]
+            if r > 1e-6:
+                # Try to increase radius slightly
+                new_r = r + max_increase
+                # Check if new radius fits in the square
+                x, y = centers[i]
+                if (x - new_r >= -1e-12 and x + new_r <= 1 + 1e-12
+                    and y - new_r >= -1e-12 and y + new_r <= 1 + 1e-12):
+                    # Check if new radius does not cause overlaps
+                    overlap = False
+                    for j in range(n):
+                        if i == j:
+                            continue
+                        dx = centers[i, 0] - centers[j, 0]
+                        dy = centers[i, 1] - centers[j, 1]
+                        dist = np.sqrt(dx*dx + dy*dy)
+                        if dist < new_r + radii[j] - 1e-12:
+                            overlap = True
+                            break
+                    if not overlap:
+                        new_radii[i] = new_r
+        radii = new_radii
+
+    return centers, radii, float(radii.sum())

@@ -5,7 +5,7 @@ target: 2.635983
 # search budget
 num_iters: 10
 num_parents: 8              # n parents per iteration (UCT, no repeat)
-rollouts_per_parent: 16      # k rollouts per parent -> 16 rollouts / iteration
+rollouts_per_parent: 12      # k rollouts per parent -> 16 rollouts / iteration
 num_seeds: 8                # initial independent seeds
 
 # Circle-packing scoring is DETERMINISTIC for a fixed packing, so multiple eval
@@ -30,7 +30,7 @@ topk_children: 3
 # bands
 q_good: 0.30
 q_elite: 0.70
-q_near: 0.98
+q_near: 0.995
 
 # gate
 parent_sim_threshold: 0.99
@@ -52,9 +52,15 @@ max_new_tokens: 16000
 
 # Bigger thinking budget x batch = VRAM. llm.py halves the batch on OOM; you can
 # also drop this. Larger batch = better GPU utilization on the decode.
-gen_batch_size: 16
+gen_batch_size: 4
 
 temperature: 1.0
 top_p: 1.0
+
+# Multi-GPU data parallelism. Empty / single id = one model on one GPU. List 2+
+# physical GPU ids to replicate the frozen model across them: each gets its own
+# process + full copy, and each iteration's rollout prompts are sharded across
+# them. Overridable with --gpu-ids "0,3" or env BANDIT_GPUS=0,3.
+gpu_ids: [0,1,2,3]
 
 seed: 42
