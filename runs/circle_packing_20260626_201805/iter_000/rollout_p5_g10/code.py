@@ -1,0 +1,64 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = int(np.ceil(np.sqrt(n)))
+    xs = (np.arange(n) % cols + 0.5) / cols
+    ys = (np.arange(n) // cols + 0.5) / cols
+    r0 = 0.5 / cols - 1e-3
+    v0 = np.empty(3 * n)
+    v0[0::3] = xs
+    v0[1::3] = ys
+    v0[2::3] = r0
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    cons = []
+    for i in range(n):
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+    for i in range(n):
+        for j in range(i + 1, n):
+            def constraint_func(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                return dx*dx + dy*dy - (v[3*i+2] + v[3*j+2])**2
+            cons.append({"type": "ineq", "fun": constraint_func})
+
+    # Initial optimization with SLSQP
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 500, "ftol": 1e-9})
+    v = res.x if res.success else v0
+
+    # Local refinement step with penalty function
+    def penalty_sum_radii(v):
+        sum_r = np.sum(v[2::3])
+        # Penalty for out-of-bounds circles
+        out_bounds = np.sum((v[0::3] - v[2::3]) < 0) + np.sum((v[0::3] + v[2::3]) > 1) + \
+                     np.sum((v[1::3] - v[2::3]) < 0) + np.sum((v[1::3] + v[2::3]) > 1)
+        # Penalty for overlapping circles
+        overlap_penalty = 0.0
+        for i in range(n):
+            for j in range(i + 1, n):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                dist_sq = dx*dx + dy*dy
+                min_dist_sq = (v[3*i+2] + v[3*j+2])**2
+                overlap_penalty += max(0, min_dist_sq - dist_sq)
+        return -sum_r + 1e2 * out_bounds + 1e4 * overlap_penalty
+
+    # Refinement optimization
+    res_refine = minimize(penalty_sum_radii, v, method="SLSQP", bounds=bounds,
+                          constraints=cons, options={"maxiter": 300, "ftol": 1e-9})
+    v_refine = res_refine.x if res_refine.success else v
+
+    centers = np.column_stack([v_refine[0::3], v_refine[1::3]])
+    radii = np.clip(v_refine[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())

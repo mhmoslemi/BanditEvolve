@@ -1,0 +1,103 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = int(np.ceil(np.sqrt(n)))
+    xs = (np.arange(n) % cols + 0.5) / cols
+    ys = (np.arange(n) // cols + 0.5) / cols
+    r0 = 0.5 / cols - 1e-3
+    v0 = np.empty(3 * n)
+    v0[0::3] = xs
+    v0[1::3] = ys
+    v0[2::3] = r0
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    cons = []
+    for i in range(n):
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+
+    # Vectorize overlap constraints for performance
+    x_centers = v0[0::3]
+    y_centers = v0[1::3]
+    r_radii = v0[2::3]
+    
+    # Precompute all pairwise distances squared and radii sums squared
+    # This is a vectorized approach to compute all constraints at once
+    # This is a temporary placeholder in the function, to be replaced with the actual vectorized constraint
+    
+    # Create a grid of indices for all pairs of circles
+    i_indices = np.arange(n).repeat(n - 1)
+    j_indices = np.arange(1, n).repeat(n - 1)
+    
+    # Extract the x, y, and r values for the pairs
+    x1 = x_centers[i_indices]
+    y1 = y_centers[i_indices]
+    x2 = x_centers[j_indices]
+    y2 = y_centers[j_indices]
+    r1 = r_radii[i_indices]
+    r2 = r_radii[j_indices]
+    
+    # Compute squared distance between centers
+    dx = x1 - x2
+    dy = y1 - y2
+    dist_sq = dx * dx + dy * dy
+    
+    # Compute squared sum of radii
+    sum_r_sq = (r1 + r2) ** 2
+    
+    # Create constraints as a vectorized function
+    def vectorized_overlap_constraint(v):
+        x_centers = v[0::3]
+        y_centers = v[1::3]
+        r_radii = v[2::3]
+        
+        i_indices = np.arange(n).repeat(n - 1)
+        j_indices = np.arange(1, n).repeat(n - 1)
+        
+        x1 = x_centers[i_indices]
+        y1 = y_centers[i_indices]
+        x2 = x_centers[j_indices]
+        y2 = y_centers[j_indices]
+        r1 = r_radii[i_indices]
+        r2 = r_radii[j_indices]
+        
+        dx = x1 - x2
+        dy = y1 - y2
+        dist_sq = dx * dx + dy * dy
+        sum_r_sq = (r1 + r2) ** 2
+        
+        # Return the difference between distance squared and sum of radii squared
+        return dist_sq - sum_r_sq
+    
+    # Create constraints for all pairs
+    # Note: This approach is not directly compatible with scipy.optimize's constraint structure
+    # but it illustrates the vectorization idea. We'll use the same approach as the parent program
+    # with minor performance improvements
+    
+    # Construct the constraints
+    cons_overlap = []
+    for i in range(n):
+        for j in range(i + 1, n):
+            def constraint_func(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                return dx*dx + dy*dy - (v[3*i+2] + v[3*j+2])**2
+            cons_overlap.append({"type": "ineq", "fun": constraint_func})
+    
+    cons += cons_overlap
+
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 800, "ftol": 1e-9, "gtol": 1e-9})
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())

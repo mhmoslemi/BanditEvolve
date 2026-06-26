@@ -11,7 +11,7 @@ num_seeds: 8                # initial independent seeds
 # Resume / warm-start: if true, rebuild the archive from a PRIOR run's saved
 # programs and continue instead of bootstrapping fresh seeds. resume_from sets an
 # explicit run dir; empty => auto-pick the most recent runs/circle_packing_* dir.
-resume: true
+resume: false
 resume_from: ""
 resume_top_k: 400             # keep only the top-K loaded programs by value (0 = all)
 
@@ -44,6 +44,10 @@ q_good: 0.70
 q_elite: 0.95
 q_near: 0.995
 
+# q_good: 0.94
+# q_elite: 0.994
+# q_near: 0.9995
+
 # gate
 parent_sim_threshold: 0.99
 novelty_threshold: 0.95
@@ -73,7 +77,8 @@ top_p: 1.0
 # physical GPU ids to replicate the frozen model across them: each gets its own
 # process + full copy, and each iteration's rollout prompts are sharded across
 # them. Overridable with --gpu-ids "0,3" or env BANDIT_GPUS=0,3.
-gpu_ids: [0,1,2,3]
+# gpu_ids: [0,1,2,3]
+gpu_ids: [7]
 
 seed: 42
 
@@ -95,9 +100,9 @@ seed: 42
 # gradients). For RL prefer something like the commented overrides below.
 # ====================================================================
 rl_enabled: true
-# Bands that get a trainable LoRA adapter; the rest (weak/elite) generate from the
+# Bands that get a trainable LoRA adapter; the rest (weak) generate from the
 # frozen base and are never trained. Overrides rl_adapter_per_band.
-rl_adapter_bands: [good, near_sota]
+rl_adapter_bands: [good, near_sota, elite]
 rl_adapter_per_band: true   # only used when rl_adapter_bands is empty
 rl_group_size: 32            # G completions per (parent, arm) = one GRPO group
 rl_train_every: 1           # GRPO update every N iterations

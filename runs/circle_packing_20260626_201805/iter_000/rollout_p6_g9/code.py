@@ -1,0 +1,70 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = int(np.ceil(np.sqrt(n)))
+    xs = (np.arange(n) % cols + 0.5) / cols
+    ys = (np.arange(n) // cols + 0.5) / cols
+    r0 = 0.5 / cols - 1e-3
+    v0 = np.empty(3 * n)
+    v0[0::3] = xs
+    v0[1::3] = ys
+    v0[2::3] = r0
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    cons = []
+    for i in range(n):
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+
+    for i in range(n):
+        for j in range(i + 1, n):
+            def constraint_func(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                return dx*dx + dy*dy - (v[3*i+2] + v[3*j+2])*(v[3*i+2] + v[3*j+2])
+            cons.append({"type": "ineq", "fun": constraint_func})
+
+    # First run with SLSQP for global search
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 500, "ftol": 1e-9})
+    
+    # If successful, perform a local refinement using the 'Nelder-Mead' method
+    if res.success:
+        v = res.x
+        # Add a small penalty for out-of-bounds and overlapping circles
+        def penalized_neg_sum_radii(v):
+            r = v[2::3]
+            centers = np.column_stack([v[0::3], v[1::3]])
+            # Penalty for out-of-bounds
+            out_of_bounds_penalty = np.sum(np.maximum(0, v[0::3] - r - 1e-12) + 
+                                          np.maximum(0, 1.0 - v[0::3] - r - 1e-12) +
+                                          np.maximum(0, v[1::3] - r - 1e-12) + 
+                                          np.maximum(0, 1.0 - v[1::3] - r - 1e-12))
+            # Penalty for overlapping
+            overlap_penalty = 0
+            for i in range(n):
+                for j in range(i + 1, n):
+                    dx = v[3*i] - v[3*j]
+                    dy = v[3*i+1] - v[3*j+1]
+                    dist_sq = dx*dx + dy*dy
+                    min_dist_sq = (v[3*i+2] + v[3*j+2])**2
+                    overlap_penalty += max(0, min_dist_sq - dist_sq)
+            return -np.sum(r) - 1e3 * (out_of_bounds_penalty + overlap_penalty)
+        
+        res_refined = minimize(penalized_neg_sum_radii, v, method="Nelder-Mead",
+                               bounds=bounds, constraints=cons,
+                               options={"maxiter": 200, "ftol": 1e-9})
+        v = res_refined.x if res_refined.success else v
+
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())

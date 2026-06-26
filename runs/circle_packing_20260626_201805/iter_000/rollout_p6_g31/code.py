@@ -1,0 +1,60 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = int(np.ceil(np.sqrt(n)))
+    xs = (np.arange(n) % cols + 0.5) / cols
+    ys = (np.arange(n) // cols + 0.5) / cols
+    r0 = 0.5 / cols - 1e-3
+    v0 = np.empty(3 * n)
+    v0[0::3] = xs
+    v0[1::3] = ys
+    v0[2::3] = r0
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    cons = []
+    for i in range(n):
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+    for i in range(n):
+        for j in range(i + 1, n):
+            def constraint_func(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                return dx*dx + dy*dy - (v[3*i+2] + v[3*j+2])**2
+            cons.append({"type": "ineq", "fun": constraint_func})
+
+    # Initial optimization with SLSQP
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 500, "ftol": 1e-9})
+    v = res.x if res.success else v0
+
+    # Local refinement with penalty function to resolve overlaps
+    def penalty_objective(v):
+        sum_radii = np.sum(v[2::3])
+        overlap_penalty = 0.0
+        for i in range(n):
+            for j in range(i + 1, n):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                dist = np.sqrt(dx*dx + dy*dy)
+                if dist < v[3*i+2] + v[3*j+2] - 1e-8:
+                    overlap_penalty += (v[3*i+2] + v[3*j+2] - dist) ** 2
+        return -sum_radii + 1000 * overlap_penalty
+
+    # Refine with L-BFGS-B for local optimization
+    refined_res = minimize(penalty_objective, v, method="L-BFGS-B", bounds=bounds,
+                           options={"maxiter": 200, "ftol": 1e-9})
+    refined_v = refined_res.x if refined_res.success else v
+
+    centers = np.column_stack([refined_v[0::3], refined_v[1::3]])
+    radii = np.clip(refined_v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())

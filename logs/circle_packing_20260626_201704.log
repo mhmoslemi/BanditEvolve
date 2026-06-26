@@ -1,0 +1,493 @@
+[log] writing run to /work/mohammad/BanditEvolve/logs/circle_packing_20260626_201704.log
+🦥 Unsloth: Will patch your computer to enable 2x faster free finetuning.
+🦥 Unsloth Zoo will now patch everything to make training faster!
+[llm][rl] loading Qwen/Qwen3-8B via Unsloth (4bit=False) + LoRA(r=32, alpha=32) x 3 adapter(s): ['good', 'elite', 'near_sota'] ...
+==((====))==  Unsloth 2026.6.9: Fast Qwen3 patching. Transformers: 5.5.0.
+   \\   /|    NVIDIA H100 80GB HBM3. Num GPUs = 1. Max memory: 79.189 GB. Platform: Linux.
+O^O/ \_/ \    Torch: 2.10.0+cu129. CUDA: 9.0. CUDA Toolkit: 12.9. Triton: 3.6.0
+\        /    Bfloat16 = TRUE. FA [Xformers = None. FA2 = False]
+ "-____-"     Free license: http://github.com/unslothai/unsloth
+Unsloth: Fast downloading is enabled - ignore downloading bars which are red colored!
+Loading weights:   0%|                                                                 | 0/399 [00:00<?, ?it/s]Loading weights:   0%|▏                                                        | 1/399 [00:00<01:28,  4.50it/s]Loading weights:   1%|▎                                                        | 2/399 [00:00<01:42,  3.87it/s]Loading weights:   4%|██▏                                                     | 16/399 [00:00<00:10, 35.30it/s]Loading weights:   7%|███▊                                                    | 27/399 [00:00<00:06, 53.74it/s]Loading weights:  10%|█████▍                                                  | 39/399 [00:00<00:05, 68.39it/s]Loading weights:  14%|███████▌                                                | 54/399 [00:00<00:03, 87.72it/s]Loading weights:  18%|█████████▋                                             | 70/399 [00:01<00:03, 103.15it/s]Loading weights:  21%|███████████▍                                           | 83/399 [00:01<00:02, 109.81it/s]Loading weights:  26%|█████████████▉                                        | 103/399 [00:01<00:02, 130.17it/s]Loading weights:  29%|███████████████▊                                      | 117/399 [00:01<00:02, 124.55it/s]Loading weights:  34%|██████████████████▍                                   | 136/399 [00:01<00:01, 137.40it/s]Loading weights:  38%|████████████████████▍                                 | 151/399 [00:01<00:01, 133.73it/s]Loading weights:  42%|██████████████████████▊                               | 169/399 [00:01<00:01, 142.91it/s]Loading weights:  46%|████████████████████████▉                             | 184/399 [00:01<00:01, 139.15it/s]Loading weights:  51%|███████████████████████████▎                          | 202/399 [00:01<00:01, 138.77it/s]Loading weights:  55%|█████████████████████████████▉                        | 221/399 [00:02<00:01, 151.88it/s]Loading weights:  59%|████████████████████████████████                      | 237/399 [00:02<00:01, 140.76it/s]Loading weights:  64%|██████████████████████████████████▊                   | 257/399 [00:02<00:00, 150.33it/s]Loading weights:  68%|████████████████████████████████████▉                 | 273/399 [00:02<00:00, 142.92it/s]Loading weights:  73%|███████████████████████████████████████▏              | 290/399 [00:02<00:00, 148.81it/s]Loading weights:  77%|█████████████████████████████████████████▍            | 306/399 [00:02<00:00, 143.28it/s]Loading weights:  81%|███████████████████████████████████████████▋          | 323/399 [00:02<00:00, 145.61it/s]Loading weights:  85%|█████████████████████████████████████████████▋        | 338/399 [00:02<00:00, 134.85it/s]Loading weights:  89%|████████████████████████████████████████████████▏     | 356/399 [00:03<00:00, 140.55it/s]Loading weights:  93%|██████████████████████████████████████████████████▏   | 371/399 [00:03<00:00, 135.42it/s]Loading weights:  96%|████████████████████████████████████████████████████  | 385/399 [00:03<00:00, 132.62it/s]Loading weights: 100%|██████████████████████████████████████████████████████| 399/399 [00:03<00:00, 118.06it/s]
+unsloth/Qwen3-8B does not have a padding token! Will use pad_token = <|PAD_TOKEN|>.
+Unsloth 2026.6.9 patched 36 layers with 36 QKV layers, 36 O layers and 36 MLP layers.
+[llm][rl] trainable params: 261.9M across 3 adapter(s) on cuda:0  lr=5e-05
+================================================================
+Band-bandit evolutionary search
+  problem        : circle_packing
+  metric         : sum of radii (maximize)
+  llm            : unsloth:Qwen/Qwen3-8B
+  iters          : 100
+  parents x roll : 8 x 24 = 192/iter
+  eval seeds     : 1   explore eps: 0.1
+  --- RL (GRPO) ---  (train on gpu_ids[0]; rest = gen replicas)
+  adapters       : bands ['good', 'near_sota', 'elite'] (rest = frozen base)
+  group size G   : 32   train_every: 1   ppo_epochs: 1
+  lr / kl / clip : 5e-05 / 0.1 / 0.2
+================================================================
+[init] reward pool: 50 parallel sandboxes
+[init] saving per-rollout artifacts under runs/circle_packing_20260626_201805/
+[init] RL (GRPO) ON [adapters on bands ['good', 'elite', 'near_sota']]: group_size=32 train_every=1 ppo_epochs=1 lr=5e-05 kl=0.1 clip=0.2 max_comp_tok=2048
+[init] bootstrapping 8 seeds (1-seed eval, parallel) ...
+[init] seed 1/8: canned, value=2.1641
+[init] seeds 1/8: gen batch 7 (round 1/48) ...
+[init]   -> seed 2/8 valid, value=2.1407
+[init]   -> seed 3/8 valid, value=2.1407
+[init]   -> seed 4/8 valid, value=2.5921
+[init]   -> seed 5/8 valid, value=2.1407
+[init]   -> seed 6/8 valid, value=2.1407
+[init]   -> seed 7/8 valid, value=2.1407
+[init]   -> seed 8/8 valid, value=2.1407
+[init] seeds: 8/8 valid (archive 8)
+
+[iter 0] (RL) parents picked: 8  (T=0 archive=8)
+  parent 0 [seed    ] value=2.5921 band=elite     n=0    Q=2.5921 bonus=0.0000 score=1.0000
+  parent 1 [seed    ] value=2.1641 band=good      n=0    Q=2.1641 bonus=0.0000 score=0.0518
+  parent 2 [seed    ] value=2.1407 band=good      n=0    Q=2.1407 bonus=0.0000 score=0.0000
+  parent 3 [seed    ] value=2.1407 band=good      n=0    Q=2.1407 bonus=0.0000 score=0.0000
+  parent 4 [seed    ] value=2.1407 band=good      n=0    Q=2.1407 bonus=0.0000 score=0.0000
+  parent 5 [seed    ] value=2.1407 band=good      n=0    Q=2.1407 bonus=0.0000 score=0.0000
+  parent 6 [seed    ] value=2.1407 band=good      n=0    Q=2.1407 bonus=0.0000 score=0.0000
+  parent 7 [seed    ] value=2.1407 band=good      n=0    Q=2.1407 bonus=0.0000 score=0.0000
+`use_return_dict` is deprecated! Use `return_dict` instead!
+  RL: assembled 192 samples from 6 group(s); trained bands ['elite', 'good']; buffer=192
+    p0 k0 mutate band=elite     arm=0(seed) -> valid dmu=-0.4514 dsigma=0.0000 value=2.1407
+    p0 k1 mutate band=elite     arm=0(seed) -> invalid:eval
+    p0 k2 mutate band=elite     arm=0(seed) -> valid dmu=+0.0000 dsigma=0.0000 value=2.5921
+    p0 k3 mutate band=elite     arm=0(seed) -> invalid:eval
+    p0 k4 mutate band=elite     arm=0(seed) -> valid dmu=-0.4514 dsigma=0.0000 value=2.1407
+    p0 k5 mutate band=elite     arm=0(seed) -> invalid:eval
+    p0 k6 mutate band=elite     arm=0(seed) -> valid dmu=+0.0000 dsigma=0.0000 value=2.5921
+    p0 k7 mutate band=elite     arm=0(seed) -> invalid:eval
+    p0 k8 mutate band=elite     arm=0(seed) -> valid dmu=+0.0000 dsigma=0.0000 value=2.5921
+    p0 k9 mutate band=elite     arm=0(seed) -> valid dmu=-0.4514 dsigma=0.0000 value=2.1407
+    p0 k10 mutate band=elite     arm=0(seed) -> valid dmu=-0.4514 dsigma=0.0000 value=2.1407
+    p0 k11 mutate band=elite     arm=0(seed) -> invalid:eval
+    p0 k12 mutate band=elite     arm=0(seed) -> invalid:eval
+    p0 k13 mutate band=elite     arm=0(seed) -> valid dmu=-0.4514 dsigma=0.0000 value=2.1407
+    p0 k14 mutate band=elite     arm=0(seed) -> valid dmu=-0.4514 dsigma=0.0000 value=2.1407
+    p0 k15 mutate band=elite     arm=0(seed) -> invalid:eval
+    p0 k16 mutate band=elite     arm=0(seed) -> valid dmu=-0.4514 dsigma=0.0000 value=2.1407
+    p0 k17 mutate band=elite     arm=0(seed) -> valid dmu=-0.4514 dsigma=0.0000 value=2.1407
+    p0 k18 mutate band=elite     arm=0(seed) -> invalid:eval
+    p0 k19 mutate band=elite     arm=0(seed) -> invalid:eval
+    p0 k20 mutate band=elite     arm=0(seed) -> invalid:eval
+    p0 k21 mutate band=elite     arm=0(seed) -> invalid:eval
+    p0 k22 mutate band=elite     arm=0(seed) -> valid dmu=-0.4514 dsigma=0.0000 value=2.1407
+    p0 k23 mutate band=elite     arm=0(seed) -> invalid:eval
+    p0 k24 mutate band=elite     arm=0(seed) -> invalid:eval
+    p0 k25 mutate band=elite     arm=0(seed) -> valid dmu=-0.4514 dsigma=0.0000 value=2.1407
+    p0 k26 mutate band=elite     arm=0(seed) -> invalid:eval
+    p0 k27 mutate band=elite     arm=0(seed) -> invalid:eval
+    p0 k28 mutate band=elite     arm=0(seed) -> valid dmu=-0.4514 dsigma=0.0000 value=2.1407
+    p0 k29 mutate band=elite     arm=0(seed) -> valid dmu=-0.4514 dsigma=0.0000 value=2.1407
+    p0 k30 mutate band=elite     arm=0(seed) -> invalid:eval
+    p0 k31 mutate band=elite     arm=0(seed) -> invalid:eval
+    p1 k0 explore  -> valid value=2.5921
+    p2 k0 mutate band=good      arm=1(seed) -> invalid:eval
+    p2 k1 mutate band=good      arm=1(seed) -> invalid:eval
+    p2 k2 mutate band=good      arm=1(seed) -> invalid:eval
+    p2 k3 mutate band=good      arm=1(seed) -> invalid:eval
+    p2 k4 mutate band=good      arm=1(seed) -> invalid:eval
+    p2 k5 mutate band=good      arm=1(seed) -> sterile:not_novel
+    p2 k6 mutate band=good      arm=1(seed) -> sterile:not_novel
+    p2 k7 mutate band=good      arm=1(seed) -> invalid:eval
+    p2 k8 mutate band=good      arm=1(seed) -> invalid:eval
+    p2 k9 mutate band=good      arm=1(seed) -> invalid:eval
+    p2 k10 mutate band=good      arm=1(seed) -> invalid:eval
+    p2 k11 mutate band=good      arm=1(seed) -> invalid:eval
+    p2 k12 mutate band=good      arm=1(seed) -> invalid:eval
+    p2 k13 mutate band=good      arm=1(seed) -> invalid:eval
+    p2 k14 mutate band=good      arm=1(seed) -> invalid:eval
+    p2 k15 mutate band=good      arm=1(seed) -> invalid:eval
+    p2 k16 mutate band=good      arm=1(seed) -> sterile:not_novel
+    p2 k17 mutate band=good      arm=1(seed) -> invalid:eval
+    p2 k18 mutate band=good      arm=1(seed) -> sterile:not_novel
+    p2 k19 mutate band=good      arm=1(seed) -> invalid:eval
+    p2 k20 mutate band=good      arm=1(seed) -> sterile:not_novel
+    p2 k21 mutate band=good      arm=1(seed) -> invalid:eval
+    p2 k22 mutate band=good      arm=1(seed) -> invalid:eval
+    p2 k23 mutate band=good      arm=1(seed) -> invalid:eval
+    p2 k24 mutate band=good      arm=1(seed) -> sterile:not_novel
+    p2 k25 mutate band=good      arm=1(seed) -> invalid:eval
+    p2 k26 mutate band=good      arm=1(seed) -> invalid:eval
+    p2 k27 mutate band=good      arm=1(seed) -> invalid:eval
+    p2 k28 mutate band=good      arm=1(seed) -> sterile:not_novel
+    p2 k29 mutate band=good      arm=1(seed) -> sterile:not_novel
+    p2 k30 mutate band=good      arm=1(seed) -> invalid:eval
+    p2 k31 mutate band=good      arm=1(seed) -> sterile:not_novel
+    p3 k0 mutate band=good      arm=0(seed) -> valid dmu=+0.4514 dsigma=0.0000 value=2.5921
+    p3 k1 mutate band=good      arm=0(seed) -> sterile:not_novel
+    p3 k2 mutate band=good      arm=0(seed) -> sterile:not_novel
+    p3 k3 mutate band=good      arm=0(seed) -> sterile:not_novel
+    p3 k4 mutate band=good      arm=0(seed) -> sterile:not_novel
+    p3 k5 mutate band=good      arm=0(seed) -> valid dmu=+0.0000 dsigma=0.0000 value=2.1407
+    p3 k6 mutate band=good      arm=0(seed) -> invalid:unparseable
+    p3 k7 mutate band=good      arm=0(seed) -> valid dmu=+0.4514 dsigma=0.0000 value=2.5921
+    p3 k8 mutate band=good      arm=0(seed) -> sterile:not_novel
+    p3 k9 mutate band=good      arm=0(seed) -> sterile:not_novel
+    p3 k10 mutate band=good      arm=0(seed) -> sterile:not_novel
+    p3 k11 mutate band=good      arm=0(seed) -> valid dmu=+0.4514 dsigma=0.0000 value=2.5921
+    p3 k12 mutate band=good      arm=0(seed) -> valid dmu=+0.4514 dsigma=0.0000 value=2.5921
+    p3 k13 mutate band=good      arm=0(seed) -> sterile:not_novel
+    p3 k14 mutate band=good      arm=0(seed) -> sterile:not_novel
+    p3 k15 mutate band=good      arm=0(seed) -> sterile:not_novel
+    p3 k16 mutate band=good      arm=0(seed) -> sterile:not_novel
+    p3 k17 mutate band=good      arm=0(seed) -> sterile:not_novel
+    p3 k18 mutate band=good      arm=0(seed) -> sterile:not_novel
+    p3 k19 mutate band=good      arm=0(seed) -> sterile:not_novel
+    p3 k20 mutate band=good      arm=0(seed) -> valid dmu=+0.4514 dsigma=0.0000 value=2.5921
+    p3 k21 mutate band=good      arm=0(seed) -> valid dmu=+0.4514 dsigma=0.0000 value=2.5921
+    p3 k22 mutate band=good      arm=0(seed) -> sterile:not_novel
+    p3 k23 mutate band=good      arm=0(seed) -> sterile:not_novel
+    p3 k24 mutate band=good      arm=0(seed) -> sterile:not_novel
+    p3 k25 mutate band=good      arm=0(seed) -> valid dmu=+0.4514 dsigma=0.0000 value=2.5921
+    p3 k26 mutate band=good      arm=0(seed) -> valid dmu=+0.4514 dsigma=0.0000 value=2.5921
+    p3 k27 mutate band=good      arm=0(seed) -> sterile:not_novel
+    p3 k28 mutate band=good      arm=0(seed) -> sterile:not_novel
+    p3 k29 mutate band=good      arm=0(seed) -> sterile:not_novel
+    p3 k30 mutate band=good      arm=0(seed) -> sterile:not_novel
+    p3 k31 mutate band=good      arm=0(seed) -> sterile:not_novel
+    p4 k0 mutate band=good      arm=0(seed) -> valid dmu=+0.4514 dsigma=0.0000 value=2.5921
+    p4 k1 mutate band=good      arm=0(seed) -> invalid:eval
+    p4 k2 mutate band=good      arm=0(seed) -> valid dmu=+0.4514 dsigma=0.0000 value=2.5921
+    p4 k3 mutate band=good      arm=0(seed) -> valid dmu=+0.4514 dsigma=0.0000 value=2.5921
+    p4 k4 mutate band=good      arm=0(seed) -> invalid:eval
+    p4 k5 mutate band=good      arm=0(seed) -> sterile:not_novel
+    p4 k6 mutate band=good      arm=0(seed) -> valid dmu=+0.4514 dsigma=0.0000 value=2.5921
+    p4 k7 mutate band=good      arm=0(seed) -> valid dmu=+0.4514 dsigma=0.0000 value=2.5921
+    p4 k8 mutate band=good      arm=0(seed) -> valid dmu=+0.4514 dsigma=0.0000 value=2.5921
+    p4 k9 mutate band=good      arm=0(seed) -> sterile:not_novel
+    p4 k10 mutate band=good      arm=0(seed) -> valid dmu=+0.0000 dsigma=0.0000 value=2.1407
+    p4 k11 mutate band=good      arm=0(seed) -> invalid:eval
+    p4 k12 mutate band=good      arm=0(seed) -> valid dmu=+0.4514 dsigma=0.0000 value=2.5921
+    p4 k13 mutate band=good      arm=0(seed) -> invalid:eval
+    p4 k14 mutate band=good      arm=0(seed) -> valid dmu=+0.0000 dsigma=0.0000 value=2.1407
+    p4 k15 mutate band=good      arm=0(seed) -> invalid:eval
+    p4 k16 mutate band=good      arm=0(seed) -> invalid:eval
+    p4 k17 mutate band=good      arm=0(seed) -> sterile:not_novel
+    p4 k18 mutate band=good      arm=0(seed) -> valid dmu=+0.0000 dsigma=0.0000 value=2.1407
+    p4 k19 mutate band=good      arm=0(seed) -> valid dmu=+0.4514 dsigma=0.0000 value=2.5921
+    p4 k20 mutate band=good      arm=0(seed) -> sterile:not_novel
+    p4 k21 mutate band=good      arm=0(seed) -> invalid:eval
+    p4 k22 mutate band=good      arm=0(seed) -> valid dmu=+0.4514 dsigma=0.0000 value=2.5921
+    p4 k23 mutate band=good      arm=0(seed) -> valid dmu=+0.4514 dsigma=0.0000 value=2.5921
+    p4 k24 mutate band=good      arm=0(seed) -> sterile:not_novel
+    p4 k25 mutate band=good      arm=0(seed) -> sterile:not_novel
+    p4 k26 mutate band=good      arm=0(seed) -> invalid:eval
+    p4 k27 mutate band=good      arm=0(seed) -> valid dmu=+0.0000 dsigma=0.0000 value=2.1407
+    p4 k28 mutate band=good      arm=0(seed) -> valid dmu=+0.4514 dsigma=0.0000 value=2.5921
+    p4 k29 mutate band=good      arm=0(seed) -> valid dmu=+0.0000 dsigma=0.0000 value=2.1407
+    p4 k30 mutate band=good      arm=0(seed) -> valid dmu=+0.4514 dsigma=0.0000 value=2.5921
+    p4 k31 mutate band=good      arm=0(seed) -> invalid:eval
+    p5 k0 mutate band=good      arm=0(seed) -> sterile:not_novel
+    p5 k1 mutate band=good      arm=0(seed) -> valid dmu=+0.0000 dsigma=0.0000 value=2.1407
+    p5 k2 mutate band=good      arm=0(seed) -> sterile:not_novel
+    p5 k3 mutate band=good      arm=0(seed) -> valid dmu=+0.4514 dsigma=0.0000 value=2.5921
+    p5 k4 mutate band=good      arm=0(seed) -> invalid:eval
+    p5 k5 mutate band=good      arm=0(seed) -> valid dmu=+0.4514 dsigma=0.0000 value=2.5921
+    p5 k6 mutate band=good      arm=0(seed) -> valid dmu=+0.4514 dsigma=0.0000 value=2.5921
+    p5 k7 mutate band=good      arm=0(seed) -> valid dmu=+0.4514 dsigma=0.0000 value=2.5921
+    p5 k8 mutate band=good      arm=0(seed) -> sterile:not_novel
+    p5 k9 mutate band=good      arm=0(seed) -> valid dmu=+0.0000 dsigma=0.0000 value=2.1407
+    p5 k10 mutate band=good      arm=0(seed) -> valid dmu=+0.4514 dsigma=0.0000 value=2.5921
+    p5 k11 mutate band=good      arm=0(seed) -> valid dmu=+0.4514 dsigma=0.0000 value=2.5921
+    p5 k12 mutate band=good      arm=0(seed) -> invalid:eval
+    p5 k13 mutate band=good      arm=0(seed) -> valid dmu=+0.4514 dsigma=0.0000 value=2.5921
+    p5 k14 mutate band=good      arm=0(seed) -> valid dmu=+0.4514 dsigma=0.0000 value=2.5921
+    p5 k15 mutate band=good      arm=0(seed) -> invalid:eval
+    p5 k16 mutate band=good      arm=0(seed) -> valid dmu=+0.0000 dsigma=0.0000 value=2.1407
+    p5 k17 mutate band=good      arm=0(seed) -> valid dmu=+0.4514 dsigma=0.0000 value=2.5921
+    p5 k18 mutate band=good      arm=0(seed) -> invalid:eval
+    p5 k19 mutate band=good      arm=0(seed) -> valid dmu=+0.4514 dsigma=0.0000 value=2.5921
+    p5 k20 mutate band=good      arm=0(seed) -> sterile:not_novel
+    p5 k21 mutate band=good      arm=0(seed) -> valid dmu=+0.4514 dsigma=0.0000 value=2.5921
+    p5 k22 mutate band=good      arm=0(seed) -> valid dmu=+0.4514 dsigma=0.0000 value=2.5921
+    p5 k23 mutate band=good      arm=0(seed) -> valid dmu=+0.4514 dsigma=0.0000 value=2.5921
+    p5 k24 mutate band=good      arm=0(seed) -> valid dmu=+0.4514 dsigma=0.0000 value=2.5921
+    p5 k25 mutate band=good      arm=0(seed) -> valid dmu=+0.4514 dsigma=0.0000 value=2.5921
+    p5 k26 mutate band=good      arm=0(seed) -> valid dmu=+0.4514 dsigma=0.0000 value=2.5921
+    p5 k27 mutate band=good      arm=0(seed) -> valid dmu=+0.0000 dsigma=0.0000 value=2.1407
+    p5 k28 mutate band=good      arm=0(seed) -> invalid:eval
+    p5 k29 mutate band=good      arm=0(seed) -> valid dmu=+0.4514 dsigma=0.0000 value=2.5921
+    p5 k30 mutate band=good      arm=0(seed) -> valid dmu=+0.4514 dsigma=0.0000 value=2.5921
+    p5 k31 mutate band=good      arm=0(seed) -> sterile:not_novel
+    p6 k0 mutate band=good      arm=0(seed) -> sterile:not_novel
+    p6 k1 mutate band=good      arm=0(seed) -> valid dmu=+0.0000 dsigma=0.0000 value=2.1407
+    p6 k2 mutate band=good      arm=0(seed) -> valid dmu=+0.0000 dsigma=0.0000 value=2.1407
+    p6 k3 mutate band=good      arm=0(seed) -> invalid:eval
+    p6 k4 mutate band=good      arm=0(seed) -> valid dmu=+0.4514 dsigma=0.0000 value=2.5921
+    p6 k5 mutate band=good      arm=0(seed) -> sterile:not_novel
+    p6 k6 mutate band=good      arm=0(seed) -> valid dmu=+0.4514 dsigma=0.0000 value=2.5921
+    p6 k7 mutate band=good      arm=0(seed) -> sterile:not_novel
+    p6 k8 mutate band=good      arm=0(seed) -> invalid:eval
+    p6 k9 mutate band=good      arm=0(seed) -> invalid:eval
+    p6 k10 mutate band=good      arm=0(seed) -> sterile:not_novel
+    p6 k11 mutate band=good      arm=0(seed) -> valid dmu=+0.4254 dsigma=0.0000 value=2.5661
+    p6 k12 mutate band=good      arm=0(seed) -> valid dmu=+0.0000 dsigma=0.0000 value=2.1407
+    p6 k13 mutate band=good      arm=0(seed) -> sterile:not_novel
+    p6 k14 mutate band=good      arm=0(seed) -> sterile:not_novel
+    p6 k15 mutate band=good      arm=0(seed) -> sterile:not_novel
+    p6 k16 mutate band=good      arm=0(seed) -> invalid:eval
+    p6 k17 mutate band=good      arm=0(seed) -> sterile:not_novel
+    p6 k18 mutate band=good      arm=0(seed) -> sterile:not_novel
+    p6 k19 mutate band=good      arm=0(seed) -> sterile:not_novel
+    p6 k20 mutate band=good      arm=0(seed) -> invalid:eval
+    p6 k21 mutate band=good      arm=0(seed) -> valid dmu=+0.0000 dsigma=0.0000 value=2.1407
+    p6 k22 mutate band=good      arm=0(seed) -> sterile:not_novel
+    p6 k23 mutate band=good      arm=0(seed) -> valid dmu=+0.4514 dsigma=0.0000 value=2.5921
+    p6 k24 mutate band=good      arm=0(seed) -> sterile:not_novel
+    p6 k25 mutate band=good      arm=0(seed) -> sterile:not_novel
+    p6 k26 mutate band=good      arm=0(seed) -> sterile:not_novel
+    p6 k27 mutate band=good      arm=0(seed) -> sterile:not_novel
+    p6 k28 mutate band=good      arm=0(seed) -> invalid:eval
+    p6 k29 mutate band=good      arm=0(seed) -> sterile:not_novel
+    p6 k30 mutate band=good      arm=0(seed) -> sterile:not_novel
+    p6 k31 mutate band=good      arm=0(seed) -> valid dmu=+0.4514 dsigma=0.0000 value=2.5921
+    p7 k0 explore  -> valid value=2.1407
+  group p0 [elite]: {'valid': 15, 'invalid': 17}  mean_dmu=-0.3612 over 15 valid mutations
+  group p1 [good]: {'valid': 1}  mean_dmu=+0.0000 over 0 valid mutations
+  group p2 [good]: {'invalid': 23, 'sterile': 9}  mean_dmu=+0.0000 over 0 valid mutations
+  group p3 [good]: {'valid': 9, 'sterile': 22, 'invalid': 1}  mean_dmu=+0.4013 over 9 valid mutations
+  group p4 [good]: {'valid': 17, 'invalid': 9, 'sterile': 6}  mean_dmu=+0.3187 over 17 valid mutations
+  group p5 [good]: {'sterile': 5, 'valid': 22, 'invalid': 5}  mean_dmu=+0.3694 over 22 valid mutations
+  group p6 [good]: {'sterile': 17, 'valid': 9, 'invalid': 6}  mean_dmu=+0.2479 over 9 valid mutations
+  group p7 [good]: {'valid': 1}  mean_dmu=+0.0000 over 0 valid mutations
+  reflecting on iteration ...
+  reflection -> +arm[elite]  failure='Mutations in the elite band frequently result in invalid evaluations, '
+  GRPO update on 192 action sequences ...
+  GRPO: adapters=2 pg=+1.37184 kl=0.00000 ratio=1.0000 n=192 tok=137856
+    [elite    ] n=32  pg=+1.22076 kl=0.00000 ratio=1.0000 |adv|=1.2555 gnorm=0.109
+    [good     ] n=160 pg=+1.52292 kl=0.00000 ratio=1.0000 |adv|=1.6010 gnorm=0.033
+[iter 0] outcomes={'valid': 74, 'invalid': 61, 'sterile': 59}  reasons={'eval': 60, 'not_novel': 59, 'unparseable': 1}
+[iter 0] best=2.592104 raw=2.592104  archive=25  sterile=59 invalid=61  arms={'weak': 2, 'good': 2, 'elite': 3, 'near_sota': 2}  (1131.1s)
+
+[iter 1] (RL) parents picked: 8  (T=194 archive=25)
+  parent 0 [expanded] value=2.5921 band=elite     n=0    Q=2.5921 bonus=2.2963 score=3.2963
+  parent 1 [expanded] value=2.5921 band=elite     n=0    Q=2.5921 bonus=2.2963 score=3.2963
+  parent 2 [expanded] value=2.5921 band=elite     n=0    Q=2.5921 bonus=2.2963 score=3.2963
+  parent 3 [expanded] value=2.5921 band=elite     n=0    Q=2.5921 bonus=2.2963 score=3.2963
+  parent 4 [expanded] value=2.5921 band=elite     n=0    Q=2.5921 bonus=2.2963 score=3.2963
+  parent 5 [expanded] value=2.5921 band=elite     n=0    Q=2.5921 bonus=2.2963 score=3.2963
+  parent 6 [expanded] value=2.5921 band=elite     n=0    Q=2.5921 bonus=2.2963 score=3.2963
+  parent 7 [expanded] value=2.5921 band=elite     n=0    Q=2.5921 bonus=2.2963 score=3.2963
+  RL: assembled 192 samples from 6 group(s); trained bands ['elite']; buffer=192
+    p0 k0 mutate band=elite     arm=2(refl) -> valid dmu=-0.0280 dsigma=0.0000 value=2.5641
+    p0 k1 mutate band=elite     arm=2(refl) -> valid dmu=-0.4514 dsigma=0.0000 value=2.1407
+    p0 k2 mutate band=elite     arm=2(refl) -> invalid:eval
+    p0 k3 mutate band=elite     arm=2(refl) -> sterile:not_novel
+    p0 k4 mutate band=elite     arm=2(refl) -> valid dmu=-0.4514 dsigma=0.0000 value=2.1407
+    p0 k5 mutate band=elite     arm=2(refl) -> invalid:eval
+    p0 k6 mutate band=elite     arm=2(refl) -> sterile:not_novel
+    p0 k7 mutate band=elite     arm=2(refl) -> valid dmu=-0.0008 dsigma=0.0000 value=2.5913
+    p0 k8 mutate band=elite     arm=2(refl) -> valid dmu=-0.0012 dsigma=0.0000 value=2.5909
+    p0 k9 mutate band=elite     arm=2(refl) -> valid dmu=+0.0168 dsigma=0.0000 value=2.6089
+    p0 k10 mutate band=elite     arm=2(refl) -> sterile:cosmetic_noop
+    p0 k11 mutate band=elite     arm=2(refl) -> sterile:not_novel
+    p0 k12 mutate band=elite     arm=2(refl) -> sterile:not_novel
+    p0 k13 mutate band=elite     arm=2(refl) -> sterile:not_novel
+    p0 k14 mutate band=elite     arm=2(refl) -> sterile:not_novel
+    p0 k15 mutate band=elite     arm=2(refl) -> sterile:not_novel
+    p0 k16 mutate band=elite     arm=2(refl) -> valid dmu=+0.0000 dsigma=0.0000 value=2.5921
+    p0 k17 mutate band=elite     arm=2(refl) -> invalid:eval
+    p0 k18 mutate band=elite     arm=2(refl) -> valid dmu=-0.0737 dsigma=0.0000 value=2.5184
+    p0 k19 mutate band=elite     arm=2(refl) -> sterile:not_novel
+    p0 k20 mutate band=elite     arm=2(refl) -> sterile:not_novel
+    p0 k21 mutate band=elite     arm=2(refl) -> invalid:eval
+    p0 k22 mutate band=elite     arm=2(refl) -> sterile:not_novel
+    p0 k23 mutate band=elite     arm=2(refl) -> sterile:not_novel
+    p0 k24 mutate band=elite     arm=2(refl) -> invalid:eval
+    p0 k25 mutate band=elite     arm=2(refl) -> invalid:eval
+    p0 k26 mutate band=elite     arm=2(refl) -> sterile:not_novel
+    p0 k27 mutate band=elite     arm=2(refl) -> sterile:not_novel
+    p0 k28 mutate band=elite     arm=2(refl) -> valid dmu=-0.4514 dsigma=0.0000 value=2.1407
+    p0 k29 mutate band=elite     arm=2(refl) -> sterile:not_novel
+    p0 k30 mutate band=elite     arm=2(refl) -> valid dmu=+0.0000 dsigma=0.0000 value=2.5921
+    p0 k31 mutate band=elite     arm=2(refl) -> invalid:eval
+    p1 k0 explore  -> valid value=2.1407
+    p2 k0 mutate band=elite     arm=0(seed) -> valid dmu=+0.0000 dsigma=0.0000 value=2.5921
+    p2 k1 mutate band=elite     arm=0(seed) -> sterile:not_novel
+    p2 k2 mutate band=elite     arm=0(seed) -> valid dmu=+0.0000 dsigma=0.0000 value=2.5921
+    p2 k3 mutate band=elite     arm=0(seed) -> sterile:not_novel
+    p2 k4 mutate band=elite     arm=0(seed) -> sterile:not_novel
+    p2 k5 mutate band=elite     arm=0(seed) -> sterile:not_novel
+    p2 k6 mutate band=elite     arm=0(seed) -> sterile:not_novel
+    p2 k7 mutate band=elite     arm=0(seed) -> valid dmu=+0.0000 dsigma=0.0000 value=2.5921
+    p2 k8 mutate band=elite     arm=0(seed) -> valid dmu=+0.0000 dsigma=0.0000 value=2.5921
+    p2 k9 mutate band=elite     arm=0(seed) -> sterile:not_novel
+    p2 k10 mutate band=elite     arm=0(seed) -> sterile:not_novel
+    p2 k11 mutate band=elite     arm=0(seed) -> valid dmu=+0.0000 dsigma=0.0000 value=2.5921
+    p2 k12 mutate band=elite     arm=0(seed) -> sterile:not_novel
+    p2 k13 mutate band=elite     arm=0(seed) -> valid dmu=+0.0000 dsigma=0.0000 value=2.5921
+    p2 k14 mutate band=elite     arm=0(seed) -> sterile:not_novel
+    p2 k15 mutate band=elite     arm=0(seed) -> sterile:not_novel
+    p2 k16 mutate band=elite     arm=0(seed) -> sterile:not_novel
+    p2 k17 mutate band=elite     arm=0(seed) -> sterile:not_novel
+    p2 k18 mutate band=elite     arm=0(seed) -> sterile:not_novel
+    p2 k19 mutate band=elite     arm=0(seed) -> sterile:not_novel
+    p2 k20 mutate band=elite     arm=0(seed) -> sterile:not_novel
+    p2 k21 mutate band=elite     arm=0(seed) -> valid dmu=+0.0000 dsigma=0.0000 value=2.5921
+    p2 k22 mutate band=elite     arm=0(seed) -> sterile:not_novel
+    p2 k23 mutate band=elite     arm=0(seed) -> sterile:not_novel
+    p2 k24 mutate band=elite     arm=0(seed) -> valid dmu=+0.0000 dsigma=0.0000 value=2.5921
+    p2 k25 mutate band=elite     arm=0(seed) -> sterile:not_novel
+    p2 k26 mutate band=elite     arm=0(seed) -> sterile:not_novel
+    p2 k27 mutate band=elite     arm=0(seed) -> valid dmu=+0.0000 dsigma=0.0000 value=2.5921
+    p2 k28 mutate band=elite     arm=0(seed) -> valid dmu=+0.0000 dsigma=0.0000 value=2.5921
+    p2 k29 mutate band=elite     arm=0(seed) -> valid dmu=+0.0000 dsigma=0.0000 value=2.5921
+    p2 k30 mutate band=elite     arm=0(seed) -> valid dmu=+0.0000 dsigma=0.0000 value=2.5921
+    p2 k31 mutate band=elite     arm=0(seed) -> sterile:not_novel
+    p3 k0 mutate band=elite     arm=2(refl) -> sterile:not_novel
+    p3 k1 mutate band=elite     arm=2(refl) -> sterile:not_novel
+    p3 k2 mutate band=elite     arm=2(refl) -> sterile:not_novel
+    p3 k3 mutate band=elite     arm=2(refl) -> valid dmu=-0.4514 dsigma=0.0000 value=2.1407
+    p3 k4 mutate band=elite     arm=2(refl) -> valid dmu=-0.4514 dsigma=0.0000 value=2.1407
+    p3 k5 mutate band=elite     arm=2(refl) -> sterile:not_novel
+    p3 k6 mutate band=elite     arm=2(refl) -> sterile:not_novel
+    p3 k7 mutate band=elite     arm=2(refl) -> invalid:eval
+    p3 k8 mutate band=elite     arm=2(refl) -> sterile:not_novel
+    p3 k9 mutate band=elite     arm=2(refl) -> sterile:not_novel
+    p3 k10 mutate band=elite     arm=2(refl) -> valid dmu=-0.4514 dsigma=0.0000 value=2.1407
+    p3 k11 mutate band=elite     arm=2(refl) -> sterile:not_novel
+    p3 k12 mutate band=elite     arm=2(refl) -> invalid:eval
+    p3 k13 mutate band=elite     arm=2(refl) -> sterile:not_novel
+    p3 k14 mutate band=elite     arm=2(refl) -> sterile:not_novel
+    p3 k15 mutate band=elite     arm=2(refl) -> valid dmu=+0.0000 dsigma=0.0000 value=2.5921
+    p3 k16 mutate band=elite     arm=2(refl) -> sterile:not_novel
+    p3 k17 mutate band=elite     arm=2(refl) -> sterile:not_novel
+    p3 k18 mutate band=elite     arm=2(refl) -> sterile:not_novel
+    p3 k19 mutate band=elite     arm=2(refl) -> sterile:not_novel
+    p3 k20 mutate band=elite     arm=2(refl) -> sterile:not_novel
+    p3 k21 mutate band=elite     arm=2(refl) -> valid dmu=+0.0206 dsigma=0.0000 value=2.6127
+    p3 k22 mutate band=elite     arm=2(refl) -> invalid:eval
+    p3 k23 mutate band=elite     arm=2(refl) -> sterile:not_novel
+    p3 k24 mutate band=elite     arm=2(refl) -> valid dmu=+0.0000 dsigma=0.0000 value=2.5921
+    p3 k25 mutate band=elite     arm=2(refl) -> sterile:not_novel
+    p3 k26 mutate band=elite     arm=2(refl) -> valid dmu=+0.0000 dsigma=0.0000 value=2.5921
+    p3 k27 mutate band=elite     arm=2(refl) -> sterile:not_novel
+    p3 k28 mutate band=elite     arm=2(refl) -> valid dmu=-0.0144 dsigma=0.0000 value=2.5777
+    p3 k29 mutate band=elite     arm=2(refl) -> valid dmu=-0.4514 dsigma=0.0000 value=2.1407
+    p3 k30 mutate band=elite     arm=2(refl) -> sterile:not_novel
+    p3 k31 mutate band=elite     arm=2(refl) -> sterile:not_novel
+    p4 k0 explore  -> valid value=2.1407
+    p5 k0 mutate band=elite     arm=2(refl) -> valid dmu=+0.0000 dsigma=0.0000 value=2.5921
+    p5 k1 mutate band=elite     arm=2(refl) -> sterile:not_novel
+    p5 k2 mutate band=elite     arm=2(refl) -> valid dmu=+0.0000 dsigma=0.0000 value=2.5921
+    p5 k3 mutate band=elite     arm=2(refl) -> sterile:not_novel
+    p5 k4 mutate band=elite     arm=2(refl) -> invalid:eval
+    p5 k5 mutate band=elite     arm=2(refl) -> valid dmu=-0.4514 dsigma=0.0000 value=2.1407
+    p5 k6 mutate band=elite     arm=2(refl) -> sterile:not_novel
+    p5 k7 mutate band=elite     arm=2(refl) -> valid dmu=+0.0000 dsigma=0.0000 value=2.5921
+    p5 k8 mutate band=elite     arm=2(refl) -> valid dmu=-0.4514 dsigma=0.0000 value=2.1407
+    p5 k9 mutate band=elite     arm=2(refl) -> valid dmu=-0.0330 dsigma=0.0000 value=2.5592
+    p5 k10 mutate band=elite     arm=2(refl) -> valid dmu=+0.0000 dsigma=0.0000 value=2.5921
+    p5 k11 mutate band=elite     arm=2(refl) -> sterile:not_novel
+    p5 k12 mutate band=elite     arm=2(refl) -> invalid:eval
+    p5 k13 mutate band=elite     arm=2(refl) -> valid dmu=-0.4514 dsigma=0.0000 value=2.1407
+    p5 k14 mutate band=elite     arm=2(refl) -> sterile:not_novel
+    p5 k15 mutate band=elite     arm=2(refl) -> sterile:not_novel
+    p5 k16 mutate band=elite     arm=2(refl) -> valid dmu=+0.0022 dsigma=0.0000 value=2.5943
+    p5 k17 mutate band=elite     arm=2(refl) -> valid dmu=+0.0000 dsigma=0.0000 value=2.5921
+    p5 k18 mutate band=elite     arm=2(refl) -> sterile:not_novel
+    p5 k19 mutate band=elite     arm=2(refl) -> valid dmu=+0.0000 dsigma=0.0000 value=2.5921
+    p5 k20 mutate band=elite     arm=2(refl) -> valid dmu=+0.0000 dsigma=0.0000 value=2.5921
+    p5 k21 mutate band=elite     arm=2(refl) -> valid dmu=+0.0000 dsigma=0.0000 value=2.5921
+    p5 k22 mutate band=elite     arm=2(refl) -> valid dmu=+0.0000 dsigma=0.0000 value=2.5921
+    p5 k23 mutate band=elite     arm=2(refl) -> sterile:not_novel
+    p5 k24 mutate band=elite     arm=2(refl) -> sterile:not_novel
+    p5 k25 mutate band=elite     arm=2(refl) -> valid dmu=+0.0000 dsigma=0.0000 value=2.5921
+    p5 k26 mutate band=elite     arm=2(refl) -> sterile:not_novel
+    p5 k27 mutate band=elite     arm=2(refl) -> valid dmu=+0.0000 dsigma=0.0000 value=2.5921
+    p5 k28 mutate band=elite     arm=2(refl) -> sterile:not_novel
+    p5 k29 mutate band=elite     arm=2(refl) -> sterile:not_novel
+    p5 k30 mutate band=elite     arm=2(refl) -> valid dmu=+0.0000 dsigma=0.0000 value=2.5921
+    p5 k31 mutate band=elite     arm=2(refl) -> sterile:not_novel
+    p6 k0 mutate band=elite     arm=1(seed) -> valid dmu=+0.0000 dsigma=0.0000 value=2.5921
+    p6 k1 mutate band=elite     arm=1(seed) -> valid dmu=+0.0000 dsigma=0.0000 value=2.5921
+    p6 k2 mutate band=elite     arm=1(seed) -> invalid:eval
+    p6 k3 mutate band=elite     arm=1(seed) -> invalid:eval
+    p6 k4 mutate band=elite     arm=1(seed) -> valid dmu=+0.0000 dsigma=0.0000 value=2.5921
+    p6 k5 mutate band=elite     arm=1(seed) -> valid dmu=+0.0000 dsigma=0.0000 value=2.5921
+    p6 k6 mutate band=elite     arm=1(seed) -> valid dmu=-0.0000 dsigma=0.0000 value=2.5921
+    p6 k7 mutate band=elite     arm=1(seed) -> invalid:eval
+    p6 k8 mutate band=elite     arm=1(seed) -> invalid:eval
+    p6 k9 mutate band=elite     arm=1(seed) -> invalid:eval
+    p6 k10 mutate band=elite     arm=1(seed) -> invalid:eval
+    p6 k11 mutate band=elite     arm=1(seed) -> valid dmu=+0.0000 dsigma=0.0000 value=2.5921
+    p6 k12 mutate band=elite     arm=1(seed) -> invalid:eval
+    p6 k13 mutate band=elite     arm=1(seed) -> valid dmu=+0.0000 dsigma=0.0000 value=2.5921
+    p6 k14 mutate band=elite     arm=1(seed) -> valid dmu=+0.0000 dsigma=0.0000 value=2.5921
+    p6 k15 mutate band=elite     arm=1(seed) -> invalid:eval
+    p6 k16 mutate band=elite     arm=1(seed) -> valid dmu=-0.0000 dsigma=0.0000 value=2.5921
+    p6 k17 mutate band=elite     arm=1(seed) -> invalid:eval
+    p6 k18 mutate band=elite     arm=1(seed) -> valid dmu=+0.0000 dsigma=0.0000 value=2.5921
+    p6 k19 mutate band=elite     arm=1(seed) -> valid dmu=+0.0000 dsigma=0.0000 value=2.5921
+    p6 k20 mutate band=elite     arm=1(seed) -> valid dmu=+0.0000 dsigma=0.0000 value=2.5921
+    p6 k21 mutate band=elite     arm=1(seed) -> invalid:eval
+    p6 k22 mutate band=elite     arm=1(seed) -> invalid:eval
+    p6 k23 mutate band=elite     arm=1(seed) -> valid dmu=-0.0000 dsigma=0.0000 value=2.5921
+    p6 k24 mutate band=elite     arm=1(seed) -> invalid:eval
+    p6 k25 mutate band=elite     arm=1(seed) -> valid dmu=+0.0000 dsigma=0.0000 value=2.5921
+    p6 k26 mutate band=elite     arm=1(seed) -> invalid:eval
+    p6 k27 mutate band=elite     arm=1(seed) -> valid dmu=+0.0000 dsigma=0.0000 value=2.5921
+    p6 k28 mutate band=elite     arm=1(seed) -> invalid:eval
+    p6 k29 mutate band=elite     arm=1(seed) -> invalid:eval
+    p6 k30 mutate band=elite     arm=1(seed) -> invalid:eval
+    p6 k31 mutate band=elite     arm=1(seed) -> valid dmu=+0.0000 dsigma=0.0000 value=2.5921
+    p7 k0 mutate band=elite     arm=1(seed) -> invalid:eval
+    p7 k1 mutate band=elite     arm=1(seed) -> invalid:eval
+    p7 k2 mutate band=elite     arm=1(seed) -> invalid:eval
+    p7 k3 mutate band=elite     arm=1(seed) -> valid dmu=+0.0000 dsigma=0.0000 value=2.5921
+    p7 k4 mutate band=elite     arm=1(seed) -> valid dmu=+0.0000 dsigma=0.0000 value=2.5921
+    p7 k5 mutate band=elite     arm=1(seed) -> invalid:eval
+    p7 k6 mutate band=elite     arm=1(seed) -> invalid:eval
+    p7 k7 mutate band=elite     arm=1(seed) -> invalid:eval
+    p7 k8 mutate band=elite     arm=1(seed) -> valid dmu=-0.0000 dsigma=0.0000 value=2.5921
+    p7 k9 mutate band=elite     arm=1(seed) -> invalid:eval
+    p7 k10 mutate band=elite     arm=1(seed) -> valid dmu=+0.0000 dsigma=0.0000 value=2.5921
+    p7 k11 mutate band=elite     arm=1(seed) -> valid dmu=+0.0000 dsigma=0.0000 value=2.5921
+    p7 k12 mutate band=elite     arm=1(seed) -> valid dmu=+0.0000 dsigma=0.0000 value=2.5921
+    p7 k13 mutate band=elite     arm=1(seed) -> valid dmu=+0.0000 dsigma=0.0000 value=2.5921
+    p7 k14 mutate band=elite     arm=1(seed) -> invalid:eval
+    p7 k15 mutate band=elite     arm=1(seed) -> valid dmu=+0.0000 dsigma=0.0000 value=2.5921
+    p7 k16 mutate band=elite     arm=1(seed) -> valid dmu=+0.0000 dsigma=0.0000 value=2.5921
+    p7 k17 mutate band=elite     arm=1(seed) -> invalid:eval
+    p7 k18 mutate band=elite     arm=1(seed) -> valid dmu=+0.0000 dsigma=0.0000 value=2.5921
+    p7 k19 mutate band=elite     arm=1(seed) -> invalid:eval
+    p7 k20 mutate band=elite     arm=1(seed) -> valid dmu=+0.0000 dsigma=0.0000 value=2.5921
+    p7 k21 mutate band=elite     arm=1(seed) -> invalid:eval
+    p7 k22 mutate band=elite     arm=1(seed) -> invalid:eval
+    p7 k23 mutate band=elite     arm=1(seed) -> invalid:eval
+    p7 k24 mutate band=elite     arm=1(seed) -> invalid:eval
+    p7 k25 mutate band=elite     arm=1(seed) -> valid dmu=+0.0000 dsigma=0.0000 value=2.5921
+    p7 k26 mutate band=elite     arm=1(seed) -> valid dmu=+0.0000 dsigma=0.0000 value=2.5921
+    p7 k27 mutate band=elite     arm=1(seed) -> invalid:eval
+    p7 k28 mutate band=elite     arm=1(seed) -> invalid:eval
+    p7 k29 mutate band=elite     arm=1(seed) -> valid dmu=+0.0000 dsigma=0.0000 value=2.5921
+    p7 k30 mutate band=elite     arm=1(seed) -> invalid:eval
+    p7 k31 mutate band=elite     arm=1(seed) -> invalid:eval
+  group p0 [elite]: {'valid': 10, 'invalid': 7, 'sterile': 15}  mean_dmu=-0.1441 over 10 valid mutations
+  group p1 [elite]: {'valid': 1}  mean_dmu=+0.0000 over 0 valid mutations
+  group p2 [elite]: {'valid': 12, 'sterile': 20}  mean_dmu=+0.0000 over 12 valid mutations
+  group p3 [elite]: {'sterile': 20, 'valid': 9, 'invalid': 3}  mean_dmu=-0.1999 over 9 valid mutations
+  group p4 [elite]: {'valid': 1}  mean_dmu=+0.0000 over 0 valid mutations
+  group p5 [elite]: {'valid': 17, 'sterile': 13, 'invalid': 2}  mean_dmu=-0.0815 over 17 valid mutations
+  group p6 [elite]: {'valid': 16, 'invalid': 16}  mean_dmu=+0.0000 over 16 valid mutations
+  group p7 [elite]: {'invalid': 18, 'valid': 14}  mean_dmu=-0.0000 over 14 valid mutations
+  reflecting on iteration ...
+  reflection -> +arm[elite]  failure='A majority of mutations in the elite band resulted in invalid evaluati'
+  GRPO update on 192 action sequences ...
+  GRPO: adapters=1 pg=+0.94539 kl=0.00016 ratio=1.0000 n=192 tok=167884
+    [elite    ] n=192 pg=+0.94539 kl=0.00016 ratio=1.0000 |adv|=0.9701 gnorm=0.014
+[iter 1] outcomes={'valid': 80, 'invalid': 46, 'sterile': 68}  reasons={'eval': 46, 'not_novel': 67, 'cosmetic_noop': 1}
+[iter 1] best=2.612706 raw=2.612706  archive=45  sterile=127 invalid=107  arms={'weak': 2, 'good': 2, 'elite': 4, 'near_sota': 2}  (1239.0s)
+
+[iter 2] (RL) parents picked: 8  (T=388 archive=45)
+  parent 0 [expanded] value=2.6127 band=elite     n=0    Q=2.6127 bonus=2.4420 score=3.4420
+  parent 1 [expanded] value=2.6089 band=elite     n=0    Q=2.6089 bonus=2.4420 score=3.4339
+  parent 2 [expanded] value=2.5943 band=elite     n=0    Q=2.5943 bonus=2.4420 score=3.4030
+  parent 3 [expanded] value=2.5921 band=elite     n=0    Q=2.5921 bonus=2.4420 score=3.3984
+  parent 4 [expanded] value=2.5921 band=elite     n=0    Q=2.5921 bonus=2.4420 score=3.3984
+  parent 5 [expanded] value=2.5921 band=elite     n=0    Q=2.5921 bonus=2.4420 score=3.3984
+  parent 6 [expanded] value=2.5921 band=elite     n=0    Q=2.5921 bonus=2.4420 score=3.3984
+  parent 7 [expanded] value=2.5921 band=elite     n=0    Q=2.5921 bonus=2.4420 score=3.3984

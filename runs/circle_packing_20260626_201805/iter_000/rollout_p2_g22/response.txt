@@ -1,0 +1,73 @@
+```python
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = int(np.ceil(np.sqrt(n)))
+    xs = (np.arange(n) % cols + 0.5) / cols
+    ys = (np.arange(n) // cols + 0.5) / cols
+    r0 = 0.5 / cols - 1e-3
+    v0 = np.empty(3 * n)
+    v0[0::3] = xs
+    v0[1::3] = ys
+    v0[2::3] = r0
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    cons = []
+    for i in range(n):
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+
+    for i in range(n):
+        for j in range(i + 1, n):
+            def constraint_func(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                return dx*dx + dy*dy - (v[3*i+2] + v[3*j+2])**2
+            cons.append({"type": "ineq", "fun": constraint_func})
+
+    # First stage: Global optimization with SLSQP
+    res_global = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                          constraints=cons, options={"maxiter": 100, "ftol": 1e-8})
+
+    v_global = res_global.x if res_global.success else v0
+    centers_global = np.column_stack([v_global[0::3], v_global[1::3]])
+    radii_global = np.clip(v_global[2::3], 1e-6, None)
+
+    # Second stage: Local optimization with L-BFGS-B for finer tuning
+    def neg_sum_radii_local(v):
+        return -np.sum(v[2::3])
+
+    bounds_local = [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)] * n
+    cons_local = []
+
+    for i in range(n):
+        cons_local.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons_local.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        cons_local.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        cons_local.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+
+    for i in range(n):
+        for j in range(i + 1, n):
+            def constraint_func_local(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                return dx*dx + dy*dy - (v[3*i+2] + v[3*j+2])**2
+            cons_local.append({"type": "ineq", "fun": constraint_func_local})
+
+    res_local = minimize(neg_sum_radii_local, v_global, method="L-BFGS-B", bounds=bounds_local,
+                         constraints=cons_local, options={"maxiter": 200, "ftol": 1e-9})
+
+    v_final = res_local.x if res_local.success else v_global
+    centers = np.column_stack([v_final[0::3], v_final[1::3]])
+    radii = np.clip(v_final[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())
+```

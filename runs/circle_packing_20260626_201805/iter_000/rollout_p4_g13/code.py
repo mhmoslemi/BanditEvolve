@@ -1,0 +1,78 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = int(np.ceil(np.sqrt(n)))
+    xs = (np.arange(n) % cols + 0.5) / cols
+    ys = (np.arange(n) // cols + 0.5) / cols
+    r0 = 0.5 / cols - 1e-3
+    v0 = np.empty(3 * n)
+    v0[0::3] = xs
+    v0[1::3] = ys
+    v0[2::3] = r0
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        centers = v[0::3], v[1::3]
+        radii = v[2::3]
+        sum_r = np.sum(radii)
+        
+        # Boundary penalty
+        boundary_penalty = 0.0
+        for i in range(n):
+            x, y = centers[0][i], centers[1][i]
+            r = radii[i]
+            boundary_penalty += max(0, x - r - 0.5) + max(0, 1.5 - x - r) + max(0, y - r - 0.5) + max(0, 1.5 - y - r)
+        
+        # Overlap penalty
+        overlap_penalty = 0.0
+        for i in range(n):
+            for j in range(i + 1, n):
+                dx = centers[0][i] - centers[0][j]
+                dy = centers[1][i] - centers[1][j]
+                dist_sq = dx*dx + dy*dy
+                min_dist_sq = (radii[i] + radii[j]) ** 2
+                overlap_penalty += max(0, dist_sq - min_dist_sq)
+        
+        return -(sum_r - 0.1 * (boundary_penalty + overlap_penalty))
+
+    # Initial optimization with SLSQP
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=[], options={"maxiter": 300, "ftol": 1e-9})
+    v = res.x if res.success else v0
+    
+    # Local refinement with gradient descent
+    for _ in range(10):
+        def local_neg_sum_radii(v):
+            centers = v[0::3], v[1::3]
+            radii = v[2::3]
+            sum_r = np.sum(radii)
+            
+            boundary_penalty = 0.0
+            for i in range(n):
+                x, y = centers[0][i], centers[1][i]
+                r = radii[i]
+                boundary_penalty += max(0, x - r - 0.5) + max(0, 1.5 - x - r) + max(0, y - r - 0.5) + max(0, 1.5 - y - r)
+            
+            overlap_penalty = 0.0
+            for i in range(n):
+                for j in range(i + 1, n):
+                    dx = centers[0][i] - centers[0][j]
+                    dy = centers[1][i] - centers[1][j]
+                    dist_sq = dx*dx + dy*dy
+                    min_dist_sq = (radii[i] + radii[j]) ** 2
+                    overlap_penalty += max(0, dist_sq - min_dist_sq)
+            
+            return -(sum_r - 0.1 * (boundary_penalty + overlap_penalty))
+        
+        # Use a simple gradient descent step
+        grad = np.gradient(local_neg_sum_radii, v, edge_order=2)
+        v -= 0.01 * grad
+    
+    # Final cleanup
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())

@@ -1,0 +1,73 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = int(np.ceil(np.sqrt(n)))
+    xs = (np.arange(n) % cols + 0.5) / cols
+    ys = (np.arange(n) // cols + 0.5) / cols
+    r0 = 0.5 / cols - 1e-3
+    v0 = np.empty(3 * n)
+    v0[0::3] = xs
+    v0[1::3] = ys
+    v0[2::3] = r0
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    cons = []
+    for i in range(n):
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+
+    for i in range(n):
+        for j in range(i + 1, n):
+            def constraint_func(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                r_i = v[3*i+2]
+                r_j = v[3*j+2]
+                return dx*dx + dy*dy - (r_i + r_j)**2
+            cons.append({"type": "ineq", "fun": constraint_func})
+
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 500, "ftol": 1e-9})
+
+    # Add a local optimization step for refinement
+    def refine_centers(v):
+        centers = v.reshape(-1, 3)[:, :2]
+        radii = v.reshape(-1, 3)[:, 2]
+        for _ in range(10):
+            for i in range(n):
+                # Move center towards the center of mass of nearby circles
+                total = 0.0
+                total_r = 0.0
+                for j in range(n):
+                    if i != j:
+                        dx = centers[i, 0] - centers[j, 0]
+                        dy = centers[i, 1] - centers[j, 1]
+                        dist = np.hypot(dx, dy)
+                        if dist < radii[i] + radii[j] + 1e-6:
+                            total += np.array([dx, dy])
+                            total_r += radii[j]
+                if total_r > 0:
+                    centers[i] += total / total_r * 0.01
+                    centers[i] = np.clip(centers[i], 0.0 + 1e-6, 1.0 - 1e-6)
+        return centers.reshape(-1)
+
+    if res.success:
+        v = refine_centers(res.x)
+        centers = v.reshape(-1, 2)
+        radii = v.reshape(-1, 3)[:, 2]
+        radii = np.clip(radii, 1e-6, None)
+    else:
+        v = v0
+        centers = np.column_stack([v[0::3], v[1::3]])
+        radii = np.clip(v[2::3], 1e-6, None)
+
+    return centers, radii, float(radii.sum())
