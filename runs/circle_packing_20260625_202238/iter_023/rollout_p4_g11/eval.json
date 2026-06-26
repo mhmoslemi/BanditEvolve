@@ -1,0 +1,21 @@
+{
+  "record": {
+    "kind": "mutate",
+    "band": "near_sota",
+    "arm_idx": 11,
+    "arm_source": "reflection",
+    "outcome": "invalid:eval",
+    "value": null,
+    "dmu": null,
+    "dsigma": null
+  },
+  "eval": {
+    "per_seed": {
+      "0": 0.0
+    },
+    "value": 0.0,
+    "valid": false,
+    "raw": null,
+    "msg": "run_failed:name 'modified_neg_sum_radii_with_inversion' is not defined"
+  }
+}

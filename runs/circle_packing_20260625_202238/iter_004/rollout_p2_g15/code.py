@@ -1,0 +1,101 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = int(np.ceil(np.sqrt(n)))
+    xs = (np.arange(n) % cols + 0.5) / cols
+    ys = (np.arange(n) // cols + 0.5) / cols
+    r0 = 0.5 / cols - 1e-3
+    v0 = np.empty(3 * n)
+    v0[0::3] = xs
+    v0[1::3] = ys
+    v0[2::3] = r0
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    # Define constraints
+    cons = []
+    for i in range(n):
+        # X boundaries
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        # Y boundaries
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+
+    # Add pairwise distance constraints
+    for i in range(n):
+        for j in range(i + 1, n):
+            def constraint_func(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                return dx*dx + dy*dy - (v[3*i+2] + v[3*j+2])**2
+            cons.append({"type": "ineq", "fun": constraint_func})
+
+    # Initial optimization
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 500, "ftol": 1e-9})
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+
+    # Constraint-based reordering mutation
+    constraint_violations = np.zeros(n)
+    for i in range(n):
+        for j in range(i + 1, n):
+            dx = v[3*i] - v[3*j]
+            dy = v[3*i+1] - v[3*j+1]
+            dist = np.sqrt(dx*dx + dy*dy)
+            if dist < v[3*i+2] + v[3*j+2] - 1e-5:
+                constraint_violations[i] += (v[3*i+2] + v[3*j+2] - dist)
+                constraint_violations[j] += (v[3*i+2] + v[3*j+2] - dist)
+
+    sorted_indices = np.argsort(constraint_violations)
+    permuted_v = np.zeros_like(v)
+    for i, idx in enumerate(sorted_indices):
+        permuted_v[3*i] = v[3*idx]
+        permuted_v[3*i+1] = v[3*idx+1]
+        permuted_v[3*i+2] = v[3*idx+2]
+
+    res = minimize(neg_sum_radii, permuted_v, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 500, "ftol": 1e-9})
+    v = res.x if res.success else permuted_v
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+
+    # Hybrid geometric-reinforcement strategy
+    # Step 1: Apply controlled geometric distortion
+    distortion = 0.05
+    for i in range(n):
+        v[3*i] += np.random.uniform(-distortion, distortion)
+        v[3*i+1] += np.random.uniform(-distortion, distortion)
+        v[3*i+2] = np.clip(v[3*i+2], 1e-6, 0.5)
+
+    res = minimize(neg_sum_radii, v, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 300, "ftol": 1e-9})
+    v = res.x if res.success else v
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+
+    # Step 2: Reinforce recently modified elements
+    # Sort by modification magnitude
+    modified_indices = np.argsort(np.abs(v[2::3] - np.clip(v0[2::3], 1e-6, 0.5)))
+    for i in modified_indices[:10]:
+        i_idx = i
+        # Perturb slightly and re-optimize
+        v[3*i_idx] += np.random.uniform(-0.01, 0.01)
+        v[3*i_idx+1] += np.random.uniform(-0.01, 0.01)
+        v[3*i_idx+2] = np.clip(v[3*i_idx+2], 1e-6, 0.5)
+
+    res = minimize(neg_sum_radii, v, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 200, "ftol": 1e-9})
+    v = res.x if res.success else v
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+
+    return centers, radii, float(radii.sum())

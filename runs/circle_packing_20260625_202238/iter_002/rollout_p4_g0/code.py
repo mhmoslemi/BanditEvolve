@@ -1,0 +1,95 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = int(np.ceil(np.sqrt(n)))
+    xs = (np.arange(n) % cols + 0.5) / cols
+    ys = (np.arange(n) // cols + 0.5) / cols
+    r0 = 0.5 / cols - 1e-3
+    v0 = np.empty(3 * n)
+    v0[0::3] = xs
+    v0[1::3] = ys
+    v0[2::3] = r0
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    cons = []
+    for i in range(n):
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+    for i in range(n):
+        for j in range(i + 1, n):
+            def constraint_func(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                return dx*dx + dy*dy - (v[3*i+2] + v[3*j+2])**2
+            cons.append({"type": "ineq", "fun": constraint_func})
+
+    # Initial optimization with SLSQP
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 500, "ftol": 1e-9})
+    v = res.x if res.success else v0
+
+    # Constraint violation ordering
+    def constraint_violation(v):
+        violations = []
+        for i in range(n):
+            for j in range(i + 1, n):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                dist = np.sqrt(dx*dx + dy*dy)
+                if dist < v[3*i+2] + v[3*j+2] - 1e-5:
+                    violations.append((i, j, (v[3*i+2] + v[3*j+2] - dist)))
+        return violations
+
+    violations = constraint_violation(v)
+    if violations:
+        # Sort by severity of constraint violation
+        violations.sort(key=lambda x: x[2], reverse=True)
+        # Extract indices of circles involved in violations
+        violation_indices = set()
+        for i, j, _ in violations:
+            violation_indices.add(i)
+            violation_indices.add(j)
+        # Reorder optimization to prioritize least constrained circles
+        sorted_indices = sorted(violation_indices)
+        # Create a reordered decision vector
+        reordered_v = np.zeros_like(v)
+        for idx in range(n):
+            if idx in violation_indices:
+                i = sorted_indices.index(idx)
+                reordered_v[3*i] = v[3*idx]
+                reordered_v[3*i+1] = v[3*idx+1]
+                reordered_v[3*i+2] = v[3*idx+2]
+            else:
+                i = np.where(np.array(sorted_indices) == idx)[0][0]
+                reordered_v[3*i] = v[3*idx]
+                reordered_v[3*i+1] = v[3*idx+1]
+                reordered_v[3*i+2] = v[3*idx+2]
+        # Re-optimize with reordered decision vector
+        res = minimize(neg_sum_radii, reordered_v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 300, "ftol": 1e-9})
+        v = res.x if res.success else v
+
+    # Local refinement
+    if res.success:
+        v = res.x
+    else:
+        v = v0
+        for _ in range(10):
+            res = minimize(neg_sum_radii, v, method="L-BFGS-B", bounds=bounds,
+                           constraints=cons, options={"maxiter": 100, "ftol": 1e-9})
+            if res.success:
+                v = res.x
+                break
+
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())

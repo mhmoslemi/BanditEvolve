@@ -1,0 +1,13 @@
+{
+  "record": {
+    "kind": "mutate",
+    "band": "elite",
+    "arm_idx": 9,
+    "arm_source": "reflection",
+    "outcome": "sterile:too_similar_to_parent",
+    "value": null,
+    "dmu": null,
+    "dsigma": null
+  },
+  "eval": null
+}

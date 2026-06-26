@@ -1,0 +1,79 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = int(np.ceil(np.sqrt(n)))
+    xs = (np.arange(n) % cols + 0.5) / cols
+    ys = (np.arange(n) // cols + 0.5) / cols
+    r0 = 0.5 / cols - 1e-3
+    v0 = np.empty(3 * n)
+    v0[0::3] = xs
+    v0[1::3] = ys
+    v0[2::3] = r0
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    cons = []
+    for i in range(n):
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+
+    # Vectorized overlap constraints
+    # Precompute all pairwise distance constraints using vector operations
+    # Extract center coordinates and radii
+    x_centers = np.arange(3 * n, dtype=np.float64)[0::3]
+    y_centers = np.arange(3 * n, dtype=np.float64)[1::3]
+    r_centers = np.arange(3 * n, dtype=np.float64)[2::3]
+
+    # Create grid of indices for pairwise comparisons
+    i_indices, j_indices = np.triu_indices(n, k=1)
+    # Create arrays for all i and j
+    i_array = np.repeat(np.arange(n), n - 1)
+    j_array = np.tile(np.arange(1, n), n - 1)
+
+    # Vectorized function to compute distance constraint
+    def constraint_func(v):
+        dx = v[3 * i_array] - v[3 * j_array]
+        dy = v[3 * i_array + 1] - v[3 * j_array + 1]
+        dist_sq = dx * dx + dy * dy
+        r_sum_sq = (v[3 * i_array + 2] + v[3 * j_array + 2]) ** 2
+        return dist_sq - r_sum_sq
+
+    # Add constraints for all pairs
+    for i, j in zip(i_array, j_array):
+        cons.append({"type": "ineq", "fun": lambda v, i=i, j=j: constraint_func(v)})
+
+    # Initial optimization
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 500, "ftol": 1e-9})
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+
+    # Apply 'shake' heuristic to smallest circles
+    if radii.min() > 1e-6:
+        small_circle_indices = np.argsort(radii) < 5  # Select smallest 5 circles
+        v_shake = v.copy()
+        for i in np.where(small_circle_indices)[0]:
+            # Perturb center slightly
+            v_shake[3*i] += np.random.uniform(-0.01, 0.01)
+            v_shake[3*i+1] += np.random.uniform(-0.01, 0.01)
+            # Adjust radius to maintain feasibility
+            r = v_shake[3*i+2]
+            v_shake[3*i+2] = np.clip(r - 0.001, 1e-6, 0.5)
+
+        # Re-optimize with perturbed configuration
+        res = minimize(neg_sum_radii, v_shake, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 200, "ftol": 1e-9})
+        v = res.x if res.success else v
+
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())

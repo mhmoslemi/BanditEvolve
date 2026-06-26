@@ -1,0 +1,21 @@
+{
+  "record": {
+    "kind": "mutate",
+    "band": "near_sota",
+    "arm_idx": 7,
+    "arm_source": "reflection",
+    "outcome": "valid",
+    "value": 2.5202322667757486,
+    "dmu": -0.10356065382736546,
+    "dsigma": 0.0
+  },
+  "eval": {
+    "per_seed": {
+      "0": 2.5202322667757486
+    },
+    "value": 2.5202322667757486,
+    "valid": true,
+    "raw": 2.5202322667757486,
+    "msg": "ok"
+  }
+}

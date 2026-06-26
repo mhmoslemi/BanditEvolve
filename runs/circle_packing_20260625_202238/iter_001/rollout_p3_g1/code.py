@@ -1,0 +1,127 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = int(np.ceil(np.sqrt(n)))
+    xs = (np.arange(n) % cols + 0.5) / cols
+    ys = (np.arange(n) // cols + 0.5) / cols
+    r0 = 0.5 / cols - 1e-3
+    v0 = np.empty(3 * n)
+    v0[0::3] = xs
+    v0[1::3] = ys
+    v0[2::3] = r0
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    cons = []
+    for i in range(n):
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+
+    # Compute constraint tightness to reorder circles
+    # We will use the initial guess to estimate constraint tightness
+    # Tightness is defined as the distance to constraint violation
+    tightness = []
+    for i in range(n):
+        x = v0[3*i]
+        y = v0[3*i+1]
+        r = v0[3*i+2]
+        # Distance to left wall
+        tightness.append(1e-3)  # Minimum radius constraint
+        # Distance to right wall
+        tightness.append(1e-3)
+        # Distance to bottom wall
+        tightness.append(1e-3)
+        # Distance to top wall
+        tightness.append(1e-3)
+        
+        # Distance to left and right wall with radius
+        tightness.append(x - r)
+        tightness.append(1.0 - x - r)
+        
+        # Distance to bottom and top wall with radius
+        tightness.append(y - r)
+        tightness.append(1.0 - y - r)
+        
+        # Precompute pairwise distances for constraint tightness
+        for j in range(i + 1, n):
+            dx = v0[3*i] - v0[3*j]
+            dy = v0[3*i+1] - v0[3*j+1]
+            dist = np.sqrt(dx*dx + dy*dy)
+            r_sum = v0[3*i+2] + v0[3*j+2]
+            tightness.append(dist - r_sum)
+    
+    # Reorder circles based on constraint tightness (most constrained first)
+    # We use tightness as a proxy for constraint tightness
+    # We invert tightness to prioritize most constrained elements
+    indices = np.argsort(-np.array(tightness))
+    
+    # Reorder the decision vector based on indices
+    reordered_v = np.zeros_like(v0)
+    for i in range(n):
+        original_index = indices[i]
+        reordered_v[3*i] = v0[3*original_index]
+        reordered_v[3*i+1] = v0[3*original_index+1]
+        reordered_v[3*i+2] = v0[3*original_index+2]
+    
+    # Reorder constraints
+    # We will recompute the constraints based on the reordered indices
+    cons_reordered = []
+    for i in range(n):
+        for j in range(n):
+            if i == j:
+                continue
+            if i > j:
+                continue
+            # Get original indices
+            original_i = indices[i]
+            original_j = indices[j]
+            # Add constraints for (original_i, original_j)
+            cons_reordered.append({"type": "ineq", "fun": lambda v, i=original_i, j=original_j: (v[3*i] - v[3*j])**2 + (v[3*i+1] - v[3*j+1])**2 - (v[3*i+2] + v[3*j+2])**2})
+    
+    # Add boundary constraints for reordered indices
+    for i in range(n):
+        original_i = indices[i]
+        cons_reordered.append({"type": "ineq", "fun": lambda v, i=original_i: v[3*i] - v[3*i+2]})
+        cons_reordered.append({"type": "ineq", "fun": lambda v, i=original_i: 1.0 - v[3*i] - v[3*i+2]})
+        cons_reordered.append({"type": "ineq", "fun": lambda v, i=original_i: v[3*i+1] - v[3*i+2]})
+        cons_reordered.append({"type": "ineq", "fun": lambda v, i=original_i: 1.0 - v[3*i+1] - v[3*i+2]})
+
+    # Initial optimization with SLSQP
+    res = minimize(neg_sum_radii, reordered_v, method="SLSQP", bounds=bounds,
+                   constraints=cons_reordered, options={"maxiter": 500, "ftol": 1e-9})
+
+    # If optimization fails, use the reordered guess
+    v = res.x if res.success else reordered_v
+
+    # Local refinement with Nelder-Mead for better convergence
+    def local_refinement(v):
+        def objective(v):
+            return -np.sum(v[2::3])
+        res_local = minimize(objective, v, method="Nelder-Mead",
+                             bounds=bounds, constraints=cons_reordered,
+                             options={"maxiter": 100, "ftol": 1e-9})
+        return res_local.x if res_local.success else v
+
+    v = local_refinement(v)
+
+    # Reorder the final result back to original indices
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    
+    # Reorder centers and radii to original indices
+    final_centers = np.zeros((n, 2))
+    final_radii = np.zeros(n)
+    for i in range(n):
+        original_index = indices[i]
+        final_centers[i] = centers[original_index]
+        final_radii[i] = radii[original_index]
+    
+    return final_centers, final_radii, float(final_radii.sum())

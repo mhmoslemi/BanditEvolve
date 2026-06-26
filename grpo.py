@@ -176,6 +176,8 @@ class GRPOTrainer:
         for band, group in banded_groups:
             if len(group) < 2:
                 continue
+            if self.llm._adapter_for(band) is None:
+                continue            # band has no adapter (e.g. good-only mode): never trained
             rewards = np.asarray([r for (_, r) in group], dtype=float)
             std = float(rewards.std())                      # population std over the group
             if std < self.min_group_std:

@@ -1,0 +1,97 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = int(np.ceil(np.sqrt(n)))
+    xs = (np.arange(n) % cols + 0.5) / cols
+    ys = (np.arange(n) // cols + 0.5) / cols
+    r0 = 0.5 / cols - 1e-3
+    v0 = np.empty(3 * n)
+    v0[0::3] = xs
+    v0[1::3] = ys
+    v0[2::3] = r0
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    cons = []
+    for i in range(n):
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+
+    for i in range(n):
+        for j in range(i + 1, n):
+            def constraint_func(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                return dx*dx + dy*dy - (v[3*i+2] + v[3*j+2])**2
+            cons.append({"type": "ineq", "fun": constraint_func})
+
+    # Initial optimization with default layout
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 500, "ftol": 1e-9})
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+
+    # Generate a new initial guess based on Voronoi tessellation
+    from scipy.spatial import Voronoi
+    initial_points = np.column_stack([v[0::3], v[1::3]])
+    vor = Voronoi(initial_points)
+    new_points = np.zeros((n, 2))
+    for i in range(n):
+        if vor.point_region[i] != -1:
+            region = vor.regions[vor.point_region[i]]
+            if not -1 in region and len(region) > 0:
+                new_points[i] = np.mean(initial_points[region], axis=0)
+        else:
+            new_points[i] = initial_points[i]
+    new_v = np.empty(3 * n)
+    new_v[0::3] = new_points[:, 0]
+    new_v[1::3] = new_points[:, 1]
+    new_v[2::3] = v[2::3]
+
+    # Re-optimize with Voronoi-based initial guess
+    res = minimize(neg_sum_radii, new_v, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 500, "ftol": 1e-9})
+    v = res.x if res.success else new_v
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+
+    # Add penalty for overlapping circles to improve convergence
+    def penalty(v):
+        sum_penalty = 0
+        for i in range(n):
+            for j in range(i + 1, n):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                dist = np.sqrt(dx*dx + dy*dy)
+                if dist < v[3*i+2] + v[3*j+2] - 1e-5:
+                    sum_penalty += max(0, (v[3*i+2] + v[3*j+2] - dist) ** 2)
+        return sum_penalty
+
+    # Jiggle heuristic for smallest circles with weighted objective
+    if np.sum(radii) > 0:
+        sorted_indices = np.argsort(radii)
+        small_circle_indices = sorted_indices[:10]
+        perturbation = 0.01
+        for idx in small_circle_indices:
+            i = idx
+            v[3*i] += np.random.uniform(-perturbation, perturbation)
+            v[3*i+1] += np.random.uniform(-perturbation, perturbation)
+            v[3*i+2] = np.clip(v[3*i+2], 1e-6, 0.5)
+        # Re-optimize with penalty and weighted objective
+        res = minimize(lambda v: -np.sum(v[2::3]) + 100 * penalty(v), v, method="SLSQP", 
+                       bounds=bounds, constraints=cons, 
+                       options={"maxiter": 300, "ftol": 1e-9})
+        v = res.x if res.success else v
+        centers = np.column_stack([v[0::3], v[1::3]])
+        radii = np.clip(v[2::3], 1e-6, None)
+    
+    return centers, radii, float(radii.sum())

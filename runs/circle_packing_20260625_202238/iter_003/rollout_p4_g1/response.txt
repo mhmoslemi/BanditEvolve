@@ -1,0 +1,138 @@
+<strategy>
+The current program uses a deterministic initial layout, applies a single optimization phase, and performs a perturbation-based refinement on the smallest circles. The goal is to improve the sum of radii beyond the current best of 2.592104 by implementing a constrained reordering mutation based on constraint tightness.
+
+### Strategy:
+
+1. **Initial Layout**: The program starts with a grid-based layout and initializes radii. This is a reasonable starting point, but the order of circles may affect how constraints are applied and how the optimization proceeds.
+
+2. **Constraint Tightness Analysis**: The most tight constraints (e.g., boundary contact, close circle proximity) are often the ones that limit the optimization. These circles are harder to move without violating constraints, so they should be prioritized to ensure feasibility during mutation.
+
+3. **Reordering Mutation**: We will:
+   - Compute the constraint tightness for each circle based on how close it is to violating any constraint.
+   - Permute the circles in the decision vector based on this constraint tightness.
+   - Perform a new optimization pass to explore a different local optimum.
+
+4. **Gradient and Convergence Improvements**: The SLSQP method can sometimes struggle with non-convex constraints and poor initial guesses. By reordering based on constraint tightness, we can allow the solver to focus on the most constrained circles earlier, potentially leading to better convergence.
+
+5. **Implementation**:
+   - Compute a "constraint tightness" score for each circle.
+   - Sort the indices based on this score.
+   - Reorder the decision vector and constraints accordingly.
+   - Reoptimize with the new order.
+
+By focusing on the most constrained circles first, the optimization is more likely to find a better local optimum without violating constraints.
+</strategy>
+
+```python
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = int(np.ceil(np.sqrt(n)))
+    xs = (np.arange(n) % cols + 0.5) / cols
+    ys = (np.arange(n) // cols + 0.5) / cols
+    r0 = 0.5 / cols - 1e-3
+    v0 = np.empty(3 * n)
+    v0[0::3] = xs
+    v0[1::3] = ys
+    v0[2::3] = r0
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    cons = []
+    for i in range(n):
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+    for i in range(n):
+        for j in range(i + 1, n):
+            def constraint_func(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                dist_sq = dx*dx + dy*dy
+                r_sum = v[3*i+2] + v[3*j+2]
+                return dist_sq - r_sum**2
+            cons.append({"type": "ineq", "fun": constraint_func})
+
+    # Initial optimization
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 500, "ftol": 1e-9})
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+
+    # Compute constraint tightness
+    constraint_tightness = np.zeros(n)
+    for i in range(n):
+        for j in range(n):
+            if i != j:
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                dist_sq = dx*dx + dy*dy
+                r_sum = v[3*i+2] + v[3*j+2]
+                constraint_tightness[i] += max(0, r_sum**2 - dist_sq)
+    constraint_tightness /= n
+
+    # Reorder based on constraint tightness
+    sorted_indices = np.argsort(constraint_tightness)
+    new_order = np.argsort(sorted_indices)
+
+    # Create new decision vector and constraints
+    v_new = np.zeros(3 * n)
+    for i in range(n):
+        v_new[3*i] = v[3*new_order[i]]
+        v_new[3*i+1] = v[3*new_order[i]+1]
+        v_new[3*i+2] = v[3*new_order[i]+2]
+
+    # Reorder constraints
+    cons_new = []
+    for i in range(n):
+        cons_new.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons_new.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        cons_new.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        cons_new.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+    for i in range(n):
+        for j in range(i + 1, n):
+            def constraint_func(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                dist_sq = dx*dx + dy*dy
+                r_sum = v[3*i+2] + v[3*j+2]
+                return dist_sq - r_sum**2
+            cons_new.append({"type": "ineq", "fun": constraint_func})
+
+    # Re-optimization
+    res = minimize(neg_sum_radii, v_new, method="SLSQP", bounds=bounds,
+                   constraints=cons_new, options={"maxiter": 500, "ftol": 1e-9})
+    v = res.x if res.success else v_new
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+
+    # Jiggle heuristic for smallest circles
+    if np.sum(radii) > 0:
+        # Sort circles by radius (smallest first)
+        sorted_indices = np.argsort(radii)
+        # Select the smallest 10 circles
+        small_circle_indices = sorted_indices[:10]
+        # Perturb their positions slightly and re-optimize
+        perturbation = 0.01
+        for idx in small_circle_indices:
+            i = idx
+            v[3*i] += np.random.uniform(-perturbation, perturbation)
+            v[3*i+1] += np.random.uniform(-perturbation, perturbation)
+            v[3*i+2] = np.clip(v[3*i+2], 1e-6, 0.5)
+        # Re-optimize
+        res = minimize(neg_sum_radii, v, method="SLSQP", bounds=bounds,
+                       constraints=cons_new, options={"maxiter": 300, "ftol": 1e-9})
+        v = res.x if res.success else v
+        centers = np.column_stack([v[0::3], v[1::3]])
+        radii = np.clip(v[2::3], 1e-6, None)
+    
+    return centers, radii, float(radii.sum())
+```

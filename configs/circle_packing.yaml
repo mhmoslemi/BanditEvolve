@@ -3,9 +3,9 @@ num_circles: 26
 target: 2.635983
 
 # search budget
-num_iters: 10
+num_iters: 100
 num_parents: 8              # n parents per iteration (UCT, no repeat)
-rollouts_per_parent: 12      # k rollouts per parent -> 16 rollouts / iteration
+rollouts_per_parent: 24      # k rollouts per parent -> 16 rollouts / iteration
 num_seeds: 8                # initial independent seeds
 
 # Circle-packing scoring is DETERMINISTIC for a fixed packing, so multiple eval
@@ -20,7 +20,7 @@ explore_eps: 0.1            # P(a rollout makes a fresh seed instead of mutating
 timeout: 100.0
 
 # Parallel sandbox evaluation (the TTT reward pool). 0 = auto (= cpu count).
-reward_workers: 20
+reward_workers: 50
 
 # UCT / archive
 uct_c: 1.0
@@ -34,7 +34,7 @@ topk_children: 3
 # (the old relative behavior, where the best-so-far seeds land in near_sota).
 bands_absolute: true
 q_good: 0.70
-q_elite: 0.90
+q_elite: 0.95
 q_near: 0.995
 
 # gate
@@ -57,7 +57,7 @@ max_new_tokens: 16000
 
 # Bigger thinking budget x batch = VRAM. llm.py halves the batch on OOM; you can
 # also drop this. Larger batch = better GPU utilization on the decode.
-gen_batch_size: 4
+gen_batch_size: 8
 
 temperature: 1.0
 top_p: 1.0
@@ -69,3 +69,46 @@ top_p: 1.0
 gpu_ids: [0,1,2,3]
 
 seed: 42
+
+# ====================================================================
+# RL (GRPO) fine-tuning of the mutator.
+# rl_enabled: true swaps the frozen UnslothLLM for a trainable model with LoRA
+# adapters and runs the GRPO loop. rl_good_band_only restricts the LoRA to the
+# GOOD band: weak/elite/near_sota generate from the frozen base and are never
+# trained. Set rl_enabled: false for a plain frozen run.
+#
+# GPUs under RL: the trainable model + GRPO update run on gpu_ids[0]; the REST of
+# gpu_ids run data-parallel rollout-generation replicas (each reloads the LoRA
+# adapter every iteration). With a single gpu_ids entry, generation + training
+# share that one GPU. gpu_ids are PHYSICAL ids and override run.sh's
+# CUDA_VISIBLE_DEVICES, so gpu_ids: [0,1,2,3] => train on GPU 0, generate on 1/2/3.
+#
+# MEMORY: the knobs above (max_seq_length 32000 / max_new_tokens 16000) are tuned
+# for the frozen multi-GPU run and are heavy for RL (logprobs are recomputed WITH
+# gradients). For RL prefer something like the commented overrides below.
+# ====================================================================
+rl_enabled: true
+rl_good_band_only: true     # LoRA only on the 'good' band; others = frozen base
+rl_adapter_per_band: true   # ignored when rl_good_band_only is true
+rl_group_size: 16            # G completions per (parent, arm) = one GRPO group
+rl_train_every: 1           # GRPO update every N iterations
+rl_ppo_epochs: 1            # 1 => REINFORCE + group baseline + KL leash
+rl_lr: 5.0e-5
+rl_kl_coef: 0.1
+rl_clip_eps: 0.2
+rl_grad_clip: 1.0
+rl_max_completion_tokens: 2048
+rl_lora_r: 32
+rl_lora_alpha: 32
+rl_lora_dropout: 0.0
+rl_reward_nocode: -0.2
+rl_reward_invalid: -0.1
+rl_reward_sterile: -0.05
+rl_adv_eps: 1.0e-6
+rl_min_group_std: 1.0e-8
+
+# Recommended RL generation overrides (uncomment for an actual RL run; these
+# replace the frozen values above for memory):
+# max_seq_length: 8192
+# max_new_tokens: 2048
+# gen_batch_size: 16

@@ -66,6 +66,37 @@ class Config:
     top_p: float = 1.0
     max_new_tokens: int = 4000
 
+    # ----- RL (GRPO) fine-tuning of the mutator; all inert unless rl_enabled ----
+    # When rl_enabled, make_llm swaps the frozen UnslothLLM for a single
+    # TrainableLLM with per-band LoRA adapters and the engine runs _iteration_rl
+    # (GRPO). RL is SINGLE-GPU: the multi-GPU gpu_ids replication below is ignored
+    # under RL (you train ONE model), so point CUDA_VISIBLE_DEVICES at one device.
+    rl_enabled: bool = False            # flips UnslothLLM -> TrainableLLM + GRPO
+    rl_algo: str = "grpo"               # informational; GRPO is what is implemented
+    rl_group_size: int = 8              # G completions per (parent, arm) = one group
+    rl_train_every: int = 1             # run a GRPO update every N iterations
+    rl_ppo_epochs: int = 1              # passes over the buffer per update (>1 uses the ratio)
+    rl_lr: float = 1e-6
+    rl_kl_coef: float = 0.05            # beta on the KL-to-reference (base model)
+    rl_clip_eps: float = 0.2            # PPO ratio clip
+    rl_grad_clip: float = 1.0
+    rl_max_completion_tokens: int = 2048  # cap on action length used for the loss
+    rl_lora_r: int = 16
+    rl_lora_alpha: int = 32
+    rl_lora_dropout: float = 0.0        # 0 => behavior/update logprobs consistent
+    rl_adapter_per_band: bool = True    # one LoRA adapter per band; False = one shared
+    # If true, ONLY the 'good' band gets a LoRA adapter; weak/elite/near_sota
+    # generate from the frozen base and are never trained. Overrides
+    # rl_adapter_per_band (forces per-band routing). Isolates the update to 'good'.
+    rl_good_band_only: bool = False
+    # reward shaping over the full outcome space (group-normalized, so only the
+    # order/spacing matters): no_code < invalid < sterile < (valid, by dmu)
+    rl_reward_nocode: float = -0.2
+    rl_reward_invalid: float = -0.1
+    rl_reward_sterile: float = -0.05
+    rl_adv_eps: float = 1e-6            # advantage = (r-mean)/(std+eps)
+    rl_min_group_std: float = 1e-8      # skip zero-variance groups (no signal)
+
     # multi-GPU data parallelism: explicit physical GPU ids for frozen-policy
     # replicas. "" or a single id -> one model on one GPU (current behavior).
     # "0,3" (or YAML list [0, 3], or env BANDIT_GPUS) -> one full model copy per

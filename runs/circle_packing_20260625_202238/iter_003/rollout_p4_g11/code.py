@@ -1,0 +1,94 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = int(np.ceil(np.sqrt(n)))
+    xs = (np.arange(n) % cols + 0.5) / cols
+    ys = (np.arange(n) // cols + 0.5) / cols
+    r0 = 0.5 / cols - 1e-3
+    v0 = np.empty(3 * n)
+    v0[0::3] = xs
+    v0[1::3] = ys
+    v0[2::3] = r0
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    cons = []
+    for i in range(n):
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+
+    # Precompute all pairwise distance constraints
+    for i in range(n):
+        for j in range(i + 1, n):
+            def constraint_func(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                dist_sq = dx*dx + dy*dy
+                r_sum = v[3*i+2] + v[3*j+2]
+                return dist_sq - r_sum**2
+            cons.append({"type": "ineq", "fun": constraint_func})
+
+    # Initial optimization
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 500, "ftol": 1e-9})
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+
+    # Apply constrained reordering mutation
+    if np.sum(radii) > 0:
+        # Compute constraint tightness for each circle
+        constraint_tightness = np.zeros(n)
+        for i in range(n):
+            for j in range(i + 1, n):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                dist_sq = dx*dx + dy*dy
+                r_sum = v[3*i+2] + v[3*j+2]
+                constraint_tightness[i] += abs(dist_sq - r_sum**2)
+                constraint_tightness[j] += abs(dist_sq - r_sum**2)
+        
+        # Sort indices by constraint tightness (most restricted first)
+        sorted_indices = np.argsort(constraint_tightness)
+        # Create new ordering based on sorted indices
+        new_order = np.argsort(sorted_indices)
+        
+        # Reorder the decision vector and constraints
+        v_reordered = np.zeros_like(v)
+        for idx, new_idx in enumerate(new_order):
+            v_reordered[3*idx] = v[3*new_idx]
+            v_reordered[3*idx+1] = v[3*new_idx+1]
+            v_reordered[3*idx+2] = v[3*new_idx+2]
+        
+        # Reorder constraints
+        new_cons = []
+        for i in range(n):
+            for j in range(i + 1, n):
+                original_i = new_order[i]
+                original_j = new_order[j]
+                dx = v[3*original_i] - v[3*original_j]
+                dy = v[3*original_i+1] - v[3*original_j+1]
+                dist_sq = dx*dx + dy*dy
+                r_sum = v[3*original_i+2] + v[3*original_j+2]
+                def constraint_func_reordered(v, i=i, j=j):
+                    dx = v[3*i] - v[3*j]
+                    dy = v[3*i+1] - v[3*j+1]
+                    return dx*dx + dy*dy - (v[3*i+2] + v[3*j+2])**2
+                new_cons.append({"type": "ineq", "fun": constraint_func_reordered})
+        
+        # Reoptimize with reordered constraints
+        res = minimize(neg_sum_radii, v_reordered, method="SLSQP", bounds=bounds,
+                       constraints=new_cons, options={"maxiter": 300, "ftol": 1e-9})
+        v = res.x if res.success else v_reordered
+        centers = np.column_stack([v[0::3], v[1::3]])
+        radii = np.clip(v[2::3], 1e-6, None)
+    
+    return centers, radii, float(radii.sum())

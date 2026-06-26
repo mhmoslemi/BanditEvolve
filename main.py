@@ -125,6 +125,18 @@ def _run(cfg, merged):
     print(f"  parents x roll : {cfg.num_parents} x {cfg.rollouts_per_parent} "
           f"= {cfg.num_parents * cfg.rollouts_per_parent}/iter")
     print(f"  eval seeds     : {cfg.num_eval_seeds}   explore eps: {cfg.explore_eps}")
+    if getattr(cfg, "rl_enabled", False):
+        if getattr(cfg, "rl_good_band_only", False):
+            adapters = "good band only (weak/elite/near_sota = frozen base)"
+        elif getattr(cfg, "rl_adapter_per_band", True):
+            adapters = "per-band (weak/good/elite/near_sota)"
+        else:
+            adapters = "one shared"
+        print(f"  --- RL (GRPO) ---  (train on gpu_ids[0]; rest = gen replicas)")
+        print(f"  adapters       : {adapters}")
+        print(f"  group size G   : {cfg.rl_group_size}   train_every: {cfg.rl_train_every}"
+              f"   ppo_epochs: {cfg.rl_ppo_epochs}")
+        print(f"  lr / kl / clip : {cfg.rl_lr} / {cfg.rl_kl_coef} / {cfg.rl_clip_eps}")
     print("=" * 64)
 
     engine = Engine(cfg, problem, llm)

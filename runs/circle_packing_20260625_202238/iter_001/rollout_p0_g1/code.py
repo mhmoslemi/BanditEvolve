@@ -1,0 +1,77 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = int(np.ceil(np.sqrt(n)))
+    xs = (np.arange(n) % cols + 0.5) / cols
+    ys = (np.arange(n) // cols + 0.5) / cols
+    r0 = 0.5 / cols - 1e-3
+    v0 = np.empty(3 * n)
+    v0[0::3] = xs
+    v0[1::3] = ys
+    v0[2::3] = r0
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    cons = []
+    for i in range(n):
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+
+    # Evaluate constraint tightness to guide mutation
+    def constraint_tightness(v):
+        x = v[0::3]
+        y = v[1::3]
+        r = v[2::3]
+        tightness = []
+        for i in range(n):
+            tightness.append(abs(x[i] - r[i]))
+            tightness.append(abs(1.0 - x[i] - r[i]))
+            tightness.append(abs(y[i] - r[i]))
+            tightness.append(abs(1.0 - y[i] - r[i]))
+        for i in range(n):
+            for j in range(i + 1, n):
+                dx = x[i] - x[j]
+                dy = y[i] - y[j]
+                dist_sq = dx * dx + dy * dy
+                r_sum = r[i] + r[j]
+                tightness.append(dist_sq - r_sum * r_sum)
+        return np.abs(np.array(tightness))
+
+    # Permute circle indices based on constraint tightness
+    def permute_indices(v):
+        tightness = constraint_tightness(v)
+        indices = np.arange(3 * n)
+        sorted_indices = indices[np.argsort(tightness)]
+        permuted_v = np.zeros_like(v)
+        for i in range(3 * n):
+            permuted_v[i] = v[sorted_indices[i]]
+        return permuted_v
+
+    # Run initial optimization
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 500, "ftol": 1e-9})
+    v = res.x if res.success else v0
+
+    # Apply mutation with constraint tightness-based permutation
+    for _ in range(3):
+        v = permute_indices(v)
+        res = minimize(neg_sum_radii, v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 200, "ftol": 1e-9})
+        v = res.x if res.success else v
+
+    # Final refinement
+    res = minimize(neg_sum_radii, v, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 100, "ftol": 1e-10})
+    v = res.x if res.success else v
+
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())

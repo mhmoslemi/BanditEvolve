@@ -1,0 +1,81 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = int(np.ceil(np.sqrt(n)))
+    xs = (np.arange(n) % cols + 0.5) / cols
+    ys = (np.arange(n) // cols + 0.5) / cols
+    r0 = 0.5 / cols - 1e-3
+    v0 = np.empty(3 * n)
+    v0[0::3] = xs
+    v0[1::3] = ys
+    v0[2::3] = r0
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    cons = []
+    for i in range(n):
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+
+    # Precompute constraint tightness to enable reordering
+    x_centers = v0[0::3]
+    y_centers = v0[1::3]
+    r_centers = v0[2::3]
+
+    # Compute pairwise distances and constraint tightness
+    dists = []
+    for i in range(n):
+        for j in range(i + 1, n):
+            dx = x_centers[i] - x_centers[j]
+            dy = y_centers[i] - y_centers[j]
+            dist = np.sqrt(dx*dx + dy*dy)
+            dists.append((i, j, dist - (r_centers[i] + r_centers[j])))
+
+    # Sort constraints by tightness (most constrained first)
+    dists.sort(key=lambda x: x[2])
+    tight_indices = [idx for idx, _, _ in dists]
+    tight_indices = tight_indices[:n*2]  # Limit to most constrained ones
+
+    # Reorder the indices based on tightness
+    tight_order = np.argsort(tight_indices)
+    tight_order = tight_order[:n]  # Ensure we have exactly n indices
+
+    # Reorder the decision vector and constraints based on tightness
+    reordered_v = np.zeros(3 * n)
+    reordered_cons = []
+    for i in tight_order:
+        idx = i
+        reordered_v[3*idx] = v0[3*idx]
+        reordered_v[3*idx+1] = v0[3*idx+1]
+        reordered_v[3*idx+2] = v0[3*idx+2]
+
+        # Add boundary constraints for the reordered index
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+
+    # Reorder the constraints for overlap between circles
+    for i in tight_order:
+        for j in tight_order:
+            if i < j:
+                def constraint_func(v, i=i, j=j):
+                    dx = v[3*i] - v[3*j]
+                    dy = v[3*i+1] - v[3*j+1]
+                    return dx*dx + dy*dy - (v[3*i+2] + v[3*j+2])**2
+                cons.append({"type": "ineq", "fun": constraint_func})
+
+    res = minimize(neg_sum_radii, reordered_v, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 500, "ftol": 1e-9})
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())

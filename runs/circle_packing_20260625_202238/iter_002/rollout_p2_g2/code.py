@@ -1,0 +1,96 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = int(np.ceil(np.sqrt(n)))
+    xs = (np.arange(n) % cols + 0.5) / cols
+    ys = (np.arange(n) // cols + 0.5) / cols
+    r0 = 0.5 / cols - 1e-3
+    v0 = np.empty(3 * n)
+    v0[0::3] = xs
+    v0[1::3] = ys
+    v0[2::3] = r0
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    cons = []
+    for i in range(n):
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+
+    # Vectorized overlap constraints
+    x = np.arange(3 * n, dtype=int)
+    i_indices = x[0::3]
+    j_indices = x[1::3]
+    r_indices = x[2::3]
+
+    # Precompute indices for all pairs
+    i_list = []
+    j_list = []
+    for i in range(n):
+        for j in range(i + 1, n):
+            i_list.append(i)
+            j_list.append(j)
+
+    # Create vectorized constraint function
+    def vec_overlap_constraint(v):
+        dx = v[i_indices] - v[i_indices[None, :]]  # shape (n, n)
+        dy = v[j_indices] - v[j_indices[None, :]]  # shape (n, n)
+        dist_sq = dx*dx + dy*dy
+        r_sum = v[r_indices] + v[r_indices[None, :]]  # shape (n, n)
+        return np.maximum(0, dist_sq - r_sum**2)
+
+    # Add all pairwise constraint functions to the list
+    for i, j in zip(i_list, j_list):
+        def constraint_func(v, i=i, j=j):
+            dx = v[3*i] - v[3*j]
+            dy = v[3*i+1] - v[3*j+1]
+            return dx*dx + dy*dy - (v[3*i+2] + v[3*j+2])**2
+        cons.append({"type": "ineq", "fun": constraint_func})
+
+    # Add penalty for overlapping circles to improve convergence
+    def penalty(v):
+        sum_penalty = 0
+        for i in range(n):
+            for j in range(i + 1, n):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                dist = np.sqrt(dx*dx + dy*dy)
+                if dist < v[3*i+2] + v[3*j+2] - 1e-5:
+                    sum_penalty += max(0, (v[3*i+2] + v[3*j+2] - dist) ** 2)
+        return sum_penalty
+
+    # Initial optimization
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 500, "ftol": 1e-9})
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+
+    # Apply 'shake' heuristic to smallest circles
+    if radii.min() > 1e-6:
+        small_circle_indices = np.argsort(radii) < 5  # Select smallest 5 circles
+        v_shake = v.copy()
+        for i in np.where(small_circle_indices)[0]:
+            # Perturb center slightly
+            v_shake[3*i] += np.random.uniform(-0.01, 0.01)
+            v_shake[3*i+1] += np.random.uniform(-0.01, 0.01)
+            # Adjust radius to maintain feasibility
+            r = v_shake[3*i+2]
+            v_shake[3*i+2] = np.clip(r - 0.001, 1e-6, 0.5)
+
+        # Re-optimize with perturbed configuration
+        res = minimize(neg_sum_radii, v_shake, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 200, "ftol": 1e-9})
+        v = res.x if res.success else v
+
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())
