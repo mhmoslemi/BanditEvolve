@@ -882,13 +882,13 @@ def make_llm(cfg):
     # any remaining gpu_ids run data-parallel rollout-generation replicas with the
     # adapter synced each iteration. The frozen multi-GPU path below is not used.
     if getattr(cfg, "rl_enabled", False):
-        # good-only mode: one adapter for the good band, per-band routing forced on
-        # so the other bands resolve to the frozen base (no adapter, untrained).
+        # adapter scope: an explicit band allowlist (e.g. [good, near_sota]) trains
+        # only those bands; the rest route to the frozen base. A non-empty allowlist
+        # implies per-band routing.
+        from config import resolve_adapter_bands
         per_band = getattr(cfg, "rl_adapter_per_band", True)
-        adapter_bands = None
-        if getattr(cfg, "rl_good_band_only", False):
-            from bands import GOOD
-            adapter_bands = [GOOD]
+        adapter_bands = resolve_adapter_bands(cfg)
+        if adapter_bands is not None:
             per_band = True
         tll_kwargs = dict(
             model_name=cfg.llm_model,

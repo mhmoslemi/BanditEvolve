@@ -1,0 +1,304 @@
+[log] writing run to /work/mohammad/BanditEvolve/logs/circle_packing_20260626_153856.log
+[llm][rl] spawning 3 generation replica(s) on GPUs [1, 2, 3] ...
+[llm][rl] generation replica ready on GPU 2
+[llm][rl] generation replica ready on GPU 1
+[llm][rl] generation replica ready on GPU 3
+🦥 Unsloth: Will patch your computer to enable 2x faster free finetuning.
+🦥 Unsloth Zoo will now patch everything to make training faster!
+[llm][rl] loading Qwen/Qwen3-8B via Unsloth (4bit=False) + LoRA(r=32, alpha=32) x 2 adapter(s): ['good', 'near_sota'] ...
+==((====))==  Unsloth 2026.6.9: Fast Qwen3 patching. Transformers: 5.5.0.
+   \\   /|    NVIDIA H100 80GB HBM3. Num GPUs = 1. Max memory: 79.189 GB. Platform: Linux.
+O^O/ \_/ \    Torch: 2.10.0+cu129. CUDA: 9.0. CUDA Toolkit: 12.9. Triton: 3.6.0
+\        /    Bfloat16 = TRUE. FA [Xformers = None. FA2 = False]
+ "-____-"     Free license: http://github.com/unslothai/unsloth
+Unsloth: Fast downloading is enabled - ignore downloading bars which are red colored!
+Loading weights:   0%|                                                                                | 0/399 [00:00<?, ?it/s]Loading weights:   0%|▏                                                                       | 1/399 [00:00<00:58,  6.84it/s]Loading weights:   1%|▎                                                                       | 2/399 [00:00<01:03,  6.25it/s]Loading weights:   5%|███▋                                                                   | 21/399 [00:00<00:05, 68.67it/s]Loading weights:  10%|██████▊                                                               | 39/399 [00:00<00:03, 103.29it/s]Loading weights:  16%|███████████▍                                                          | 65/399 [00:00<00:02, 151.15it/s]Loading weights:  21%|██████████████▌                                                       | 83/399 [00:00<00:02, 157.29it/s]Loading weights:  26%|██████████████████▏                                                  | 105/399 [00:00<00:01, 168.75it/s]Loading weights:  32%|█████████████████████▉                                               | 127/399 [00:00<00:01, 176.77it/s]Loading weights:  37%|█████████████████████████▊                                           | 149/399 [00:01<00:01, 183.93it/s]Loading weights:  43%|█████████████████████████████▌                                       | 171/399 [00:01<00:01, 192.93it/s]Loading weights:  48%|█████████████████████████████████                                    | 191/399 [00:01<00:01, 191.40it/s]Loading weights:  54%|█████████████████████████████████████▏                               | 215/399 [00:01<00:00, 202.18it/s]Loading weights:  59%|████████████████████████████████████████▉                            | 237/399 [00:01<00:00, 205.02it/s]Loading weights:  65%|████████████████████████████████████████████▊                        | 259/399 [00:01<00:00, 202.98it/s]Loading weights:  70%|████████████████████████████████████████████████▍                    | 280/399 [00:01<00:00, 204.38it/s]Loading weights:  76%|████████████████████████████████████████████████████▏                | 302/399 [00:01<00:00, 203.69it/s]Loading weights:  81%|████████████████████████████████████████████████████████             | 324/399 [00:01<00:00, 202.34it/s]Loading weights:  87%|███████████████████████████████████████████████████████████▊         | 346/399 [00:02<00:00, 202.10it/s]Loading weights:  92%|███████████████████████████████████████████████████████████████▍     | 367/399 [00:02<00:00, 202.25it/s]Loading weights:  97%|███████████████████████████████████████████████████████████████████▎ | 389/399 [00:02<00:00, 201.32it/s]Loading weights: 100%|█████████████████████████████████████████████████████████████████████| 399/399 [00:02<00:00, 174.82it/s]
+unsloth/Qwen3-8B does not have a padding token! Will use pad_token = <|PAD_TOKEN|>.
+Unsloth 2026.6.9 patched 36 layers with 36 QKV layers, 36 O layers and 36 MLP layers.
+[llm][rl] trainable params: 174.6M across 2 adapter(s) on cuda:0  lr=5e-05
+[llm][rl] training on GPU 0; rollout generation parallel across GPUs [1, 2, 3]
+================================================================
+Band-bandit evolutionary search
+  problem        : circle_packing
+  metric         : sum of radii (maximize)
+  llm            : unsloth:Qwen/Qwen3-8B
+  iters          : 100
+  parents x roll : 8 x 24 = 192/iter
+  eval seeds     : 1   explore eps: 0.1
+  --- RL (GRPO) ---  (train on gpu_ids[0]; rest = gen replicas)
+  adapters       : bands ['good', 'near_sota'] (rest = frozen base)
+  group size G   : 32   train_every: 1   ppo_epochs: 1
+  lr / kl / clip : 5e-05 / 0.1 / 0.2
+================================================================
+[init] reward pool: 50 parallel sandboxes
+[init] saving per-rollout artifacts under runs/circle_packing_20260626_153953/
+[init] RL (GRPO) ON [adapters on bands ['good', 'near_sota']]: group_size=32 train_every=1 ppo_epochs=1 lr=5e-05 kl=0.1 clip=0.2 max_comp_tok=2048
+[init] RESUME from runs/circle_packing_20260625_202238: loaded 400 valid program(s) (archive 400, best=2.6360)
+
+[iter 0] (RL) parents picked: 8  (T=0 archive=400)
+  parent 0 [expanded] value=2.6360 band=near_sota n=0    Q=2.6360 bonus=0.0000 score=1.0000
+  parent 1 [expanded] value=2.6311 band=near_sota n=0    Q=2.6311 bonus=0.0000 score=0.5989
+  parent 2 [expanded] value=2.6311 band=near_sota n=0    Q=2.6311 bonus=0.0000 score=0.5989
+  parent 3 [expanded] value=2.6311 band=near_sota n=0    Q=2.6311 bonus=0.0000 score=0.5989
+  parent 4 [expanded] value=2.6311 band=near_sota n=0    Q=2.6311 bonus=0.0000 score=0.5989
+  parent 5 [expanded] value=2.6311 band=near_sota n=0    Q=2.6311 bonus=0.0000 score=0.5989
+  parent 6 [expanded] value=2.6311 band=near_sota n=0    Q=2.6311 bonus=0.0000 score=0.5989
+  parent 7 [expanded] value=2.6311 band=near_sota n=0    Q=2.6311 bonus=0.0000 score=0.5989
+`use_return_dict` is deprecated! Use `return_dict` instead!
+Unsloth: Will smartly offload gradients to save VRAM!
+  RL: assembled 128 samples from 6 group(s); trained bands ['near_sota']; buffer=128
+    p0 k0 mutate band=near_sota arm=0(seed) -> valid dmu=-0.0348 dsigma=0.0000 value=2.6012
+    p0 k1 mutate band=near_sota arm=0(seed) -> valid dmu=-0.0348 dsigma=0.0000 value=2.6012
+    p0 k2 mutate band=near_sota arm=0(seed) -> valid dmu=-0.0348 dsigma=0.0000 value=2.6012
+    p0 k3 mutate band=near_sota arm=0(seed) -> invalid:eval
+    p0 k4 mutate band=near_sota arm=0(seed) -> invalid:eval
+    p0 k5 mutate band=near_sota arm=0(seed) -> invalid:eval
+    p0 k6 mutate band=near_sota arm=0(seed) -> valid dmu=-0.0348 dsigma=0.0000 value=2.6012
+    p0 k7 mutate band=near_sota arm=0(seed) -> valid dmu=-0.0348 dsigma=0.0000 value=2.6012
+    p0 k8 mutate band=near_sota arm=0(seed) -> valid dmu=-0.0348 dsigma=0.0000 value=2.6012
+    p0 k9 mutate band=near_sota arm=0(seed) -> valid dmu=+0.0000 dsigma=0.0000 value=2.6360
+    p0 k10 mutate band=near_sota arm=0(seed) -> valid dmu=+0.0000 dsigma=0.0000 value=2.6360
+    p0 k11 mutate band=near_sota arm=0(seed) -> valid dmu=+0.0000 dsigma=0.0000 value=2.6360
+    p0 k12 mutate band=near_sota arm=0(seed) -> valid dmu=-0.0348 dsigma=0.0000 value=2.6012
+    p0 k13 mutate band=near_sota arm=0(seed) -> valid dmu=-0.0348 dsigma=0.0000 value=2.6012
+    p0 k14 mutate band=near_sota arm=0(seed) -> valid dmu=-0.0348 dsigma=0.0000 value=2.6012
+    p0 k15 mutate band=near_sota arm=0(seed) -> invalid:eval
+    p0 k16 mutate band=near_sota arm=0(seed) -> invalid:eval
+    p0 k17 mutate band=near_sota arm=0(seed) -> invalid:eval
+    p0 k18 mutate band=near_sota arm=0(seed) -> invalid:eval
+    p0 k19 mutate band=near_sota arm=0(seed) -> invalid:eval
+    p0 k20 mutate band=near_sota arm=0(seed) -> invalid:eval
+    p0 k21 mutate band=near_sota arm=0(seed) -> invalid:eval
+    p0 k22 mutate band=near_sota arm=0(seed) -> invalid:eval
+    p0 k23 mutate band=near_sota arm=0(seed) -> invalid:eval
+    p0 k24 mutate band=near_sota arm=0(seed) -> valid dmu=-0.0200 dsigma=0.0000 value=2.6159
+    p0 k25 mutate band=near_sota arm=0(seed) -> valid dmu=-0.0200 dsigma=0.0000 value=2.6159
+    p0 k26 mutate band=near_sota arm=0(seed) -> valid dmu=-0.0200 dsigma=0.0000 value=2.6159
+    p0 k27 mutate band=near_sota arm=0(seed) -> invalid:eval
+    p0 k28 mutate band=near_sota arm=0(seed) -> invalid:eval
+    p0 k29 mutate band=near_sota arm=0(seed) -> invalid:eval
+    p0 k30 mutate band=near_sota arm=0(seed) -> sterile:cosmetic_noop
+    p0 k31 mutate band=near_sota arm=0(seed) -> sterile:cosmetic_noop
+    p1 k0 explore  -> valid value=2.5921
+    p2 k0 mutate band=near_sota arm=1(seed) -> valid dmu=-0.0073 dsigma=0.0000 value=2.6238
+    p2 k1 mutate band=near_sota arm=1(seed) -> valid dmu=-0.0073 dsigma=0.0000 value=2.6238
+    p2 k2 mutate band=near_sota arm=1(seed) -> valid dmu=-0.0073 dsigma=0.0000 value=2.6238
+    p2 k3 mutate band=near_sota arm=1(seed) -> valid dmu=-0.0073 dsigma=0.0000 value=2.6238
+    p2 k4 mutate band=near_sota arm=1(seed) -> valid dmu=-0.0073 dsigma=0.0000 value=2.6238
+    p2 k5 mutate band=near_sota arm=1(seed) -> valid dmu=-0.0073 dsigma=0.0000 value=2.6238
+    p2 k6 mutate band=near_sota arm=1(seed) -> valid dmu=-0.0073 dsigma=0.0000 value=2.6238
+    p2 k7 mutate band=near_sota arm=1(seed) -> valid dmu=-0.0073 dsigma=0.0000 value=2.6238
+    p2 k8 mutate band=near_sota arm=1(seed) -> valid dmu=-0.0073 dsigma=0.0000 value=2.6238
+    p2 k9 mutate band=near_sota arm=1(seed) -> valid dmu=-0.0073 dsigma=0.0000 value=2.6238
+    p2 k10 mutate band=near_sota arm=1(seed) -> valid dmu=-0.0073 dsigma=0.0000 value=2.6238
+    p2 k11 mutate band=near_sota arm=1(seed) -> valid dmu=-0.0073 dsigma=0.0000 value=2.6238
+    p2 k12 mutate band=near_sota arm=1(seed) -> valid dmu=-0.0073 dsigma=0.0000 value=2.6238
+    p2 k13 mutate band=near_sota arm=1(seed) -> valid dmu=-0.0073 dsigma=0.0000 value=2.6238
+    p2 k14 mutate band=near_sota arm=1(seed) -> valid dmu=-0.0073 dsigma=0.0000 value=2.6238
+    p2 k15 mutate band=near_sota arm=1(seed) -> valid dmu=-0.0073 dsigma=0.0000 value=2.6238
+    p2 k16 mutate band=near_sota arm=1(seed) -> valid dmu=-0.0073 dsigma=0.0000 value=2.6238
+    p2 k17 mutate band=near_sota arm=1(seed) -> valid dmu=-0.0073 dsigma=0.0000 value=2.6238
+    p2 k18 mutate band=near_sota arm=1(seed) -> valid dmu=-0.0073 dsigma=0.0000 value=2.6238
+    p2 k19 mutate band=near_sota arm=1(seed) -> valid dmu=-0.0073 dsigma=0.0000 value=2.6238
+    p2 k20 mutate band=near_sota arm=1(seed) -> valid dmu=-0.0073 dsigma=0.0000 value=2.6238
+    p2 k21 mutate band=near_sota arm=1(seed) -> valid dmu=-0.0073 dsigma=0.0000 value=2.6238
+    p2 k22 mutate band=near_sota arm=1(seed) -> valid dmu=-0.0073 dsigma=0.0000 value=2.6238
+    p2 k23 mutate band=near_sota arm=1(seed) -> valid dmu=-0.0073 dsigma=0.0000 value=2.6238
+    p2 k24 mutate band=near_sota arm=1(seed) -> valid dmu=-0.0073 dsigma=0.0000 value=2.6238
+    p2 k25 mutate band=near_sota arm=1(seed) -> valid dmu=-0.0073 dsigma=0.0000 value=2.6238
+    p2 k26 mutate band=near_sota arm=1(seed) -> valid dmu=-0.0073 dsigma=0.0000 value=2.6238
+    p2 k27 mutate band=near_sota arm=1(seed) -> valid dmu=-0.0073 dsigma=0.0000 value=2.6238
+    p2 k28 mutate band=near_sota arm=1(seed) -> valid dmu=-0.0073 dsigma=0.0000 value=2.6238
+    p2 k29 mutate band=near_sota arm=1(seed) -> valid dmu=-0.0073 dsigma=0.0000 value=2.6238
+    p2 k30 mutate band=near_sota arm=1(seed) -> valid dmu=-0.0073 dsigma=0.0000 value=2.6238
+    p2 k31 mutate band=near_sota arm=1(seed) -> valid dmu=-0.0073 dsigma=0.0000 value=2.6238
+    p3 k0 mutate band=near_sota arm=0(seed) -> sterile:cosmetic_noop
+    p3 k1 mutate band=near_sota arm=0(seed) -> sterile:cosmetic_noop
+    p3 k2 mutate band=near_sota arm=0(seed) -> sterile:cosmetic_noop
+    p3 k3 mutate band=near_sota arm=0(seed) -> sterile:cosmetic_noop
+    p3 k4 mutate band=near_sota arm=0(seed) -> sterile:cosmetic_noop
+    p3 k5 mutate band=near_sota arm=0(seed) -> sterile:cosmetic_noop
+    p3 k6 mutate band=near_sota arm=0(seed) -> sterile:cosmetic_noop
+    p3 k7 mutate band=near_sota arm=0(seed) -> sterile:cosmetic_noop
+    p3 k8 mutate band=near_sota arm=0(seed) -> sterile:cosmetic_noop
+    p3 k9 mutate band=near_sota arm=0(seed) -> sterile:cosmetic_noop
+    p3 k10 mutate band=near_sota arm=0(seed) -> sterile:cosmetic_noop
+    p3 k11 mutate band=near_sota arm=0(seed) -> sterile:cosmetic_noop
+    p3 k12 mutate band=near_sota arm=0(seed) -> sterile:cosmetic_noop
+    p3 k13 mutate band=near_sota arm=0(seed) -> sterile:cosmetic_noop
+    p3 k14 mutate band=near_sota arm=0(seed) -> sterile:cosmetic_noop
+    p3 k15 mutate band=near_sota arm=0(seed) -> sterile:cosmetic_noop
+    p3 k16 mutate band=near_sota arm=0(seed) -> sterile:cosmetic_noop
+    p3 k17 mutate band=near_sota arm=0(seed) -> sterile:cosmetic_noop
+    p3 k18 mutate band=near_sota arm=0(seed) -> sterile:cosmetic_noop
+    p3 k19 mutate band=near_sota arm=0(seed) -> sterile:cosmetic_noop
+    p3 k20 mutate band=near_sota arm=0(seed) -> sterile:cosmetic_noop
+    p3 k21 mutate band=near_sota arm=0(seed) -> sterile:cosmetic_noop
+    p3 k22 mutate band=near_sota arm=0(seed) -> sterile:cosmetic_noop
+    p3 k23 mutate band=near_sota arm=0(seed) -> invalid:eval
+    p3 k24 mutate band=near_sota arm=0(seed) -> sterile:cosmetic_noop
+    p3 k25 mutate band=near_sota arm=0(seed) -> sterile:cosmetic_noop
+    p3 k26 mutate band=near_sota arm=0(seed) -> sterile:cosmetic_noop
+    p3 k27 mutate band=near_sota arm=0(seed) -> sterile:cosmetic_noop
+    p3 k28 mutate band=near_sota arm=0(seed) -> sterile:cosmetic_noop
+    p3 k29 mutate band=near_sota arm=0(seed) -> sterile:cosmetic_noop
+    p3 k30 mutate band=near_sota arm=0(seed) -> sterile:cosmetic_noop
+    p3 k31 mutate band=near_sota arm=0(seed) -> sterile:cosmetic_noop
+    p4 k0 mutate band=near_sota arm=0(seed) -> sterile:cosmetic_noop
+    p4 k1 mutate band=near_sota arm=0(seed) -> valid dmu=-0.0065 dsigma=0.0000 value=2.6246
+    p4 k2 mutate band=near_sota arm=0(seed) -> valid dmu=-0.0065 dsigma=0.0000 value=2.6246
+    p4 k3 mutate band=near_sota arm=0(seed) -> valid dmu=-0.0065 dsigma=0.0000 value=2.6246
+    p4 k4 mutate band=near_sota arm=0(seed) -> sterile:cosmetic_noop
+    p4 k5 mutate band=near_sota arm=0(seed) -> sterile:cosmetic_noop
+    p4 k6 mutate band=near_sota arm=0(seed) -> sterile:cosmetic_noop
+    p4 k7 mutate band=near_sota arm=0(seed) -> sterile:cosmetic_noop
+    p4 k8 mutate band=near_sota arm=0(seed) -> sterile:cosmetic_noop
+    p4 k9 mutate band=near_sota arm=0(seed) -> sterile:cosmetic_noop
+    p4 k10 mutate band=near_sota arm=0(seed) -> sterile:cosmetic_noop
+    p4 k11 mutate band=near_sota arm=0(seed) -> sterile:cosmetic_noop
+    p4 k12 mutate band=near_sota arm=0(seed) -> sterile:cosmetic_noop
+    p4 k13 mutate band=near_sota arm=0(seed) -> sterile:cosmetic_noop
+    p4 k14 mutate band=near_sota arm=0(seed) -> sterile:cosmetic_noop
+    p4 k15 mutate band=near_sota arm=0(seed) -> sterile:cosmetic_noop
+    p4 k16 mutate band=near_sota arm=0(seed) -> valid dmu=-0.0065 dsigma=0.0000 value=2.6246
+    p4 k17 mutate band=near_sota arm=0(seed) -> valid dmu=-0.0065 dsigma=0.0000 value=2.6246
+    p4 k18 mutate band=near_sota arm=0(seed) -> sterile:cosmetic_noop
+    p4 k19 mutate band=near_sota arm=0(seed) -> sterile:cosmetic_noop
+    p4 k20 mutate band=near_sota arm=0(seed) -> sterile:cosmetic_noop
+    p4 k21 mutate band=near_sota arm=0(seed) -> sterile:cosmetic_noop
+    p4 k22 mutate band=near_sota arm=0(seed) -> sterile:cosmetic_noop
+    p4 k23 mutate band=near_sota arm=0(seed) -> sterile:cosmetic_noop
+    p4 k24 mutate band=near_sota arm=0(seed) -> sterile:cosmetic_noop
+    p4 k25 mutate band=near_sota arm=0(seed) -> sterile:cosmetic_noop
+    p4 k26 mutate band=near_sota arm=0(seed) -> sterile:cosmetic_noop
+    p4 k27 mutate band=near_sota arm=0(seed) -> sterile:cosmetic_noop
+    p4 k28 mutate band=near_sota arm=0(seed) -> valid dmu=-0.0065 dsigma=0.0000 value=2.6246
+    p4 k29 mutate band=near_sota arm=0(seed) -> valid dmu=-0.0065 dsigma=0.0000 value=2.6246
+    p4 k30 mutate band=near_sota arm=0(seed) -> sterile:cosmetic_noop
+    p4 k31 mutate band=near_sota arm=0(seed) -> sterile:cosmetic_noop
+    p5 k0 mutate band=near_sota arm=0(seed) -> valid dmu=-0.0073 dsigma=0.0000 value=2.6238
+    p5 k1 mutate band=near_sota arm=0(seed) -> valid dmu=-0.0073 dsigma=0.0000 value=2.6238
+    p5 k2 mutate band=near_sota arm=0(seed) -> valid dmu=-0.0073 dsigma=0.0000 value=2.6238
+    p5 k3 mutate band=near_sota arm=0(seed) -> valid dmu=-0.0073 dsigma=0.0000 value=2.6238
+    p5 k4 mutate band=near_sota arm=0(seed) -> valid dmu=-0.0073 dsigma=0.0000 value=2.6238
+    p5 k5 mutate band=near_sota arm=0(seed) -> valid dmu=-0.0073 dsigma=0.0000 value=2.6238
+    p5 k6 mutate band=near_sota arm=0(seed) -> valid dmu=-0.0073 dsigma=0.0000 value=2.6238
+    p5 k7 mutate band=near_sota arm=0(seed) -> valid dmu=-0.0073 dsigma=0.0000 value=2.6238
+    p5 k8 mutate band=near_sota arm=0(seed) -> valid dmu=-0.0073 dsigma=0.0000 value=2.6238
+    p5 k9 mutate band=near_sota arm=0(seed) -> valid dmu=-0.0073 dsigma=0.0000 value=2.6238
+    p5 k10 mutate band=near_sota arm=0(seed) -> valid dmu=-0.0073 dsigma=0.0000 value=2.6238
+    p5 k11 mutate band=near_sota arm=0(seed) -> valid dmu=-0.0073 dsigma=0.0000 value=2.6238
+    p5 k12 mutate band=near_sota arm=0(seed) -> valid dmu=-0.0073 dsigma=0.0000 value=2.6238
+    p5 k13 mutate band=near_sota arm=0(seed) -> valid dmu=-0.0073 dsigma=0.0000 value=2.6238
+    p5 k14 mutate band=near_sota arm=0(seed) -> valid dmu=-0.0073 dsigma=0.0000 value=2.6238
+    p5 k15 mutate band=near_sota arm=0(seed) -> valid dmu=-0.0073 dsigma=0.0000 value=2.6238
+    p5 k16 mutate band=near_sota arm=0(seed) -> valid dmu=-0.0073 dsigma=0.0000 value=2.6238
+    p5 k17 mutate band=near_sota arm=0(seed) -> valid dmu=-0.0073 dsigma=0.0000 value=2.6238
+    p5 k18 mutate band=near_sota arm=0(seed) -> valid dmu=-0.0073 dsigma=0.0000 value=2.6238
+    p5 k19 mutate band=near_sota arm=0(seed) -> valid dmu=-0.0073 dsigma=0.0000 value=2.6238
+    p5 k20 mutate band=near_sota arm=0(seed) -> valid dmu=-0.0073 dsigma=0.0000 value=2.6238
+    p5 k21 mutate band=near_sota arm=0(seed) -> valid dmu=-0.0073 dsigma=0.0000 value=2.6238
+    p5 k22 mutate band=near_sota arm=0(seed) -> valid dmu=-0.0073 dsigma=0.0000 value=2.6238
+    p5 k23 mutate band=near_sota arm=0(seed) -> valid dmu=-0.0073 dsigma=0.0000 value=2.6238
+    p5 k24 mutate band=near_sota arm=0(seed) -> valid dmu=-0.0073 dsigma=0.0000 value=2.6238
+    p5 k25 mutate band=near_sota arm=0(seed) -> valid dmu=-0.0073 dsigma=0.0000 value=2.6238
+    p5 k26 mutate band=near_sota arm=0(seed) -> valid dmu=-0.0073 dsigma=0.0000 value=2.6238
+    p5 k27 mutate band=near_sota arm=0(seed) -> valid dmu=-0.0073 dsigma=0.0000 value=2.6238
+    p5 k28 mutate band=near_sota arm=0(seed) -> valid dmu=-0.0073 dsigma=0.0000 value=2.6238
+    p5 k29 mutate band=near_sota arm=0(seed) -> valid dmu=-0.0073 dsigma=0.0000 value=2.6238
+    p5 k30 mutate band=near_sota arm=0(seed) -> valid dmu=-0.0073 dsigma=0.0000 value=2.6238
+    p5 k31 mutate band=near_sota arm=0(seed) -> valid dmu=-0.0073 dsigma=0.0000 value=2.6238
+    p6 k0 mutate band=near_sota arm=0(seed) -> valid dmu=-0.0065 dsigma=0.0000 value=2.6246
+    p6 k1 mutate band=near_sota arm=0(seed) -> valid dmu=-0.0065 dsigma=0.0000 value=2.6246
+    p6 k2 mutate band=near_sota arm=0(seed) -> sterile:cosmetic_noop
+    p6 k3 mutate band=near_sota arm=0(seed) -> sterile:cosmetic_noop
+    p6 k4 mutate band=near_sota arm=0(seed) -> sterile:cosmetic_noop
+    p6 k5 mutate band=near_sota arm=0(seed) -> valid dmu=-0.0065 dsigma=0.0000 value=2.6246
+    p6 k6 mutate band=near_sota arm=0(seed) -> sterile:cosmetic_noop
+    p6 k7 mutate band=near_sota arm=0(seed) -> sterile:cosmetic_noop
+    p6 k8 mutate band=near_sota arm=0(seed) -> sterile:cosmetic_noop
+    p6 k9 mutate band=near_sota arm=0(seed) -> valid dmu=-0.0065 dsigma=0.0000 value=2.6246
+    p6 k10 mutate band=near_sota arm=0(seed) -> valid dmu=-0.0065 dsigma=0.0000 value=2.6246
+    p6 k11 mutate band=near_sota arm=0(seed) -> sterile:cosmetic_noop
+    p6 k12 mutate band=near_sota arm=0(seed) -> valid dmu=-0.0065 dsigma=0.0000 value=2.6246
+    p6 k13 mutate band=near_sota arm=0(seed) -> valid dmu=-0.0065 dsigma=0.0000 value=2.6246
+    p6 k14 mutate band=near_sota arm=0(seed) -> sterile:cosmetic_noop
+    p6 k15 mutate band=near_sota arm=0(seed) -> valid dmu=-0.0065 dsigma=0.0000 value=2.6246
+    p6 k16 mutate band=near_sota arm=0(seed) -> valid dmu=-0.0065 dsigma=0.0000 value=2.6246
+    p6 k17 mutate band=near_sota arm=0(seed) -> sterile:cosmetic_noop
+    p6 k18 mutate band=near_sota arm=0(seed) -> sterile:cosmetic_noop
+    p6 k19 mutate band=near_sota arm=0(seed) -> sterile:cosmetic_noop
+    p6 k20 mutate band=near_sota arm=0(seed) -> sterile:cosmetic_noop
+    p6 k21 mutate band=near_sota arm=0(seed) -> sterile:cosmetic_noop
+    p6 k22 mutate band=near_sota arm=0(seed) -> sterile:cosmetic_noop
+    p6 k23 mutate band=near_sota arm=0(seed) -> sterile:cosmetic_noop
+    p6 k24 mutate band=near_sota arm=0(seed) -> sterile:cosmetic_noop
+    p6 k25 mutate band=near_sota arm=0(seed) -> sterile:cosmetic_noop
+    p6 k26 mutate band=near_sota arm=0(seed) -> sterile:cosmetic_noop
+    p6 k27 mutate band=near_sota arm=0(seed) -> sterile:cosmetic_noop
+    p6 k28 mutate band=near_sota arm=0(seed) -> sterile:cosmetic_noop
+    p6 k29 mutate band=near_sota arm=0(seed) -> sterile:cosmetic_noop
+    p6 k30 mutate band=near_sota arm=0(seed) -> sterile:cosmetic_noop
+    p6 k31 mutate band=near_sota arm=0(seed) -> sterile:cosmetic_noop
+    p7 k0 explore  -> valid value=2.1407
+  group p0 [near_sota]: {'valid': 15, 'invalid': 15, 'sterile': 2}  mean_dmu=-0.0249 over 15 valid mutations
+  group p1 [near_sota]: {'valid': 1}  mean_dmu=+0.0000 over 0 valid mutations
+  group p2 [near_sota]: {'valid': 32}  mean_dmu=-0.0073 over 32 valid mutations
+  group p3 [near_sota]: {'sterile': 31, 'invalid': 1}  mean_dmu=+0.0000 over 0 valid mutations
+  group p4 [near_sota]: {'sterile': 25, 'valid': 7}  mean_dmu=-0.0065 over 7 valid mutations
+  group p5 [near_sota]: {'valid': 32}  mean_dmu=-0.0073 over 32 valid mutations
+  group p6 [near_sota]: {'valid': 9, 'sterile': 23}  mean_dmu=-0.0065 over 9 valid mutations
+  group p7 [near_sota]: {'valid': 1}  mean_dmu=+0.0000 over 0 valid mutations
+  reflecting on iteration ...
+  reflection -> +arm[near_sota]  failure='A high rate of invalid evaluations and sterile mutations suggests that'
+  GRPO update on 128 action sequences ...
+Unsloth: Double buffering enabled (parallel H2D + compute) for backward pass.
+  GRPO: adapters=1 pg=+1.24072 kl=0.00000 ratio=1.0000 n=128 tok=262144
+    [near_sota] n=128 pg=+1.24072 kl=0.00000 ratio=1.0000 |adv|=1.4114 gnorm=0.002
+[iter 0] outcomes={'valid': 97, 'invalid': 16, 'sterile': 81}  reasons={'eval': 16, 'cosmetic_noop': 81}
+[iter 0] best=2.635983 raw=2.635983  archive=417  sterile=81 invalid=16  arms={'weak': 2, 'good': 2, 'elite': 2, 'near_sota': 3}  (2777.4s)
+
+[iter 1] (RL) parents picked: 8  (T=194 archive=417)
+  parent 0 [expanded] value=2.6360 band=near_sota n=0    Q=2.6360 bonus=2.2963 score=3.2963
+  parent 1 [expanded] value=2.6360 band=near_sota n=0    Q=2.6360 bonus=2.2963 score=3.2963
+  parent 2 [expanded] value=2.6360 band=near_sota n=0    Q=2.6360 bonus=2.2963 score=3.2963
+  parent 3 [expanded] value=2.6311 band=near_sota n=0    Q=2.6311 bonus=2.2963 score=3.2864
+  parent 4 [expanded] value=2.6311 band=near_sota n=0    Q=2.6311 bonus=2.2963 score=3.2864
+  parent 5 [expanded] value=2.6311 band=near_sota n=0    Q=2.6311 bonus=2.2963 score=3.2864
+  parent 6 [expanded] value=2.6311 band=near_sota n=0    Q=2.6311 bonus=2.2963 score=3.2864
+  parent 7 [expanded] value=2.6311 band=near_sota n=0    Q=2.6311 bonus=2.2963 score=3.2864
+Traceback (most recent call last):
+  File "/work/mohammad/BanditEvolve/main.py", line 94, in main
+    _run(cfg, merged)
+    ~~~~^^^^^^^^^^^^^
+  File "/work/mohammad/BanditEvolve/main.py", line 145, in _run
+    best = engine.run()
+  File "/work/mohammad/BanditEvolve/engine.py", line 133, in run
+    self._iteration_rl(it)                   # steps 2-9 + GRPO
+    ~~~~~~~~~~~~~~~~~~^^^^
+  File "/work/mohammad/BanditEvolve/engine.py", line 594, in _iteration_rl
+    gm = self.llm.generate_with_meta(msgs, band=band_key)
+  File "/work/mohammad/BanditEvolve/llm.py", line 551, in generate_with_meta
+    return self.gen_pool.generate(list_of_messages, band,
+           ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^
+                                  self._sync_version, self._adapter_path)
+                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/work/mohammad/BanditEvolve/llm.py", line 817, in generate
+    tag, metas, err = self._get_live(self.out_q)
+                      ~~~~~~~~~~~~~~^^^^^^^^^^^^
+  File "/work/mohammad/BanditEvolve/llm.py", line 792, in _get_live
+    return q.get(timeout=timeout)
+           ~~~~~^^^^^^^^^^^^^^^^^
+  File "/mnt/nfs/slurm/home/mhm/.local/share/uv/python/cpython-3.13.14-linux-x86_64-gnu/lib/python3.13/multiprocessing/queues.py", line 111, in get
+    if not self._poll(timeout):
+           ~~~~~~~~~~^^^^^^^^^
+  File "/mnt/nfs/slurm/home/mhm/.local/share/uv/python/cpython-3.13.14-linux-x86_64-gnu/lib/python3.13/multiprocessing/connection.py", line 262, in poll
+    return self._poll(timeout)
+           ~~~~~~~~~~^^^^^^^^^
+  File "/mnt/nfs/slurm/home/mhm/.local/share/uv/python/cpython-3.13.14-linux-x86_64-gnu/lib/python3.13/multiprocessing/connection.py", line 445, in _poll
+    r = wait([self], timeout)
+  File "/mnt/nfs/slurm/home/mhm/.local/share/uv/python/cpython-3.13.14-linux-x86_64-gnu/lib/python3.13/multiprocessing/connection.py", line 1174, in wait
+    ready = selector.select(timeout)
+  File "/mnt/nfs/slurm/home/mhm/.local/share/uv/python/cpython-3.13.14-linux-x86_64-gnu/lib/python3.13/selectors.py", line 398, in select
+    fd_event_list = self._selector.poll(timeout)
+KeyboardInterrupt

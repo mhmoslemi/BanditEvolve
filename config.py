@@ -89,6 +89,11 @@ class Config:
     # generate from the frozen base and are never trained. Overrides
     # rl_adapter_per_band (forces per-band routing). Isolates the update to 'good'.
     rl_good_band_only: bool = False
+    # Explicit list of bands that get a trainable LoRA adapter, e.g.
+    # [good, near_sota]; bands NOT listed generate from the frozen base and are
+    # never trained. Overrides rl_good_band_only and rl_adapter_per_band. Accepts a
+    # YAML list or a comma/space string; empty => fall back to the flags above.
+    rl_adapter_bands: str = ""
     # reward shaping over the full outcome space (group-normalized, so only the
     # order/spacing matters): no_code < invalid < sterile < (valid, by dmu)
     rl_reward_nocode: float = -0.2
@@ -109,8 +114,37 @@ class Config:
     # disable.
     artifacts_dir: str = "runs"
 
+    # resume / warm-start: if true, rebuild the archive from a PRIOR run's saved
+    # programs (its runs/<problem>_<ts>/ artifacts) and continue the search from
+    # there instead of bootstrapping fresh seeds. resume_from picks an explicit run
+    # dir; empty => auto-pick the most recent prior run for this problem under
+    # artifacts_dir. Every valid saved program is loaded (deduped) as an archive
+    # root with its saved value; lineage/UCT history is not restored.
+    resume: bool = False
+    resume_from: str = ""
+    resume_top_k: int = 0              # keep only the top-K loaded programs by value (0 = all)
+
     # misc
     seed: int = 42
+
+
+def resolve_adapter_bands(cfg):
+    """Which bands get a trainable LoRA adapter under RL, or None for the default
+    (one adapter per band when rl_adapter_per_band, else one shared adapter).
+
+    Reads rl_adapter_bands (a YAML list like [good, near_sota] or a comma/space
+    string); falls back to ['good'] when the legacy rl_good_band_only flag is set.
+    The band names are validated against the real bands inside TrainableLLM."""
+    raw = getattr(cfg, "rl_adapter_bands", "") or ""
+    if isinstance(raw, (list, tuple)):
+        names = [str(b).strip() for b in raw if str(b).strip()]
+    else:
+        names = [b.strip() for b in str(raw).replace(",", " ").split() if b.strip()]
+    if names:
+        return names
+    if getattr(cfg, "rl_good_band_only", False):
+        return ["good"]
+    return None
 
 
 def _parser():

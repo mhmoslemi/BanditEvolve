@@ -126,8 +126,10 @@ def _run(cfg, merged):
           f"= {cfg.num_parents * cfg.rollouts_per_parent}/iter")
     print(f"  eval seeds     : {cfg.num_eval_seeds}   explore eps: {cfg.explore_eps}")
     if getattr(cfg, "rl_enabled", False):
-        if getattr(cfg, "rl_good_band_only", False):
-            adapters = "good band only (weak/elite/near_sota = frozen base)"
+        from config import resolve_adapter_bands
+        ab = resolve_adapter_bands(cfg)
+        if ab is not None:
+            adapters = f"bands {ab} (rest = frozen base)"
         elif getattr(cfg, "rl_adapter_per_band", True):
             adapters = "per-band (weak/good/elite/near_sota)"
         else:

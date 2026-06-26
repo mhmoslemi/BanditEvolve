@@ -109,12 +109,11 @@ class Engine:
             from llm import TrainableLLM
             if isinstance(llm, TrainableLLM):
                 self.trainer = GRPOTrainer(llm, cfg)
-                if getattr(cfg, "rl_good_band_only", False):
-                    mode = "single adapter (good band only)"
-                elif getattr(cfg, "rl_adapter_per_band", True):
-                    mode = "per-band adapters"
-                else:
+                names = getattr(llm, "adapter_names", [])
+                if not getattr(llm, "per_band", True):
                     mode = "one shared adapter"
+                else:
+                    mode = f"adapters on bands {names}"
                 print(f"[init] RL (GRPO) ON [{mode}]: group_size={self.rl_group_size} "
                       f"train_every={self.rl_train_every} "
                       f"ppo_epochs={cfg.rl_ppo_epochs} lr={cfg.rl_lr} "
@@ -127,13 +126,95 @@ class Engine:
 
     # ---------------------------------------------------------------- run
     def run(self) -> Optional[State]:
-        self._bootstrap_seeds()                          # step 1
+        if not self._maybe_resume():                     # warm-start, or...
+            self._bootstrap_seeds()                      # step 1 (fresh seeds)
         for it in range(self.cfg.num_iters):
             if self.rl_enabled:
                 self._iteration_rl(it)                   # steps 2-9 + GRPO
             else:
                 self._iteration(it)                      # steps 2-9
         return self.archive.best_state()
+
+    # ------------------------------------------------- resume / warm-start
+    def _maybe_resume(self) -> bool:
+        """If cfg.resume, rebuild the archive from a prior run's saved programs and
+        skip bootstrap. Returns True iff the archive was warm-started."""
+        if not getattr(self.cfg, "resume", False):
+            return False
+        prior = self._resume_dir()
+        if not prior:
+            print("[init] resume requested but no prior run found; "
+                  "bootstrapping fresh seeds instead", flush=True)
+            return False
+        n = self._load_archive(prior)
+        if n == 0:
+            print(f"[init] resume: no valid programs under {prior}; "
+                  "bootstrapping fresh seeds instead", flush=True)
+            return False
+        best = self.archive.best_state()
+        bestv = f"{best.value:.4f}" if best else "n/a"
+        print(f"[init] RESUME from {prior}: loaded {n} valid program(s) "
+              f"(archive {self.archive.size()}, best={bestv})", flush=True)
+        return True
+
+    def _resume_dir(self):
+        """The prior run dir to resume from: cfg.resume_from if set, else the most
+        recent <artifacts_dir>/<problem>_* dir that is not the current run."""
+        explicit = getattr(self.cfg, "resume_from", "") or ""
+        if explicit:
+            return explicit if os.path.isdir(explicit) else None
+        import glob
+        adir = getattr(self.cfg, "artifacts_dir", "runs") or "runs"
+        if not os.path.isdir(adir):
+            return None
+        cur = os.path.abspath(self.run_dir) if self.run_dir else None
+        cands = [d for d in glob.glob(os.path.join(adir, f"{self.cfg.problem}_*"))
+                 if os.path.isdir(d) and os.path.abspath(d) != cur]
+        cands.sort(key=os.path.getmtime, reverse=True)
+        return cands[0] if cands else None
+
+    def _load_archive(self, prior_dir) -> int:
+        """Add VALID saved programs under prior_dir to the archive as roots (deduped
+        by code). With cfg.resume_top_k > 0, keep only the top-K by value. Returns
+        the number loaded. Trusts the saved eval values; does NOT re-run the
+        sandbox."""
+        import glob
+        import json
+        seen, items = set(), []          # items: (value, code, raw, per_seed)
+        code_files = sorted(glob.glob(os.path.join(prior_dir, "**", "code.py"),
+                                      recursive=True))
+        for cf in code_files:
+            try:
+                with open(cf) as f:
+                    code = f.read()
+            except OSError:
+                continue
+            if not code.strip() or code in seen:
+                continue
+            ev = None
+            ev_path = os.path.join(os.path.dirname(cf), "eval.json")
+            if os.path.exists(ev_path):
+                try:
+                    with open(ev_path) as f:
+                        ev = json.load(f)
+                except (OSError, ValueError):
+                    ev = None
+            evd = (ev or {}).get("eval") or {}
+            if not evd.get("valid") or evd.get("value") is None:
+                continue
+            seen.add(code)
+            per_seed = {int(k): float(v)
+                        for k, v in (evd.get("per_seed") or {}).items()}
+            items.append((float(evd["value"]), code, evd.get("raw"), per_seed))
+
+        top_k = int(getattr(self.cfg, "resume_top_k", 0) or 0)
+        if top_k > 0 and len(items) > top_k:
+            items.sort(key=lambda t: t[0], reverse=True)
+            items = items[:top_k]
+        for value, code, raw, per_seed in items:
+            self.archive.add_root(State.make(code, value, 0, parents=[],
+                                             raw_score=raw, per_seed=per_seed))
+        return len(items)
 
     # --------------------------------------------- parallel eval helper
     def _eval_many(self, jobs):

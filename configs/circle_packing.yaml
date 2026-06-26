@@ -8,6 +8,13 @@ num_parents: 8              # n parents per iteration (UCT, no repeat)
 rollouts_per_parent: 24      # k rollouts per parent -> 16 rollouts / iteration
 num_seeds: 8                # initial independent seeds
 
+# Resume / warm-start: if true, rebuild the archive from a PRIOR run's saved
+# programs and continue instead of bootstrapping fresh seeds. resume_from sets an
+# explicit run dir; empty => auto-pick the most recent runs/circle_packing_* dir.
+resume: true
+resume_from: ""
+resume_top_k: 400             # keep only the top-K loaded programs by value (0 = all)
+
 # Circle-packing scoring is DETERMINISTIC for a fixed packing, so multiple eval
 # seeds all return the identical value (dsigma=0). 1 seed = same signal, 5x less
 # sandbox work. Bump this only for a genuinely stochastic problem.
@@ -73,9 +80,9 @@ seed: 42
 # ====================================================================
 # RL (GRPO) fine-tuning of the mutator.
 # rl_enabled: true swaps the frozen UnslothLLM for a trainable model with LoRA
-# adapters and runs the GRPO loop. rl_good_band_only restricts the LoRA to the
-# GOOD band: weak/elite/near_sota generate from the frozen base and are never
-# trained. Set rl_enabled: false for a plain frozen run.
+# adapters and runs the GRPO loop. rl_adapter_bands lists which bands get a
+# trainable adapter (here good + near_sota); the bands NOT listed generate from
+# the frozen base and are never trained. Set rl_enabled: false for a frozen run.
 #
 # GPUs under RL: the trainable model + GRPO update run on gpu_ids[0]; the REST of
 # gpu_ids run data-parallel rollout-generation replicas (each reloads the LoRA
@@ -88,9 +95,11 @@ seed: 42
 # gradients). For RL prefer something like the commented overrides below.
 # ====================================================================
 rl_enabled: true
-rl_good_band_only: true     # LoRA only on the 'good' band; others = frozen base
-rl_adapter_per_band: true   # ignored when rl_good_band_only is true
-rl_group_size: 16            # G completions per (parent, arm) = one GRPO group
+# Bands that get a trainable LoRA adapter; the rest (weak/elite) generate from the
+# frozen base and are never trained. Overrides rl_adapter_per_band.
+rl_adapter_bands: [good, near_sota]
+rl_adapter_per_band: true   # only used when rl_adapter_bands is empty
+rl_group_size: 32            # G completions per (parent, arm) = one GRPO group
 rl_train_every: 1           # GRPO update every N iterations
 rl_ppo_epochs: 1            # 1 => REINFORCE + group baseline + KL leash
 rl_lr: 5.0e-5
