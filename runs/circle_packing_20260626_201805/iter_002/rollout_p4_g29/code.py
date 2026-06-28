@@ -1,0 +1,109 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = int(np.ceil(np.sqrt(n)))
+    xs = (np.arange(n) % cols + 0.5) / cols
+    ys = (np.arange(n) // cols + 0.5) / cols
+    r0 = 0.5 / cols - 1e-3
+    v0 = np.empty(3 * n)
+    v0[0::3] = xs
+    v0[1::3] = ys
+    v0[2::3] = r0
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    cons = []
+    for i in range(n):
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+
+    # Vectorized overlap constraints with better performance
+    def vectorized_overlap_constraint(v):
+        x_centers = v[0::3]
+        y_centers = v[1::3]
+        r_radii = v[2::3]
+        dx = x_centers[:, np.newaxis] - x_centers[np.newaxis, :]
+        dy = y_centers[:, np.newaxis] - y_centers[np.newaxis, :]
+        dist_sq = dx**2 + dy**2
+        min_dist_sq = (r_radii[:, np.newaxis] + r_radii[np.newaxis, :])**2
+        return dist_sq - min_dist_sq
+
+    # Convert to list of functions for each pair
+    overlap_cons = []
+    for i in range(n):
+        for j in range(i + 1, n):
+            def constraint_func(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                return dx*dx + dy*dy - (v[3*i+2] + v[3*j+2])**2
+            overlap_cons.append({"type": "ineq", "fun": constraint_func})
+
+    cons.extend(overlap_cons)
+
+    # Apply a dual-phase mutation strategy
+    # Phase 1: Apply a random geometric distortion
+    def apply_geometric_distortion(v):
+        # Random scale, shear, and rotation
+        scale = 1.0 + np.random.uniform(-0.1, 0.1)
+        shear = np.random.uniform(-0.1, 0.1)
+        rotation_angle = np.random.uniform(-np.pi/6, np.pi/6)
+        
+        # Apply transformation to all centers
+        cos_theta = np.cos(rotation_angle)
+        sin_theta = np.sin(rotation_angle)
+        rotation_matrix = np.array([[cos_theta, -sin_theta], [sin_theta, cos_theta]])
+        
+        x_centers = v[0::3]
+        y_centers = v[1::3]
+        transformed_x = x_centers * scale + shear * y_centers
+        transformed_y = y_centers * scale - shear * x_centers
+        transformed_x = transformed_x * cos_theta - transformed_y * sin_theta
+        transformed_y = transformed_x * sin_theta + transformed_y * cos_theta
+        
+        # Adjust transformed centers to stay within bounds
+        transformed_x = np.clip(transformed_x, 1e-6, 1 - 1e-6)
+        transformed_y = np.clip(transformed_y, 1e-6, 1 - 1e-6)
+        
+        # Keep radii the same
+        transformed_v = np.copy(v)
+        transformed_v[0::3] = transformed_x
+        transformed_v[1::3] = transformed_y
+        return transformed_v
+
+    # Phase 2: Localized perturbation of smallest radius circles
+    def perturb_smallest_circles(v):
+        radii = v[2::3]
+        sorted_indices = np.argsort(radii)
+        smallest_indices = sorted_indices[:5]  # Perturb smallest 5 circles
+
+        # Perturb centers and radii of smallest circles
+        perturbation = np.random.uniform(-0.01, 0.01, size=3 * n)
+        perturbed_v = v + perturbation
+        perturbed_v[3*smallest_indices] += np.random.uniform(-0.001, 0.001, size=len(smallest_indices)*3)
+        return perturbed_v
+
+    # Initial optimization with geometric distortion
+    v_perturbed = apply_geometric_distortion(v0)
+    res = minimize(neg_sum_radii, v_perturbed, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 500, "ftol": 1e-9})
+    v = res.x if res.success else v0
+
+    # Apply localized perturbation
+    v = perturb_smallest_circles(v)
+
+    # Re-optimize with perturbed values
+    res = minimize(neg_sum_radii, v, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 500, "ftol": 1e-9})
+    v = res.x if res.success else v
+
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())

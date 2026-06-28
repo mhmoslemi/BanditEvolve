@@ -1,3 +1,13 @@
+bands_absolute: true
+q_good: 0.70
+q_elite: 0.95
+q_near: 0.995
+
+
+rl only on good band
+
+
+
 [log] writing run to /work/mohammad/BanditEvolve/logs/circle_packing_20260626_201022.log
 🦥 Unsloth: Will patch your computer to enable 2x faster free finetuning.
 🦥 Unsloth Zoo will now patch everything to make training faster!
@@ -8,7 +18,35 @@ O^O/ \_/ \    Torch: 2.10.0+cu129. CUDA: 9.0. CUDA Toolkit: 12.9. Triton: 3.6.0
 \        /    Bfloat16 = TRUE. FA [Xformers = None. FA2 = False]
  "-____-"     Free license: http://github.com/unslothai/unsloth
 Unsloth: Fast downloading is enabled - ignore downloading bars which are red colored!
-Loading weights:   0%|                                                                 | 0/399 [00:00<?, ?it/s]Loading weights:   0%|▏                                                        | 1/399 [00:00<01:27,  4.54it/s]Loading weights:   1%|▎                                                        | 2/399 [00:00<01:40,  3.94it/s]Loading weights:   4%|██                                                      | 15/399 [00:00<00:11, 34.34it/s]Loading weights:   7%|███▊                                                    | 27/399 [00:00<00:06, 56.00it/s]Loading weights:  11%|██████                                                  | 43/399 [00:00<00:04, 83.49it/s]Loading weights:  15%|████████▎                                               | 59/399 [00:00<00:03, 96.16it/s]Loading weights:  19%|██████████▍                                            | 76/399 [00:01<00:02, 114.50it/s]Loading weights:  23%|████████████▋                                          | 92/399 [00:01<00:02, 126.58it/s]Loading weights:  27%|██████████████▎                                       | 106/399 [00:01<00:02, 121.79it/s]Loading weights:  31%|████████████████▉                                     | 125/399 [00:01<00:02, 134.04it/s]Loading weights:  35%|██████████████████▊                                   | 139/399 [00:01<00:02, 128.49it/s]Loading weights:  39%|████████████████████▉                                 | 155/399 [00:01<00:01, 134.90it/s]Loading weights:  42%|██████████████████████▊                               | 169/399 [00:01<00:01, 133.74it/s]Loading weights:  46%|████████████████████████▊                             | 183/399 [00:01<00:01, 123.76it/s]Loading weights:  51%|███████████████████████████▎                          | 202/399 [00:01<00:01, 138.00it/s]Loading weights:  54%|█████████████████████████████▎                        | 217/399 [00:02<00:01, 137.37it/s]Loading weights:  59%|███████████████████████████████▊                      | 235/399 [00:02<00:01, 147.15it/s]Loading weights:  63%|█████████████████████████████████▊                    | 250/399 [00:02<00:01, 139.58it/s]Loading weights:  67%|████████████████████████████████████▎                 | 268/399 [00:02<00:00, 142.82it/s]Loading weights:  71%|██████████████████████████████████████▎               | 283/399 [00:02<00:00, 139.76it/s]Loading weights:  75%|████████████████████████████████████████▋             | 301/399 [00:02<00:00, 139.73it/s]Loading weights:  79%|██████████████████████████████████████████▊           | 316/399 [00:02<00:00, 139.83it/s]Loading weights:  84%|█████████████████████████████████████████████▏        | 334/399 [00:02<00:00, 144.58it/s]Loading weights:  87%|███████████████████████████████████████████████▏      | 349/399 [00:03<00:00, 141.44it/s]Loading weights:  92%|█████████████████████████████████████████████████▌    | 366/399 [00:03<00:00, 144.23it/s]Loading weights:  95%|███████████████████████████████████████████████████▌  | 381/399 [00:03<00:00, 131.94it/s]Loading weights: 100%|██████████████████████████████████████████████████████| 399/399 [00:03<00:00, 119.29it/s]
+
+Loading weights:   0%|                                                                 | 0/399 [00:00<?, ?it/s]
+Loading weights:   0%|▏                                                        | 1/399 [00:00<01:27,  4.54it/s]
+Loading weights:   1%|▎                                                        | 2/399 [00:00<01:40,  3.94it/s]
+Loading weights:   4%|██                                                      | 15/399 [00:00<00:11, 34.34it/s]
+Loading weights:   7%|███▊                                                    | 27/399 [00:00<00:06, 56.00it/s]
+Loading weights:  11%|██████                                                  | 43/399 [00:00<00:04, 83.49it/s]
+Loading weights:  15%|████████▎                                               | 59/399 [00:00<00:03, 96.16it/s]
+Loading weights:  19%|██████████▍                                            | 76/399 [00:01<00:02, 114.50it/s]
+Loading weights:  23%|████████████▋                                          | 92/399 [00:01<00:02, 126.58it/s]
+Loading weights:  27%|██████████████▎                                       | 106/399 [00:01<00:02, 121.79it/s]
+Loading weights:  31%|████████████████▉                                     | 125/399 [00:01<00:02, 134.04it/s]
+Loading weights:  35%|██████████████████▊                                   | 139/399 [00:01<00:02, 128.49it/s]
+Loading weights:  39%|████████████████████▉                                 | 155/399 [00:01<00:01, 134.90it/s]
+Loading weights:  42%|██████████████████████▊                               | 169/399 [00:01<00:01, 133.74it/s]
+Loading weights:  46%|████████████████████████▊                             | 183/399 [00:01<00:01, 123.76it/s]
+Loading weights:  51%|███████████████████████████▎                          | 202/399 [00:01<00:01, 138.00it/s]
+Loading weights:  54%|█████████████████████████████▎                        | 217/399 [00:02<00:01, 137.37it/s]
+Loading weights:  59%|███████████████████████████████▊                      | 235/399 [00:02<00:01, 147.15it/s]
+Loading weights:  63%|█████████████████████████████████▊                    | 250/399 [00:02<00:01, 139.58it/s]
+Loading weights:  67%|████████████████████████████████████▎                 | 268/399 [00:02<00:00, 142.82it/s]
+Loading weights:  71%|██████████████████████████████████████▎               | 283/399 [00:02<00:00, 139.76it/s]
+Loading weights:  75%|████████████████████████████████████████▋             | 301/399 [00:02<00:00, 139.73it/s]
+Loading weights:  79%|██████████████████████████████████████████▊           | 316/399 [00:02<00:00, 139.83it/s]
+Loading weights:  84%|█████████████████████████████████████████████▏        | 334/399 [00:02<00:00, 144.58it/s]
+Loading weights:  87%|███████████████████████████████████████████████▏      | 349/399 [00:03<00:00, 141.44it/s]
+Loading weights:  92%|█████████████████████████████████████████████████▌    | 366/399 [00:03<00:00, 144.23it/s]
+Loading weights:  95%|███████████████████████████████████████████████████▌  | 381/399 [00:03<00:00, 131.94it/s]
+Loading weights: 100%|██████████████████████████████████████████████████████| 399/399 [00:03<00:00, 119.29it/s]
 unsloth/Qwen3-8B does not have a padding token! Will use pad_token = <|PAD_TOKEN|>.
 Unsloth 2026.6.9 patched 36 layers with 36 QKV layers, 36 O layers and 36 MLP layers.
 [llm][rl] trainable params: 261.9M across 3 adapter(s) on cuda:0  lr=5e-05

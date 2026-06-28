@@ -40,13 +40,14 @@ topk_children: 3
 # good >= 0.70*target = 1.845. false => q_* are quantiles of the live archive
 # (the old relative behavior, where the best-so-far seeds land in near_sota).
 bands_absolute: true
-q_good: 0.70
-q_elite: 0.95
-q_near: 0.995
+# q_good: 0.70
+# q_elite: 0.95
+# q_near: 0.995
 
-# q_good: 0.94
-# q_elite: 0.994
-# q_near: 0.9995
+
+q_good: 0.94
+q_elite: 0.994
+q_near: 0.9995
 
 # gate
 parent_sim_threshold: 0.99

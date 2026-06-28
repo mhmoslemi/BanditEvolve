@@ -1,0 +1,105 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = int(np.ceil(np.sqrt(n)))
+    xs = (np.arange(n) % cols + 0.5) / cols
+    ys = (np.arange(n) // cols + 0.5) / cols
+    r0 = 0.5 / cols - 1e-3
+    v0 = np.empty(3 * n)
+    v0[0::3] = xs
+    v0[1::3] = ys
+    v0[2::3] = r0
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    cons = []
+    for i in range(n):
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+
+    def vectorized_overlap_constraint(v):
+        x_centers = v[0::3]
+        y_centers = v[1::3]
+        r_radii = v[2::3]
+        dx = x_centers[:, np.newaxis] - x_centers[np.newaxis, :]
+        dy = y_centers[:, np.newaxis] - y_centers[np.newaxis, :]
+        dist_sq = dx**2 + dy**2
+        min_dist_sq = (r_radii[:, np.newaxis] + r_radii[np.newaxis, :])**2
+        return dist_sq - min_dist_sq
+
+    overlap_cons = []
+    for i in range(n):
+        for j in range(i + 1, n):
+            def constraint_func(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                return dx*dx + dy*dy - (v[3*i+2] + v[3*j+2])**2
+            overlap_cons.append({"type": "ineq", "fun": constraint_func})
+
+    cons.extend(overlap_cons)
+
+    def component_based_heuristic(v):
+        # Split into 2 components
+        comp1 = v[:3*13]
+        comp2 = v[3*13:]
+        
+        # Move component 1 to the top-left and component 2 to the bottom-right
+        # This creates a new configuration that allows for better radii expansion
+        comp1_centers = comp1[0::3]
+        comp1_y = comp1[1::3]
+        comp1_radii = comp1[2::3]
+        
+        comp2_centers = comp2[0::3]
+        comp2_y = comp2[1::3]
+        comp2_radii = comp2[2::3]
+        
+        # Move component 1 to the top-left
+        comp1_centers = comp1_centers - 0.2
+        comp1_y = comp1_y - 0.2
+        
+        # Move component 2 to the bottom-right
+        comp2_centers = comp2_centers + 0.2
+        comp2_y = comp2_y + 0.2
+        
+        # Apply clipping
+        comp1_centers = np.clip(comp1_centers, 0.0, 1.0)
+        comp1_y = np.clip(comp1_y, 0.0, 1.0)
+        comp2_centers = np.clip(comp2_centers, 0.0, 1.0)
+        comp2_y = np.clip(comp2_y, 0.0, 1.0)
+        
+        # Rebuild the perturbed vector
+        new_v = np.zeros_like(v)
+        new_v[0::3] = comp1_centers
+        new_v[1::3] = comp1_y
+        new_v[2::3] = comp1_radii
+        
+        new_v[3*13::3] = comp2_centers
+        new_v[3*13+1::3] = comp2_y
+        new_v[3*13+2::3] = comp2_radii
+        
+        return new_v
+
+    # Initial optimization
+    v_initial = component_based_heuristic(v0)
+    v_initial = np.clip(v_initial, 0.0, 1.0)
+    v_initial[2::3] = np.clip(v_initial[2::3], 1e-4, 0.5)
+    res = minimize(neg_sum_radii, v_initial, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 800, "ftol": 1e-9, "gtol": 1e-9})
+    v = res.x if res.success else v0
+
+    # Final optimization
+    res = minimize(neg_sum_radii, v, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 800, "ftol": 1e-9, "gtol": 1e-9})
+    v = res.x if res.success else v0
+
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())

@@ -1,0 +1,83 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = int(np.ceil(np.sqrt(n)))
+    xs = (np.arange(n) % cols + 0.5) / cols
+    ys = (np.arange(n) // cols + 0.5) / cols
+    r0 = 0.5 / cols - 1e-3
+    v0 = np.empty(3 * n)
+    v0[0::3] = xs
+    v0[1::3] = ys
+    v0[2::3] = r0
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    cons = []
+    for i in range(n):
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+
+    for i in range(n):
+        for j in range(i + 1, n):
+            def constraint_func(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                r_i = v[3*i+2]
+                r_j = v[3*j+2]
+                return dx*dx + dy*dy - (r_i + r_j)**2
+            cons.append({"type": "ineq", "fun": constraint_func})
+
+    # Initial optimization
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 500, "ftol": 1e-9})
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+
+    # Apply geometric distortion
+    if radii.shape[0] > 0:
+        scale = 1.05
+        shear = 0.05
+        rotation = np.random.uniform(-np.pi/12, np.pi/12)
+        cos_theta = np.cos(rotation)
+        sin_theta = np.sin(rotation)
+        
+        # Update centers and radii based on geometric transformation
+        v[0::3] = (v[0::3] - 0.5) * scale + 0.5
+        v[1::3] = (v[1::3] - 0.5) * scale + 0.5
+        v[1::3] = v[1::3] * (1 + shear) + v[0::3] * shear
+        v[0::3] = v[0::3] * cos_theta - v[1::3] * sin_theta + 0.5
+        v[1::3] = v[0::3] * sin_theta + v[1::3] * cos_theta + 0.5
+        v[2::3] = v[2::3] * scale
+
+        # Re-optimize with transformed guess
+        res = minimize(neg_sum_radii, v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 500, "ftol": 1e-9})
+        v = res.x if res.success else v
+
+    # Apply shake heuristic on smallest circles
+    if radii.shape[0] > 0:
+        sorted_indices = np.argsort(radii)
+        smallest_indices = sorted_indices[:5]
+        perturbation = 0.01 * np.random.rand(3 * n)
+        for idx in smallest_indices:
+            v[3*idx] += perturbation[3*idx]
+            v[3*idx+1] += perturbation[3*idx+1]
+            v[3*idx+2] += perturbation[3*idx+2]
+
+        # Re-optimize with perturbed values
+        res = minimize(neg_sum_radii, v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 500, "ftol": 1e-9})
+        v = res.x if res.success else v
+
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())

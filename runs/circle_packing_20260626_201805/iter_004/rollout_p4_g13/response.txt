@@ -1,0 +1,202 @@
+```python
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = int(np.ceil(np.sqrt(n)))
+    xs = (np.arange(n) % cols + 0.5) / cols
+    ys = (np.arange(n) // cols + 0.5) / cols
+    r0 = 0.5 / cols - 1e-3
+    v0 = np.empty(3 * n)
+    v0[0::3] = xs
+    v0[1::3] = ys
+    v0[2::3] = r0
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    cons = []
+    for i in range(n):
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+
+    def vectorized_overlap_constraint(v):
+        x_centers = v[0::3]
+        y_centers = v[1::3]
+        r_radii = v[2::3]
+        dx = x_centers[:, np.newaxis] - x_centers[np.newaxis, :]
+        dy = y_centers[:, np.newaxis] - y_centers[np.newaxis, :]
+        dist_sq = dx**2 + dy**2
+        min_dist_sq = (r_radii[:, np.newaxis] + r_radii[np.newaxis, :])**2
+        return dist_sq - min_dist_sq
+
+    overlap_cons = []
+    for i in range(n):
+        for j in range(i + 1, n):
+            def constraint_func(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                return dx*dx + dy*dy - (v[3*i+2] + v[3*j+2])**2
+            overlap_cons.append({"type": "ineq", "fun": constraint_func})
+
+    cons.extend(overlap_cons)
+
+    def perturb_initial_guess(v):
+        perturbation = 0.05 * np.random.rand(3 * n)
+        return v + perturbation
+
+    def geometric_distortion(v):
+        # Apply random geometric distortion: shear and scale
+        scale = 1.0 + 0.1 * np.random.rand()
+        shear = 0.1 * np.random.rand() - 0.05
+        centers = v[0::3] + v[1::3] * shear
+        centers *= scale
+        centers = np.clip(centers, 0.0, 1.0)
+        radii = v[2::3] * scale
+        radii = np.clip(radii, 1e-4, 0.5)
+        new_v = np.zeros(3 * n)
+        new_v[0::3] = centers
+        new_v[1::3] = centers
+        new_v[2::3] = radii
+        return new_v
+
+    def cluster_split(v):
+        # Split into four clusters
+        clusters = [np.arange(7), np.arange(7, 14), np.arange(14, 21), np.arange(21, 26)]
+        cluster_positions = []
+        for cluster in clusters:
+            cluster_centers = v[0::3][cluster], v[1::3][cluster]
+            cluster_radii = v[2::3][cluster]
+            cluster_positions.append((cluster_centers, cluster_radii))
+        return cluster_positions
+
+    def permute_clusters(v):
+        # Permute cluster positions
+        clusters = [np.arange(7), np.arange(7, 14), np.arange(14, 21), np.arange(21, 26)]
+        cluster_positions = []
+        for cluster in clusters:
+            cluster_centers = v[0::3][cluster], v[1::3][cluster]
+            cluster_radii = v[2::3][cluster]
+            cluster_positions.append((cluster_centers, cluster_radii))
+        # Permute clusters
+        np.random.shuffle(cluster_positions)
+        # Rebuild v
+        new_v = np.zeros(3 * n)
+        idx = 0
+        for i, cluster in enumerate(clusters):
+            new_v[0::3][cluster] = cluster_positions[i][0][0]
+            new_v[1::3][cluster] = cluster_positions[i][0][1]
+            new_v[2::3][cluster] = cluster_positions[i][1]
+        return new_v
+
+    def expand_cluster(v, cluster_idx):
+        # Expand one cluster by a fixed percentage
+        cluster_centers = v[0::3][cluster_idx], v[1::3][cluster_idx]
+        cluster_radii = v[2::3][cluster_idx]
+        # Expand radii
+        expanded_radii = cluster_radii * 1.1
+        # Adjust positions to maintain non-overlap
+        for i in range(len(cluster_idx)):
+            for j in range(len(cluster_idx)):
+                if i != j:
+                    dx = cluster_centers[0][i] - cluster_centers[0][j]
+                    dy = cluster_centers[1][i] - cluster_centers[1][j]
+                    dist = np.sqrt(dx**2 + dy**2)
+                    if dist < expanded_radii[i] + expanded_radii[j] - 1e-6:
+                        overlap = expanded_radii[i] + expanded_radii[j] - dist
+                        dx /= dist
+                        dy /= dist
+                        cluster_centers[0][i] += dx * overlap * 0.5
+                        cluster_centers[0][j] -= dx * overlap * 0.5
+                        cluster_centers[1][i] += dy * overlap * 0.5
+                        cluster_centers[1][j] -= dy * overlap * 0.5
+        # Clip positions to bounds
+        for i in range(len(cluster_idx)):
+            x, y = cluster_centers[0][i], cluster_centers[1][i]
+            r = expanded_radii[i]
+            if x - r < 0:
+                cluster_centers[0][i] = r
+            elif x + r > 1:
+                cluster_centers[0][i] = 1 - r
+            if y - r < 0:
+                cluster_centers[1][i] = r
+            elif y + r > 1:
+                cluster_centers[1][i] = 1 - r
+        # Rebuild v
+        new_v = np.zeros(3 * n)
+        idx = 0
+        for i, cluster in enumerate(clusters):
+            new_v[0::3][cluster] = cluster_centers[0][i]
+            new_v[1::3][cluster] = cluster_centers[1][i]
+            new_v[2::3][cluster] = cluster_radii[i]
+        return new_v
+
+    v_perturbed = perturb_initial_guess(v0)
+    res = minimize(neg_sum_radii, v_perturbed, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 500, "ftol": 1e-9})
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+
+    # Apply geometric distortion to escape local minima
+    v_distorted = geometric_distortion(v)
+    res_distorted = minimize(neg_sum_radii, v_distorted, method="SLSQP", bounds=bounds,
+                             constraints=cons, options={"maxiter": 500, "ftol": 1e-9})
+    v = res_distorted.x if res_distorted.success else v
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+
+    # Split into clusters and permute
+    cluster_positions = cluster_split(v)
+    v_permuted = permute_clusters(v)
+    res_permuted = minimize(neg_sum_radii, v_permuted, method="SLSQP", bounds=bounds,
+                            constraints=cons, options={"maxiter": 500, "ftol": 1e-9})
+    v = res_permuted.x if res_permuted.success else v
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+
+    # Expand one cluster
+    clusters = [np.arange(7), np.arange(7, 14), np.arange(14, 21), np.arange(21, 26)]
+    cluster_idx = np.random.choice(range(4))
+    v_expanded = expand_cluster(v, cluster_idx)
+    res_expanded = minimize(neg_sum_radii, v_expanded, method="SLSQP", bounds=bounds,
+                            constraints=cons, options={"maxiter": 500, "ftol": 1e-9})
+    v = res_expanded.x if res_expanded.success else v
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+
+    # Local refinement
+    for _ in range(100):
+        for i in range(n):
+            for j in range(i + 1, n):
+                dx = centers[i, 0] - centers[j, 0]
+                dy = centers[i, 1] - centers[j, 1]
+                dist = np.sqrt(dx*dx + dy*dy)
+                if dist < radii[i] + radii[j] - 1e-6:
+                    overlap = radii[i] + radii[j] - dist
+                    dx /= dist
+                    dy /= dist
+                    centers[i] += dx * overlap * 0.5
+                    centers[j] -= dx * overlap * 0.5
+                    centers[i] += dy * overlap * 0.5
+                    centers[j] -= dy * overlap * 0.5
+        for i in range(n):
+            x, y = centers[i]
+            r = radii[i]
+            if x - r < 0:
+                centers[i, 0] = r
+            elif x + r > 1:
+                centers[i, 0] = 1 - r
+            if y - r < 0:
+                centers[i, 1] = r
+            elif y + r > 1:
+                centers[i, 1] = 1 - r
+
+    return centers, radii, float(radii.sum())
+```

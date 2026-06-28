@@ -1,0 +1,237 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = int(np.ceil(np.sqrt(n)))
+    xs = (np.arange(n) % cols + 0.5) / cols
+    ys = (np.arange(n) // cols + 0.5) / cols
+    r0 = 0.5 / cols - 1e-3
+    v0 = np.empty(3 * n)
+    v0[0::3] = xs
+    v0[1::3] = ys
+    v0[2::3] = r0
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    cons = []
+    for i in range(n):
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+
+    def vectorized_overlap_constraint(v):
+        x_centers = v[0::3]
+        y_centers = v[1::3]
+        r_radii = v[2::3]
+        dx = x_centers[:, np.newaxis] - x_centers[np.newaxis, :]
+        dy = y_centers[:, np.newaxis] - y_centers[np.newaxis, :]
+        dist_sq = dx**2 + dy**2
+        min_dist_sq = (r_radii[:, np.newaxis] + r_radii[np.newaxis, :])**2
+        return dist_sq - min_dist_sq
+
+    overlap_cons = []
+    for i in range(n):
+        for j in range(i + 1, n):
+            def constraint_func(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                return dx*dx + dy*dy - (v[3*i+2] + v[3*j+2])**2
+            overlap_cons.append({"type": "ineq", "fun": constraint_func})
+
+    cons.extend(overlap_cons)
+
+    def perturb_initial_guess(v):
+        scale = np.random.uniform(0.95, 1.05)
+        shear = np.random.uniform(-0.1, 0.1)
+        rotation = np.random.uniform(-np.pi/12, np.pi/12)
+        perturbation = np.random.normal(0, 1e-3, 3 * n)
+        v_perturbed = v + perturbation
+        # Apply distortion
+        x_centers = v_perturbed[0::3]
+        y_centers = v_perturbed[1::3]
+        x_centers = scale * x_centers + shear * y_centers
+        y_centers = y_centers
+        # Rotate
+        cos_r, sin_r = np.cos(rotation), np.sin(rotation)
+        x_centers = x_centers * cos_r - y_centers * sin_r
+        y_centers = x_centers * sin_r + y_centers * cos_r
+        # Update the perturbed vector
+        v_perturbed[0::3] = np.clip(x_centers, 0.0, 1.0)
+        v_perturbed[1::3] = np.clip(y_centers, 0.0, 1.0)
+        v_perturbed[2::3] = np.clip(v_perturbed[2::3], 1e-4, 0.5)
+        return v_perturbed
+
+    # Try perturbed initial guess with geometric distortion
+    v_perturbed = perturb_initial_guess(v0)
+    res = minimize(neg_sum_radii, v_perturbed, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 800, "ftol": 1e-9, "gtol": 1e-9})
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+
+    # Subcomponent division and permutation
+    def divide_into_subcomponents(centers, radii):
+        # Divide into subcomponents based on initial grid layout
+        grid_cols = int(np.ceil(np.sqrt(n)))
+        subcomponents = []
+        for i in range(grid_cols):
+            subcomponent = []
+            for j in range(grid_cols):
+                idx = i * grid_cols + j
+                if idx < n:
+                    subcomponent.append((centers[idx], radii[idx]))
+            subcomponents.append(subcomponent)
+        return subcomponents
+
+    def permute_subcomponents(subcomponents):
+        # Randomly permute subcomponents
+        np.random.shuffle(subcomponents)
+        return subcomponents
+
+    def reconstruct_centers_radii(subcomponents):
+        centers = []
+        radii = []
+        for subcomponent in subcomponents:
+            for c, r in subcomponent:
+                centers.append(c)
+                radii.append(r)
+        return np.array(centers), np.array(radii)
+
+    subcomponents = divide_into_subcomponents(centers, radii)
+    permuted_subcomponents = permute_subcomponents(subcomponents)
+    permuted_centers, permuted_radii = reconstruct_centers_radii(permuted_subcomponents)
+
+    # Add constraint to enforce at least one subcomponent expansion
+    def enforce_subcomponent_expansion(v):
+        # Calculate subcomponent centers and radii
+        x_centers = v[0::3]
+        y_centers = v[1::3]
+        r_radii = v[2::3]
+        grid_cols = int(np.ceil(np.sqrt(n)))
+        subcomponents = []
+        for i in range(grid_cols):
+            subcomponent = []
+            for j in range(grid_cols):
+                idx = i * grid_cols + j
+                if idx < n:
+                    subcomponent.append((x_centers[idx], y_centers[idx], r_radii[idx]))
+            subcomponents.append(subcomponent)
+        
+        # Calculate expansion percentage for each subcomponent
+        expansion_percentages = []
+        for subcomponent in subcomponents:
+            if len(subcomponent) == 0:
+                expansion_percentages.append(0.0)
+                continue
+            sub_center_x = np.mean([c[0] for c in subcomponent])
+            sub_center_y = np.mean([c[1] for c in subcomponent])
+            sub_radius = np.mean([c[2] for c in subcomponent])
+            # Check if subcomponent can expand
+            expansion_possible = True
+            for i in range(len(subcomponent)):
+                for j in range(i + 1, len(subcomponent)):
+                    dx = subcomponent[i][0] - subcomponent[j][0]
+                    dy = subcomponent[i][1] - subcomponent[j][1]
+                    dist = np.hypot(dx, dy)
+                    if dist < subcomponent[i][2] + subcomponent[j][2] - 1e-6:
+                        expansion_possible = False
+                        break
+                if not expansion_possible:
+                    break
+            if expansion_possible:
+                # Calculate maximum expansion
+                max_expansion = 0.0
+                for i in range(len(subcomponent)):
+                    x, y, r = subcomponent[i]
+                    max_expansion_x = min(x - r, 1.0 - x - r)
+                    max_expansion_y = min(y - r, 1.0 - y - r)
+                    max_expansion += max(max_expansion_x, max_expansion_y)
+                expansion_percentage = max_expansion / (len(subcomponent) * (1.0 - 2.0 * r))
+                expansion_percentages.append(expansion_percentage)
+            else:
+                expansion_percentages.append(0.0)
+        
+        # Enforce at least one subcomponent with expansion
+        expansion_sum = np.sum(expansion_percentages)
+        if expansion_sum > 0:
+            return expansion_sum - 0.1
+        else:
+            return -1.0
+
+    # Add the expansion constraint
+    expansion_cons = {"type": "ineq", "fun": enforce_subcomponent_expansion}
+    cons.append(expansion_cons)
+
+    # Run optimization with the new constraint
+    res = minimize(neg_sum_radii, permuted_centers.flatten(), method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 800, "ftol": 1e-9, "gtol": 1e-9})
+    v = res.x if res.success else permuted_centers.flatten()
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+
+    # Local refinement and shake heuristic
+    def local_refinement(centers, radii):
+        for _ in range(100):
+            for i in range(n):
+                for j in range(i + 1, n):
+                    dx = centers[i, 0] - centers[j, 0]
+                    dy = centers[i, 1] - centers[j, 1]
+                    dist = np.sqrt(dx*dx + dy*dy)
+                    if dist < radii[i] + radii[j] - 1e-6:
+                        overlap = radii[i] + radii[j] - dist
+                        dx /= dist
+                        dy /= dist
+                        centers[i] += dx * overlap * 0.5
+                        centers[j] -= dx * overlap * 0.5
+                        centers[i] += dy * overlap * 0.5
+                        centers[j] -= dy * overlap * 0.5
+            for i in range(n):
+                x, y = centers[i]
+                r = radii[i]
+                if x - r < 0:
+                    centers[i, 0] = r
+                elif x + r > 1:
+                    centers[i, 0] = 1 - r
+                if y - r < 0:
+                    centers[i, 1] = r
+                elif y + r > 1:
+                    centers[i, 1] = 1 - r
+        return centers, radii
+
+    def shake_heuristic(centers, radii):
+        for _ in range(5):
+            small_indices = np.argsort(radii)[:5]
+            for idx in small_indices:
+                perturbation = np.random.normal(0, 1e-3, 2)
+                centers[idx] += perturbation
+                x, y = centers[idx]
+                r = radii[idx]
+                if x - r < 0:
+                    centers[idx, 0] = r
+                elif x + r > 1:
+                    centers[idx, 0] = 1 - r
+                if y - r < 0:
+                    centers[idx, 1] = r
+                elif y + r > 1:
+                    centers[idx, 1] = 1 - r
+            new_v = np.zeros(3 * n)
+            new_v[0::3] = centers[:, 0]
+            new_v[1::3] = centers[:, 1]
+            new_v[2::3] = radii
+            res = minimize(neg_sum_radii, new_v, method="SLSQP", bounds=bounds,
+                           constraints=cons, options={"maxiter": 100, "ftol": 1e-9})
+            if res.success:
+                v = res.x
+                centers = np.column_stack([v[0::3], v[1::3]])
+                radii = np.clip(v[2::3], 1e-6, None)
+        return centers, radii
+
+    centers, radii = local_refinement(centers, radii)
+    centers, radii = shake_heuristic(centers, radii)
+    return centers, radii, float(radii.sum())

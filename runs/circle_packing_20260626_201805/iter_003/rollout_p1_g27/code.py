@@ -1,0 +1,131 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = int(np.ceil(np.sqrt(n)))
+    xs = (np.arange(n) % cols + 0.5) / cols
+    ys = (np.arange(n) // cols + 0.5) / cols
+    r0 = 0.5 / cols - 1e-3
+    v0 = np.empty(3 * n)
+    v0[0::3] = xs
+    v0[1::3] = ys
+    v0[2::3] = r0
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    cons = []
+    for i in range(n):
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+
+    # Vectorized overlap constraint
+    def vectorized_overlap_constraint(v):
+        x_centers = v[0::3]
+        y_centers = v[1::3]
+        r_radii = v[2::3]
+        dx = x_centers[:, np.newaxis] - x_centers[np.newaxis, :]
+        dy = y_centers[:, np.newaxis] - y_centers[np.newaxis, :]
+        dist_sq = dx**2 + dy**2
+        min_dist_sq = (r_radii[:, np.newaxis] + r_radii[np.newaxis, :])**2
+        return dist_sq - min_dist_sq
+
+    # Convert to list of functions for each pair
+    overlap_cons = []
+    for i in range(n):
+        for j in range(i + 1, n):
+            def constraint_func(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                return dx*dx + dy*dy - (v[3*i+2] + v[3*j+2])**2
+            overlap_cons.append({"type": "ineq", "fun": constraint_func})
+
+    cons.extend(overlap_cons)
+
+    # Apply dual-phase mutation strategy
+    
+    # Phase 1: Random geometric distortion
+    def apply_distortion(v):
+        # Scale the layout
+        scale = np.random.uniform(0.9, 1.1)
+        v[0::3] *= scale
+        v[1::3] *= scale
+        # Apply shear
+        shear = np.random.uniform(-0.1, 0.1)
+        v[0::3] += shear * v[1::3]
+        # Apply rotation
+        angle = np.random.uniform(-np.pi/12, np.pi/12)
+        cos_theta = np.cos(angle)
+        sin_theta = np.sin(angle)
+        v[0::3], v[1::3] = v[0::3] * cos_theta - v[1::3] * sin_theta, v[0::3] * sin_theta + v[1::3] * cos_theta
+        # Ensure bounds are maintained
+        for k in range(n):
+            x, y = v[3*k], v[3*k+1]
+            r = v[3*k+2]
+            if x - r < 0:
+                v[3*k] = r
+            elif x + r > 1:
+                v[3*k] = 1 - r
+            if y - r < 0:
+                v[3*k+1] = r
+            elif y + r > 1:
+                v[3*k+1] = 1 - r
+        return v
+
+    # Phase 2: Localized perturbation of smallest radius circles
+    def shake_smallest(v):
+        radii = v[2::3]
+        smallest_indices = np.argsort(radii)[:5]
+        perturbation = 0.05 * np.random.rand(3 * n)
+        perturbation[3*smallest_indices] = 0.1 * np.random.rand(len(smallest_indices)*3)
+        return v + perturbation
+
+    # Initial optimization with distorted guess
+    v_distorted = apply_distortion(v0)
+    res = minimize(neg_sum_radii, v_distorted, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 500, "ftol": 1e-9})
+    v = res.x if res.success else v_distorted
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+
+    # Local refinement by moving overlapping circles
+    def local_refinement(centers, radii):
+        for _ in range(100):
+            for i in range(n):
+                for j in range(i + 1, n):
+                    dx = centers[i, 0] - centers[j, 0]
+                    dy = centers[i, 1] - centers[j, 1]
+                    dist = np.sqrt(dx*dx + dy*dy)
+                    if dist < radii[i] + radii[j] - 1e-6:
+                        # Move circles apart
+                        overlap = radii[i] + radii[j] - dist
+                        dx /= dist
+                        dy /= dist
+                        centers[i] += dx * overlap * 0.5
+                        centers[j] -= dx * overlap * 0.5
+                        centers[i] += dy * overlap * 0.5
+                        centers[j] -= dy * overlap * 0.5
+            # Ensure circles are within bounds
+            for i in range(n):
+                x, y = centers[i]
+                r = radii[i]
+                if x - r < 0:
+                    centers[i, 0] = r
+                elif x + r > 1:
+                    centers[i, 0] = 1 - r
+                if y - r < 0:
+                    centers[i, 1] = r
+                elif y + r > 1:
+                    centers[i, 1] = 1 - r
+        return centers, radii
+
+    # Final refinement
+    centers, radii = local_refinement(centers, radii)
+
+    return centers, radii, float(radii.sum())

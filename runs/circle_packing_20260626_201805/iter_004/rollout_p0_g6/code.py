@@ -1,0 +1,136 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = int(np.ceil(np.sqrt(n)))
+    xs = (np.arange(n) % cols + 0.5) / cols
+    ys = (np.arange(n) // cols + 0.5) / cols
+    r0 = 0.5 / cols - 1e-3
+    v0 = np.empty(3 * n)
+    v0[0::3] = xs
+    v0[1::3] = ys
+    v0[2::3] = r0
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    cons = []
+    for i in range(n):
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+
+    # Vectorize the overlap constraints for better performance
+    def vectorized_overlap_constraint(v):
+        x_centers = v[0::3]
+        y_centers = v[1::3]
+        r_radii = v[2::3]
+        dx = x_centers[:, np.newaxis] - x_centers[np.newaxis, :]
+        dy = y_centers[:, np.newaxis] - y_centers[np.newaxis, :]
+        dist_sq = dx**2 + dy**2
+        min_dist_sq = (r_radii[:, np.newaxis] + r_radii[np.newaxis, :])**2
+        return dist_sq - min_dist_sq
+
+    # Convert to list of functions for each pair
+    overlap_cons = []
+    for i in range(n):
+        for j in range(i + 1, n):
+            def constraint_func(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                return dx*dx + dy*dy - (v[3*i+2] + v[3*j+2])**2
+            overlap_cons.append({"type": "ineq", "fun": constraint_func})
+
+    cons.extend(overlap_cons)
+
+    # Apply a radical topological reconfiguration by splitting the current layout
+    # into independent subcomponents, applying a global permutation of these components,
+    # and enforcing a constraint that at least one subcomponent must expand its radii
+    # by a fixed percentage without violating non-overlap conditions.
+
+    # Split the circles into subcomponents
+    subcomponent_size = 13
+    subcomponents = [np.arange(i*subcomponent_size, (i+1)*subcomponent_size) for i in range(2)]
+
+    # Create a list of all valid permutations of the subcomponents
+    from itertools import permutations
+    valid_permutations = list(permutations(subcomponents))
+
+    # Define a function to permute the circle indices
+    def permute_circles(perm, v):
+        permuted_v = np.copy(v)
+        for i, group in enumerate(perm):
+            for idx in group:
+                new_idx = i * subcomponent_size + np.where(group == idx)[0][0]
+                permuted_v[3*idx], permuted_v[3*idx+1], permuted_v[3*idx+2] = \
+                    permuted_v[3*new_idx], permuted_v[3*new_idx+1], permuted_v[3*new_idx+2]
+        return permuted_v
+
+    # Define a function to check if a subcomponent can expand its radii
+    def can_expand_radii(v, subcomponent_indices):
+        radii = v[2::3]
+        radii_diff = np.abs(radii[subcomponent_indices] - radii[subcomponent_indices] * 1.1)
+        return np.any(radii_diff < 1e-6)
+
+    # Apply the topological reconfiguration strategy
+    best_v = v0
+    best_sum_radii = 0
+    for perm in valid_permutations:
+        permuted_v = permute_circles(perm, v0)
+        # Apply a small random perturbation to avoid local minima
+        perturbation = 0.01 * np.random.rand(3 * n)
+        permuted_v += perturbation
+        permuted_v[0::3] = np.clip(permuted_v[0::3], 0.0, 1.0)
+        permuted_v[1::3] = np.clip(permuted_v[1::3], 0.0, 1.0)
+        permuted_v[2::3] = np.clip(permuted_v[2::3], 1e-4, 0.5)
+        res = minimize(neg_sum_radii, permuted_v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 800, "ftol": 1e-9, "gtol": 1e-9})
+        v = res.x if res.success else permuted_v
+        sum_radii = float(np.sum(v[2::3]))
+        if sum_radii > best_sum_radii and can_expand_radii(v, subcomponents[0]):
+            best_v = v
+            best_sum_radii = sum_radii
+
+    # Apply the dual-phase mutation strategy
+    def geometric_distortion(v):
+        theta = np.random.uniform(-np.pi/4, np.pi/4)
+        scale = np.random.uniform(0.8, 1.2)
+        x_centers = v[0::3]
+        y_centers = v[1::3]
+        r_radii = v[2::3]
+        cos_theta = np.cos(theta)
+        sin_theta = np.sin(theta)
+        rotated_x = x_centers * cos_theta - y_centers * sin_theta
+        rotated_y = x_centers * sin_theta + y_centers * cos_theta
+        distorted_x = rotated_x * scale
+        distorted_y = rotated_y * scale
+        distorted_v = np.zeros_like(v)
+        distorted_v[0::3] = np.clip(distorted_x, 0.0, 1.0)
+        distorted_v[1::3] = np.clip(distorted_y, 0.0, 1.0)
+        distorted_v[2::3] = r_radii
+        return distorted_v
+
+    def localized_perturbation(v):
+        small_circle_indices = np.where(v[2::3] < 0.1)[0]
+        if len(small_circle_indices) > 0:
+            perturbation = 0.05 * np.random.rand(3 * n)
+            v_perturbed = v + perturbation
+            v_perturbed[0::3] = np.clip(v_perturbed[0::3], 0.0, 1.0)
+            v_perturbed[1::3] = np.clip(v_perturbed[1::3], 0.0, 1.0)
+            v_perturbed[2::3] = np.clip(v_perturbed[2::3], 1e-4, 0.5)
+            return v_perturbed
+        return v
+
+    v_distorted = geometric_distortion(best_v)
+    v_perturbed = localized_perturbation(v_distorted)
+    res = minimize(neg_sum_radii, v_perturbed, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 800, "ftol": 1e-9, "gtol": 1e-9})
+    v = res.x if res.success else best_v
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())

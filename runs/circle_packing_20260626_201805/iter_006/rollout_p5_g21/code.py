@@ -1,0 +1,131 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = int(np.ceil(np.sqrt(n)))
+    xs = (np.arange(n) % cols + 0.5) / cols
+    ys = (np.arange(n) // cols + 0.5) / cols
+    r0 = 0.5 / cols - 1e-3
+    v0 = np.empty(3 * n)
+    v0[0::3] = xs
+    v0[1::3] = ys
+    v0[2::3] = r0
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    cons = []
+    for i in range(n):
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+
+    def vectorized_overlap_constraint(v):
+        x_centers = v[0::3]
+        y_centers = v[1::3]
+        r_radii = v[2::3]
+        dx = x_centers[:, np.newaxis] - x_centers[np.newaxis, :]
+        dy = y_centers[:, np.newaxis] - y_centers[np.newaxis, :]
+        dist_sq = dx**2 + dy**2
+        min_dist_sq = (r_radii[:, np.newaxis] + r_radii[np.newaxis, :])**2
+        return dist_sq - min_dist_sq
+
+    def constraint_func(v, i, j):
+        dx = v[3*i] - v[3*j]
+        dy = v[3*i+1] - v[3*j+1]
+        return dx*dx + dy*dy - (v[3*i+2] + v[3*j+2])**2
+
+    overlap_cons = []
+    for i in range(n):
+        for j in range(i + 1, n):
+            overlap_cons.append({"type": "ineq", "fun": lambda v, i=i, j=j: constraint_func(v, i, j)})
+
+    cons.extend(overlap_cons)
+
+    def geometric_distortion(v):
+        theta = np.random.uniform(-np.pi/4, np.pi/4)
+        scale = np.random.uniform(0.8, 1.2)
+        cos_theta = np.cos(theta)
+        sin_theta = np.sin(theta)
+        x_centers = v[0::3]
+        y_centers = v[1::3]
+        r_radii = v[2::3]
+        rotated_x = x_centers * cos_theta - y_centers * sin_theta
+        rotated_y = x_centers * sin_theta + y_centers * cos_theta
+        distorted_x = rotated_x * scale
+        distorted_y = rotated_y * scale
+        distorted_v = np.zeros_like(v)
+        distorted_v[0::3] = np.clip(distorted_x, 0.0, 1.0)
+        distorted_v[1::3] = np.clip(distorted_y, 0.0, 1.0)
+        distorted_v[2::3] = r_radii
+        return distorted_v
+
+    def localized_perturbation(v):
+        small_circle_indices = np.where(v[2::3] < 0.1)[0]
+        if len(small_circle_indices) > 0:
+            perturbation = 0.05 * np.random.rand(3 * n)
+            v_perturbed = v + perturbation
+            v_perturbed[0::3] = np.clip(v_perturbed[0::3], 0.0, 1.0)
+            v_perturbed[1::3] = np.clip(v_perturbed[1::3], 0.0, 1.0)
+            v_perturbed[2::3] = np.clip(v_perturbed[2::3], 1e-4, 0.5)
+            return v_perturbed
+        return v
+
+    def topological_reconfiguration(v):
+        cluster_size = 5
+        clusters = []
+        for i in range(0, n, cluster_size):
+            cluster = v[3*i:3*(i+cluster_size)]
+            clusters.append(cluster)
+        np.random.shuffle(clusters)
+        reconfigured_v = np.concatenate(clusters)
+        reconfigured_v[0::3] = np.clip(reconfigured_v[0::3], 0.0, 1.0)
+        reconfigured_v[1::3] = np.clip(reconfigured_v[1::3], 0.0, 1.0)
+        reconfigured_v[2::3] = np.clip(reconfigured_v[2::3], 1e-4, 0.5)
+        return reconfigured_v
+
+    def non_local_reconfiguration(v):
+        for _ in range(3):
+            new_centers = np.random.rand(n, 2)
+            new_centers[:, 0] = np.clip(new_centers[:, 0], 0.0, 1.0)
+            new_centers[:, 1] = np.clip(new_centers[:, 1], 0.0, 1.0)
+            radii = np.clip(np.random.uniform(1e-4, 0.5, n), 1e-4, 0.5)
+            for i in range(n):
+                for j in range(i + 1, n):
+                    dx = new_centers[i, 0] - new_centers[j, 0]
+                    dy = new_centers[i, 1] - new_centers[j, 1]
+                    dist = np.sqrt(dx**2 + dy**2)
+                    if dist < radii[i] + radii[j] - 1e-6:
+                        overlap = radii[i] + radii[j] - dist
+                        dx /= dist
+                        dy /= dist
+                        new_centers[i] += dx * overlap * 0.5
+                        new_centers[j] -= dx * overlap * 0.5
+                        new_centers[i] += dy * overlap * 0.5
+                        new_centers[j] -= dy * overlap * 0.5
+            v_reconfigured = np.empty(3 * n)
+            v_reconfigured[0::3] = new_centers[:, 0]
+            v_reconfigured[1::3] = new_centers[:, 1]
+            v_reconfigured[2::3] = radii
+            v_reconfigured[0::3] = np.clip(v_reconfigured[0::3], 0.0, 1.0)
+            v_reconfigured[1::3] = np.clip(v_reconfigured[1::3], 0.0, 1.0)
+            v_reconfigured[2::3] = np.clip(v_reconfigured[2::3], 1e-4, 0.5)
+            v = v_reconfigured
+        return v
+
+    v_distorted = geometric_distortion(v0)
+    v_perturbed = localized_perturbation(v_distorted)
+    v_reconfigured = topological_reconfiguration(v_perturbed)
+    v = non_local_reconfiguration(v_reconfigured)
+
+    res = minimize(neg_sum_radii, v, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 800, "ftol": 1e-9, "gtol": 1e-9})
+    v = res.x if res.success else v
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())

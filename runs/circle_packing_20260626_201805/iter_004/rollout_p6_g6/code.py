@@ -1,0 +1,92 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = int(np.ceil(np.sqrt(n)))
+    xs = (np.arange(n) % cols + 0.5) / cols
+    ys = (np.arange(n) // cols + 0.5) / cols
+    r0 = 0.5 / cols - 1e-3
+    v0 = np.empty(3 * n)
+    v0[0::3] = xs
+    v0[1::3] = ys
+    v0[2::3] = r0
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    cons = []
+    for i in range(n):
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+
+    # Vectorize the overlap constraints for better performance
+    def vectorized_overlap_constraint(v):
+        x_centers = v[0::3]
+        y_centers = v[1::3]
+        r_radii = v[2::3]
+        dx = x_centers[:, np.newaxis] - x_centers[np.newaxis, :]
+        dy = y_centers[:, np.newaxis] - y_centers[np.newaxis, :]
+        dist_sq = dx**2 + dy**2
+        min_dist_sq = (r_radii[:, np.newaxis] + r_radii[np.newaxis, :])**2
+        return dist_sq - min_dist_sq
+
+    # Convert to list of functions for each pair
+    overlap_cons = []
+    for i in range(n):
+        for j in range(i + 1, n):
+            def constraint_func(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                return dx*dx + dy*dy - (v[3*i+2] + v[3*j+2])**2
+            overlap_cons.append({"type": "ineq", "fun": constraint_func})
+
+    cons.extend(overlap_cons)
+
+    # Topological reconfiguration strategy: divide into components and permute
+    def reconfigure_components(v):
+        # Group circles into 4 quadrants (for example)
+        groups = [np.arange(6), np.arange(6, 12), np.arange(12, 18), np.arange(18, 26)]
+        # Extract positions and radii
+        x = v[0::3]
+        y = v[1::3]
+        r = v[2::3]
+        # Reassign group indices randomly
+        np.random.shuffle(groups)
+        # Reset positions based on new group assignments
+        new_x = np.zeros_like(x)
+        new_y = np.zeros_like(y)
+        new_r = np.zeros_like(r)
+        for idx, group in enumerate(groups):
+            # Average position of group to anchor the component
+            avg_x = np.mean(x[group])
+            avg_y = np.mean(y[group])
+            # New positions are shifted to a random corner of the square
+            corner = np.random.choice([0.1, 0.1, 0.9, 0.9])
+            new_x[group] = avg_x + (np.random.rand(len(group)) - 0.5) * 0.4
+            new_y[group] = avg_y + (np.random.rand(len(group)) - 0.5) * 0.4
+            new_r[group] = r[group]
+        # Clip to ensure bounds are respected
+        new_x = np.clip(new_x, 0.0, 1.0)
+        new_y = np.clip(new_y, 0.0, 1.0)
+        new_r = np.clip(new_r, 1e-4, 0.5)
+        # Reconstruct the decision vector
+        new_v = np.zeros_like(v)
+        new_v[0::3] = new_x
+        new_v[1::3] = new_y
+        new_v[2::3] = new_r
+        return new_v
+
+    # Apply the topological reconfiguration to the initial guess
+    v_reconfigured = reconfigure_components(v0)
+    res = minimize(neg_sum_radii, v_reconfigured, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 800, "ftol": 1e-9, "gtol": 1e-9})
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())
