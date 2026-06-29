@@ -1,0 +1,220 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = 5
+    rows = (n + cols - 1) // cols
+    
+    # Initialize positions with hybrid geometric clustering, staggered grid, and spatial perturbation
+    xs = []
+    ys = []
+    for i in range(n):
+        row = i // cols
+        col = i % cols
+        x_center = (col + 0.5) / cols * 1.05  # Slight expansion for potential layout
+        y_center = (row + 0.5) / rows * 1.05  # Slight expansion for potential layout
+        # Adaptive perturbation based on row proximity to edges
+        x = x_center + np.random.uniform(-0.08, 0.08) * (1 - 0.4 * (1 - (row + 0.5) / rows))
+        y = y_center + np.random.uniform(-0.08, 0.08) * (1 - 0.4 * (1 - (row + 0.5) / rows))
+        # Staggered grid optimization with nonlinear adjustment
+        if row % 2 == 0 and col % 2 == 0:
+            x += np.random.uniform(-0.03, 0.03) * (0.5 + 0.3 * np.sin(2 * np.pi * i / n))
+        elif row % 2 == 1 and col % 2 == 1:
+            y += np.random.uniform(-0.03, 0.03) * (0.5 + 0.3 * np.sin(2 * np.pi * i / n))
+        xs.append(x)
+        ys.append(y)
+    
+    # Dynamic radius initialization with adaptive scaling based on grid spacing
+    # Initial guess includes both uniform and adaptive components
+    r0_base = 0.35 / cols - 1e-3
+    r0_adaptive = r0_base * (1.0 + 0.3 * np.sin(np.pi * (np.arange(n) / 13.0)))
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = np.clip(r0_base + r0_adaptive, 1e-4, 0.5 - 0.001)
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    # Vectorized constraints with dynamic weighting and lambda capture
+    # Spatial boundary constraints with adaptive weight per circle based on their location
+    cons = []
+    for i in range(n):
+        # Left boundary constraint with dynamic weight based on proximity to left edge
+        weight_left = max(0.0, 1.0 - (v0[3*i] - 0.1))  # This weight becomes dynamic
+        cons.append({"type": "ineq", "fun": lambda v, i=i, w=weight_left:
+                     v[3*i] - v[3*i + 2] - w * (v[3*i + 2] - 1e-4) if w != 0 else v[3*i] - v[3*i + 2]})
+        # Right boundary constraint with dynamic weight
+        weight_right = max(0.0, 1.0 - (1.0 - v0[3*i]))
+        cons.append({"type": "ineq", "fun": lambda v, i=i, w=weight_right:
+                     1.0 - v[3*i] - v[3*i + 2] - w * (1.0 - v[3*i] - v[3*i + 2]) if w != 0 else 1.0 - v[3*i] - v[3*i + 2]})
+        # Bottom constraint with location-aware scaling
+        weight_bottom = max(0.0, 1.0 - (v0[3*i+1] - 0.1))
+        cons.append({"type": "ineq", "fun": lambda v, i=i, w=weight_bottom:
+                     v[3*i+1] - v[3*i + 2] - w * (v[3*i + 2] - 1e-4) if w != 0 else v[3*i+1] - v[3*i + 2]})
+        # Top constraint with dynamic weight
+        weight_top = max(0.0, 1.0 - (1.0 - v0[3*i+1]))
+        cons.append({"type": "ineq", "fun": lambda v, i=i, w=weight_top:
+                     1.0 - v[3*i+1] - v[3*i + 2] - w * (1.0 - v[3*i+1] - v[3*i + 2]) if w != 0 else 1.0 - v[3*i+1] - v[3*i + 2]})
+
+    # Vectorized overlap constraints with spatial-aware adaptive scaling
+    # Use a spatial-aware scaling factor for distance constraint functions
+    for i in range(n):
+        for j in range(i + 1, n):
+            # Spatial-aware scaling based on relative distance to boundary
+            # Use the current position if not yet optimized, else use the current configuration
+            # This is a fallback but improves stability in early iterations
+            cx1, cy1 = v0[3*i], v0[3*i+1]
+            cx2, cy2 = v0[3*j], v0[3*j+1]
+            dist = np.sqrt((cx1 - cx2)**2 + (cy1 - cy2)**2)
+            # Dynamic constraint function with adaptive scaling
+            def constraint_func(v, i=i, j=j, cx1=cx1, cy1=cy1, cx2=cx2, cy2=cy2, dist_current=dist):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                # Scaling factor based on boundary proximity
+                proximity_factor = 1.0 + 0.2 * (np.minimum(np.abs(v[3*i]), np.abs(1 - v[3*i])) 
+                                             + np.minimum(np.abs(v[3*i+1]), np.abs(1 - v[3*i+1])))
+                dist_sq = dx*dx + dy*dy
+                sum_radii = v[3*i + 2] + v[3*j + 2]
+                # Adaptive constraint function with normalization
+                if dist_sq < sum_radii**2:
+                    # Add some tolerance for numerical stability and constraint relaxation
+                    # Use a normalized scale with respect to the potential error
+                    normalized_error = (dist_sq - sum_radii**2) / 1e-12
+                    return normalized_error * proximity_factor
+                else:
+                    # Use an inverse scale to encourage expansion
+                    return (sum_radii**2 - dist_sq) * proximity_factor
+            cons.append({"type": "ineq", "fun": constraint_func})
+
+    # Initial optimization with increased max iterations and tighter tolerances
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 1500, "ftol": 1e-10, "eps": 1e-14})
+
+    # Asymmetric spatial reconfiguration with dynamic spatial hash and adaptive perturbation
+    if res.success:
+        v = res.x
+        centers = np.column_stack([v[0::3], v[1::3]])
+        radii = v[2::3]
+        
+        # Create dynamic spatial hash vectors with nonlinear perturbation
+        # Use the actual current positions instead of initial guesses
+        # This helps avoid dependency on stale configuration data
+        spatial_hash = np.zeros((n, 2))
+        for i in range(n):
+            # Introduce nonlinear spatial perturbation based on relative distance to edges
+            # Add a non-linear scaling factor to create asymmetric spatial distortions
+            scale = max(0.0, 1.0 - 3.0 * np.sqrt((v[3*i] - 0.5)**2 + (v[3*i+1] - 0.5)**2)) 
+            spatial_hash[i, 0] = np.random.uniform(-0.06, 0.06) * scale
+            spatial_hash[i, 1] = np.random.uniform(-0.06, 0.06) * scale
+        
+        perturbed_v = v.copy()
+        for i in range(n):
+            # Apply adaptive spatial distortion with radius scaling
+            # This adds more aggressive variation for spatial reconfiguration
+            perturbed_v[3*i] += spatial_hash[i, 0] * (radii[i] / np.mean(radii))
+            perturbed_v[3*i+1] += spatial_hash[i, 1] * (radii[i] / np.mean(radii))
+            # Add a controlled offset to the smallest radii for targeted reconfiguration
+            if np.abs(radii[i] - np.min(radii)) < 0.002:
+                perturbed_v[3*i] += np.random.uniform(-0.01, 0.01)
+                perturbed_v[3*i+1] += np.random.uniform(-0.01, 0.01)
+        
+        # Re-evaluate with new spatial configuration
+        res = minimize(neg_sum_radii, perturbed_v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 500, "ftol": 1e-11, "eps": 1e-14})
+
+    # Targeted radius expansion with spatial sensitivity and adaptive constraint expansion
+    if res.success:
+        v = res.x
+        radii = v[2::3]
+        centers = np.column_stack([v[0::3], v[1::3]])
+        dists = np.zeros((n, n))
+        for i in range(n):
+            for j in range(i+1, n):
+                dx = centers[i, 0] - centers[j, 0]
+                dy = centers[i, 1] - centers[j, 1]
+                dists[i, j] = np.sqrt(dx*dx + dy*dy)
+                dists[j, i] = np.sqrt(dx*dx + dy*dy)
+
+        # Compute spatial entropy to find least constrained radius
+        spatial_entropy = np.zeros(n)
+        for i in range(n):
+            # Compute entropy based on distribution of distances
+            # This uses a more sophisticated metric than simple min distance
+            distances = dists[i, :n]
+            distances = np.sort(distances)
+            # Use a non-linear scale to measure spatial entropy with distance distribution
+            entropy = 0.0
+            for d in distances[1:]:  # skip self
+                entropy += np.log(d) / np.log(1.0 + np.sqrt(1 + d**2))
+            spatial_entropy[i] = entropy
+        
+        # Use non-linear entropy to find the most flexible circle
+        least_constrained_idx = np.argmin(spatial_entropy)
+        current_total = np.sum(radii)
+        # Calculate expansion using a non-linear growth function and adaptive strategy
+        # Use an expansion factor with soft bound control
+        max_addable = 0.007
+        potential_growth = max(0.0, max_addable - (current_total - radii[least_constrained_idx]))
+        
+        # Create a growth vector using adaptive expansion rules
+        # The core idea is to expand the most flexible circle and let it influence others
+        # Use a non-linear growth schedule for adaptive expansion based on entropy
+        growth_factor = np.zeros(n)
+        if potential_growth > 1e-5:
+            base_growth = potential_growth * (1.0 + 0.1 * np.random.rand()) * np.log(1.0 + np.sqrt(1 + (radii[least_constrained_idx] ** 2)))
+            for i in range(n):
+                if i == least_constrained_idx:
+                    growth_factor[i] = 1.2 * base_growth  # Targeted aggressive growth
+                else:
+                    # Use spatial sensitivity to influence neighboring circles
+                    # Use relative entropy to control radius expansion rate
+                    entropic_factor = np.exp((-spatial_entropy[i] + spatial_entropy[least_constrained_idx]) * 0.3)
+                    growth_factor[i] = 0.4 * base_growth * entropic_factor
+            
+            # Create a perturbed vector with controlled radius expansion
+            # Apply the growth factor with spatial sensitivity
+            perturbed_v = v.copy()
+            for i in range(n):
+                if growth_factor[i] > 0:
+                    perturbed_v[3*i + 2] = np.min([radii[i] + growth_factor[i], 0.5 - 1e-6])
+            # Re-evaluate with this new perturbed configuration
+            res = minimize(neg_sum_radii, perturbed_v, method="SLSQP", bounds=bounds,
+                           constraints=cons, options={"maxiter": 400, "ftol": 1e-11, "eps": 1e-14})
+
+    # Final adjustment: use vectorized check and reconfigure with soft constraint adjustments
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, 0.5)
+    
+    # Final validation and cleanup step
+    # Intentional double-check in case of solver instability
+    # Use non-linear boundary constraint adjustment if needed
+    # Implementing a fallback constraint adjustment mechanism
+    for i in range(n):
+        x, y = centers[i]
+        r = radii[i]
+        # Re-evaluate boundary constraints with fallback adjustment if needed
+        if x - r < -1e-6:
+            # Shift to the right with a non-linear scaling
+            dx = 1e-6 + r
+            v[3*i] = min(x + dx, 1.0 - r)
+        elif x + r > 1.0 + 1e-6:
+            dx = 1.0 + 1e-6 - x - r
+            v[3*i] = max(x - dx, r)
+        if y - r < -1e-6:
+            dy = 1e-6 + r
+            v[3*i+1] = min(y + dy, 1.0 - r)
+        elif y + r > 1.0 + 1e-6:
+            dy = 1.0 + 1e-6 - y - r
+            v[3*i+1] = max(y - dy, r)
+
+    # Rebuild after potential fallback constraints
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, 0.5)
+    
+    return centers, radii, float(radii.sum())

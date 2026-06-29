@@ -1,0 +1,160 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = 6  # Increase columns for better radial symmetry control
+    rows = (n + cols - 1) // cols
+    
+    # Initialize positions with hybrid radial + directional grid with jitter
+    xs = []
+    ys = []
+    for i in range(n):
+        row = i // cols
+        col = i % cols
+        # Base coordinates on a hybrid radial + grid system for better uniformity
+        r_base = (col + 0.5) / cols
+        theta_base = (row + 0.5) * 2.0 * np.pi / rows
+        x_center = 0.5 + r_base * np.cos(theta_base)
+        y_center = 0.5 + r_base * np.sin(theta_base)
+        # Add directional jitter - 30% of base unit for perturbation
+        jitter = np.random.uniform(-0.03, 0.03, size=2)
+        x = x_center + jitter[0]
+        y = y_center + jitter[1]
+        # Ensure grid is staggered and prevents immediate clustering
+        # Alternate rows shift vertically with respect to column alignment
+        if row % 3 == 1:  # Not even row, avoid 2nd and 4th rows
+            y += 0.3 / rows * (row % 1) # micro-adjust for staggered grid
+        xs.append(x)
+        ys.append(y)
+    
+    # Base radii based on grid spacing and some geometric expansion
+    # Base radius is 0.45 / cols, but optimized to allow larger sum
+    r0 = 0.45 / cols - 1e-3
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = np.full(n, r0)
+
+    bounds = []
+    # Ensure the bounds list has 3*n entries for the vector of length 3n
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    # Vectorized constraints for boundaries, using lambda with captured i
+    cons = []
+    for i in range(n):
+        # Left + radius <= 1
+        cons.append({"type": "ineq", "fun": (lambda v, i=i: 1.0 - v[3*i] - v[3*i+2])})
+        # Right - radius >= 0
+        cons.append({"type": "ineq", "fun": (lambda v, i=i: v[3*i] - v[3*i+2])})
+        # Bottom + radius <= 1
+        cons.append({"type": "ineq", "fun": (lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2])})
+        # Top - radius >= 0
+        cons.append({"type": "ineq", "fun": (lambda v, i=i: v[3*i+1] - v[3*i+2])})
+    
+    # Vectorized overlap constraints using lambda with captured i,j and vectorized computation
+    for i in range(n):
+        for j in range(i + 1, n):
+            cons.append({"type": "ineq", 
+                         "fun": (lambda v, i=i, j=j: 
+                                 (v[3*i] - v[3*j])**2 + (v[3*i+1] - v[3*j+1])**2 
+                                 - (v[3*i+2] + v[3*j+2])**2)})
+
+    # Initial optimization with increased max iterations and tighter tolerance
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 1500, "ftol": 1e-10, "eps": 1e-11})
+    
+    # First step - perform a global "shake" using geometric hashing to escape local optima
+    if res.success:
+        v = res.x
+        # Compute geometric hash based on radii and direction to generate new positions
+        # This is a modified hash that preserves the shape structure
+        # Generate a geometric-based spatial perturbation field using radius and orientation
+        radii = v[2::3]
+        centers = np.column_stack([v[0::3], v[1::3]])
+        # Generate a hash field where each point is perturbed with radius-driven influence
+        perturbation = np.random.randn(n, 2) * 0.05 
+        perturbation *= np.clip(radii / np.mean(radii), 0.5, 2.0)
+        perturbed_v = v.copy()
+        for i in range(n):
+            perturbed_v[3*i] += perturbation[i, 0]
+            perturbed_v[3*i+1] += perturbation[i, 1]
+        # Re-evaluate with perturbed parameters
+        res = minimize(neg_sum_radii, perturbed_v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 600, "ftol": 1e-11, "eps": 1e-12})
+
+    # Second step - perform targeted "radius expansion" and "constraint adjustment" 
+    # using spatial-aware re-evaluations and geometric decomposition
+    if res.success:
+        v = res.x
+        # Step 1: Spatial Decomposition + Radius Expansion
+        # We apply spatial-aware constraints by dividing the grid into sub-quadrants
+        # This allows targeted expansion of least constrained circles
+        # Calculate distance matrix
+        centers = np.column_stack([v[0::3], v[1::3]])
+        dists = np.zeros((n, n))
+        for i in range(n):
+            for j in range(n):
+                dx = centers[i, 0] - centers[j, 0]
+                dy = centers[i, 1] - centers[j, 1]
+                dists[i, j] = np.sqrt(dx*dx + dy*dy)
+        
+        min_dists = np.min(dists, axis=1)
+        # Identify least constrained circle - the one with maximum minimal distance
+        least_constrained_idx = np.argmax(min_dists)
+        
+        # Create a gradient-based expansion vector that respects all constraints
+        # We increase the radius of other circles as a proportional expansion
+        # to allow the least constrained circle to expand as much as possible
+        # This is a constrained expansion strategy with controlled growth
+        
+        # Calculate the base expansion potential based on average min distance
+        average_min_distance = np.mean(min_dists)
+        expansion_radius = average_min_distance - 1.2 * np.std(min_dists)
+        if expansion_radius < 0:
+            expansion_radius = 0.05  # fallback if all min_dists are small
+        # Compute expansion vector for all circles
+        # We increase the radii proportionally to their current spatial availability
+        new_radii = np.zeros(n)
+        for i in range(n):
+            # Calculate the available expansion space (based on distance to nearest neighbors)
+            # This prevents expansion into constrained areas
+            # This is a heuristic but allows spatially guided expansion
+            nearest_distance = np.min(dists[i])
+            if nearest_distance < 1.2 * radii[i]:  # if circle is already tight
+                expansion_factor = 0.0 # do not expand
+            else:
+                # Expand radius by a fraction of the available space
+                # Available space is: nearest_distance - current radius - 0.01 (safety margin)
+                available_space = max(0, (nearest_distance - radii[i]) - 0.01)
+                expansion_factor = 0.5 * (available_space / (available_space + 0.1)) # non-linear growth
+            new_radii[i] = radii[i] + expansion_factor
+        
+        # Apply expansion
+        expanded_v = v.copy()
+        expanded_v[2::3] = new_radii
+        # Re-evaluate with new radii
+        res = minimize(neg_sum_radii, expanded_v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 500, "ftol": 1e-11, "eps": 1e-12})
+
+    # Final tuning pass with geometric hashing and constrained relaxation
+    if res.success:
+        v = res.x
+        # Generate geometric hashing map again for fine tuning
+        random_hash = np.random.rand(n, 2) * 0.04
+        # Apply hash with weight based on radius
+        for i in range(n):
+            v[3*i] += random_hash[i, 0] * (v[3*i+2]/np.max(v[2::3]))
+            v[3*i+1] += random_hash[i, 1] * (v[3*i+2]/np.max(v[2::3]))
+        
+        # Re-evaluate with updated configuration
+        res = minimize(neg_sum_radii, v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 400, "ftol": 1e-11, "eps": 1e-12})
+    
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())

@@ -1,0 +1,105 @@
+```python
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = 5
+    rows = (n + cols - 1) // cols
+    
+    # Initialize positions using a randomized geometric clustering algorithm
+    np.random.seed(42)
+    initial_centers = np.random.rand(n, 2)
+    initial_centers *= 1.0
+    initial_radii = np.full(n, 0.05)
+    
+    # Apply clustering to form tight groups
+    from sklearn.cluster import KMeans
+    kmeans = KMeans(n_clusters=5, random_state=42).fit(initial_centers)
+    cluster_centers = kmeans.cluster_centers_
+    cluster_radii = np.full(5, 0.05)
+    
+    # Distribute clusters in the square with some offset
+    xs = []
+    ys = []
+    for i in range(n):
+        cluster_idx = kmeans.labels_[i]
+        cx, cy = cluster_centers[cluster_idx]
+        # Add random offset within cluster
+        dx = np.random.uniform(-0.05, 0.05)
+        dy = np.random.uniform(-0.05, 0.05)
+        x = cx + dx
+        y = cy + dy
+        xs.append(x)
+        ys.append(y)
+    
+    r0 = 0.05
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = np.full(n, r0)
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    cons = []
+    for i in range(n):
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+    for i in range(n):
+        for j in range(i + 1, n):
+            def constraint_func(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                return dx*dx + dy*dy - (v[3*i+2] + v[3*j+2])**2
+            cons.append({"type": "ineq", "fun": constraint_func})
+
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 1500, "ftol": 1e-10})
+    
+    # Trigger controlled expansion of the most tightly packed cluster
+    if res.success:
+        v = res.x
+        centers = v[0::3], v[1::3]
+        radii = v[2::3]
+        
+        # Calculate cluster assignments based on final positions
+        kmeans = KMeans(n_clusters=5, random_state=42).fit(np.column_stack([centers[0], centers[1]]))
+        cluster_radii = np.array([np.mean(radii[kmeans.labels_ == c]) for c in range(5)])
+        
+        # Identify the cluster with the smallest average radius
+        cluster_idx = np.argmin(cluster_radii)
+        cluster_indices = np.where(kmeans.labels_ == cluster_idx)[0]
+        
+        # Increase radii of the cluster by 10% and adjust positions
+        for idx in cluster_indices:
+            v[3*idx + 2] *= 1.1
+            v[3*idx + 0] += np.random.uniform(-0.01, 0.01)
+            v[3*idx + 1] += np.random.uniform(-0.01, 0.01)
+        
+        # Re-evaluate with adjusted parameters
+        res = minimize(neg_sum_radii, v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 300, "ftol": 1e-10})
+
+    # Additional refinement: perturb all circles with small radii
+    if res.success:
+        v = res.x
+        radii = v[2::3]
+        small_indices = np.where(radii < 0.05)[0]  # Perturb circles with radii < 0.05
+        for idx in small_indices:
+            v[3*idx + 0] += np.random.uniform(-0.01, 0.01)
+            v[3*idx + 1] += np.random.uniform(-0.01, 0.01)
+            v[3*idx + 2] += np.random.uniform(-0.001, 0.001)
+        res = minimize(neg_sum_radii, v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 200, "ftol": 1e-10})
+
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())
+```

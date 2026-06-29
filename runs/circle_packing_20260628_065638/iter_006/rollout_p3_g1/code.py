@@ -1,0 +1,120 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = 5
+    rows = (n + cols - 1) // cols
+    
+    # Initialize positions using a randomized geometric clustering algorithm
+    xs = np.random.rand(n)
+    ys = np.random.rand(n)
+    
+    # Cluster circles into groups for better expansion potential
+    cluster_centers = np.random.rand(5, 2)
+    cluster_centers = np.vstack((cluster_centers, np.array([0.5, 0.5])))
+    cluster_centers = np.vstack((cluster_centers, np.array([0.25, 0.75])))
+    cluster_centers = np.vstack((cluster_centers, np.array([0.75, 0.75])))
+    cluster_centers = np.vstack((cluster_centers, np.array([0.25, 0.25])))
+    cluster_centers = np.vstack((cluster_centers, np.array([0.75, 0.25])))
+    cluster_centers = np.vstack((cluster_centers, np.array([0.5, 0.75])))
+    
+    cluster_sizes = [4, 5, 6, 5, 4, 2]
+    cluster_sizes = cluster_sizes[:n]
+    
+    # Assign circles to clusters and initialize their positions
+    cluster_assignments = np.random.choice(len(cluster_centers), size=n)
+    xs = np.zeros(n)
+    ys = np.zeros(n)
+    for i in range(n):
+        cluster = cluster_assignments[i]
+        cluster_center = cluster_centers[cluster]
+        xs[i] = cluster_center[0] + np.random.uniform(-0.1, 0.1)
+        ys[i] = cluster_center[1] + np.random.uniform(-0.1, 0.1)
+    
+    r0 = 0.25 / cols - 1e-3
+    v0 = np.empty(3 * n)
+    v0[0::3] = xs
+    v0[1::3] = ys
+    v0[2::3] = np.full(n, r0)
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    # Vectorized overlap constraints
+    def vectorized_overlap(v):
+        radii = v[2::3]
+        x = v[0::3]
+        y = v[1::3]
+        dist_sq = np.zeros((n, n))
+        for i in range(n):
+            dx = x - x[i]
+            dy = y - y[i]
+            dist_sq[:, i] = dx*dx + dy*dy
+        return dist_sq - (radii[:, np.newaxis] + radii[np.newaxis, :]) ** 2
+
+    # Create constraints for all pairs using vectorized calculation
+    cons = []
+    for i in range(n):
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+    
+    # Create constraints for all pairs
+    for i in range(n):
+        for j in range(i + 1, n):
+            cons.append({"type": "ineq", "fun": lambda v, i=i, j=j: vectorized_overlap(v)[i, j]})
+
+    # Initial optimization with increased max iterations and tighter tolerance
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 1500, "ftol": 1e-10})
+    
+    # Controlled radius expansion of the most isolated cluster
+    if res.success:
+        v = res.x
+        # Identify the cluster with the largest minimum distance to other circles
+        radii = v[2::3]
+        x = v[0::3]
+        y = v[1::3]
+        cluster_distances = np.zeros(len(cluster_centers))
+        for i in range(len(cluster_centers)):
+            cluster_mask = (cluster_assignments == i)
+            cluster_x = x[cluster_mask]
+            cluster_y = y[cluster_mask]
+            cluster_r = radii[cluster_mask]
+            cluster_min_dist = np.inf
+            for j in range(n):
+                if not cluster_mask[j]:
+                    dist = np.sqrt((cluster_x - x[j])**2 + (cluster_y - y[j])**2) - (cluster_r + radii[j])
+                    if dist < cluster_min_dist:
+                        cluster_min_dist = dist
+            cluster_distances[i] = cluster_min_dist
+        
+        # Select the cluster with the largest minimum distance for expansion
+        expand_cluster = np.argmax(cluster_distances)
+        expand_mask = (cluster_assignments == expand_cluster)
+        expand_centers = np.column_stack((x[expand_mask], y[expand_mask]))
+        expand_radii = radii[expand_mask]
+        
+        # Increase radii of the selected cluster by a controlled amount
+        expansion_factor = 1.2
+        new_radii = expand_radii * expansion_factor
+        new_radii = np.clip(new_radii, 1e-4, 0.5)
+        
+        # Update the decision vector with the new radii
+        v[3*expand_mask] = np.repeat(expand_centers[:, 0], 1)
+        v[3*expand_mask+1] = np.repeat(expand_centers[:, 1], 1)
+        v[3*expand_mask+2] = new_radii
+        
+        # Re-evaluate with the expanded cluster
+        res = minimize(neg_sum_radii, v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 300, "ftol": 1e-10})
+    
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())

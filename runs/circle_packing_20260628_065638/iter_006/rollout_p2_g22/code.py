@@ -1,0 +1,112 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = 5
+    rows = (n + cols - 1) // cols
+    
+    # Geometric clustering initialization to create a more flexible spatial layout
+    xs = []
+    ys = []
+    for i in range(n):
+        row = i // cols
+        col = i % cols
+        # Base grid positions
+        x = (col + 0.5) / cols
+        y = (row + 0.5) / rows
+        # Randomly cluster circles into 4 groups
+        cluster = np.random.choice(4)
+        if cluster == 0:
+            x += np.random.uniform(-0.1, 0.1)
+            y += np.random.uniform(-0.1, 0.1)
+        elif cluster == 1:
+            x += np.random.uniform(0.1, 0.2)
+            y += np.random.uniform(-0.1, 0.1)
+        elif cluster == 2:
+            x += np.random.uniform(-0.1, 0.1)
+            y += np.random.uniform(0.1, 0.2)
+        else:
+            x += np.random.uniform(0.1, 0.2)
+            y += np.random.uniform(0.1, 0.2)
+        # Ensure positions are within bounds
+        x = np.clip(x, 0.0, 1.0)
+        y = np.clip(y, 0.0, 1.0)
+        xs.append(x)
+        ys.append(y)
+    
+    r0 = 0.3 / cols - 1e-3
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = np.full(n, r0)
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    # Vectorized overlap constraints
+    def vectorized_overlap_constraints(v):
+        x = v[0::3]
+        y = v[1::3]
+        r = v[2::3]
+        dx = x[:, np.newaxis] - x[np.newaxis, :]
+        dy = y[:, np.newaxis] - y[np.newaxis, :]
+        dist_sq = dx ** 2 + dy ** 2
+        r_sum = r[:, np.newaxis] + r[np.newaxis, :]
+        return dist_sq - r_sum ** 2
+
+    # Convert to list of constraint functions for scipy.optimize
+    cons = []
+    for i in range(n):
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+    
+    # Convert vectorized constraints to individual constraint functions
+    for i in range(n):
+        for j in range(i + 1, n):
+            def constraint_func(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                return dx*dx + dy*dy - (v[3*i+2] + v[3*j+2])**2
+            cons.append({"type": "ineq", "fun": constraint_func})
+
+    # Initial optimization with increased max iterations and tighter tolerance
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 1500, "ftol": 1e-10})
+    
+    # Non-local reconfiguration: identify and expand the most isolated cluster
+    if res.success:
+        v = res.x
+        # Compute pairwise distances
+        x = v[0::3]
+        y = v[1::3]
+        r = v[2::3]
+        dists = np.sqrt((x[:, np.newaxis] - x[np.newaxis, :])**2 + (y[:, np.newaxis] - y[np.newaxis, :])**2)
+        distances_to_neighbors = np.min(dists, axis=1)
+        # Identify the cluster with the largest minimum distance to neighbors
+        cluster_indices = np.argsort(distances_to_neighbors)[-5:]
+        # Calculate the average position of the isolated cluster
+        avg_x = np.mean(x[cluster_indices])
+        avg_y = np.mean(y[cluster_indices])
+        avg_r = np.mean(r[cluster_indices])
+        # Expand the cluster by increasing its radius and adjusting positions
+        expanded_v = v.copy()
+        for i in cluster_indices:
+            # Adjust position to be closer to the cluster center
+            expanded_v[3*i] = avg_x + np.random.uniform(-0.02, 0.02)
+            expanded_v[3*i+1] = avg_y + np.random.uniform(-0.02, 0.02)
+            # Increase radius slightly
+            expanded_v[3*i+2] = np.clip(avg_r * 1.1, 1e-4, 0.5)
+        # Re-evaluate with the modified parameters
+        res = minimize(neg_sum_radii, expanded_v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 300, "ftol": 1e-10})
+    
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())

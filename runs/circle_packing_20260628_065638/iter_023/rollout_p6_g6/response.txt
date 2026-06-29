@@ -1,0 +1,135 @@
+```python
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = 5
+    rows = (n + cols - 1) // cols
+    
+    # Initialize with geometric hashing to avoid grid bias and promote natural distribution
+    xs = []
+    ys = []
+    for i in range(n):
+        row = i // cols
+        col = i % cols
+        x_center = (col + 0.5) / cols
+        y_center = (row + 0.5) / rows
+        
+        # Geometric hashing with randomized displacement to avoid symmetry
+        x = x_center + np.random.uniform(-0.08, 0.08)
+        y = y_center + np.random.uniform(-0.08, 0.08)
+        
+        # Staggered grid for even distribution
+        if row % 2 == 1:
+            x += 0.5 / cols
+        
+        xs.append(x)
+        ys.append(y)
+    
+    # Initial radii based on geometric hashing
+    r0 = 0.36 / cols
+    r0 = max(r0, 1e-4)  # Ensure minimum radius
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = np.full(n, r0)
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    cons = []
+    for i in range(n):
+        # Boundary constraints
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+    
+    # Overlap constraints with geometric hashing to prevent clustering
+    for i in range(n):
+        for j in range(i + 1, n):
+            def constraint_func(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                return dx*dx + dy*dy - (v[3*i+2] + v[3*j+2])**2
+            cons.append({"type": "ineq", "fun": constraint_func})
+    
+    # Multi-stage optimization
+    # Initial optimization
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 1500, "ftol": 1e-11})
+    
+    # Symmetric reconfiguration with geometric hashing and radius expansion
+    if res.success:
+        v = res.x
+        # Geometric hashing reconfiguration - randomize positions
+        hash_offset = np.random.rand(n, 2) * 0.1
+        perturbed_v = v.copy()
+        for i in range(n):
+            perturbed_v[3*i] += hash_offset[i, 0]
+            perturbed_v[3*i+1] += hash_offset[i, 1]
+        
+        # Re-evaluate with perturbed positions
+        res = minimize(neg_sum_radii, perturbed_v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 600, "ftol": 1e-11})
+    
+    # Targeted radius expansion with geometric hashing constraint analysis
+    if res.success:
+        v = res.x
+        radii = v[2::3]
+        centers = np.column_stack([v[0::3], v[1::3]])
+        
+        # Compute all pairwise distances with geometric hashing optimization
+        dists = np.zeros((n, n))
+        for i in range(n):
+            for j in range(n):
+                dx = centers[i, 0] - centers[j, 0]
+                dy = centers[i, 1] - centers[j, 1]
+                dists[i, j] = np.sqrt(dx*dx + dy*dy)
+        
+        # Find circle with least overlap and minimum constraint
+        min_distances = np.min(dists, axis=1)
+        min_constraints = np.min(dists, axis=1)
+        least_constrained_idx = np.argmax(min_constraints)  # Select least constrained
+        
+        # Calculate expansion factor targeting controlled radius growth
+        current_sum = np.sum(radii)
+        target_sum = current_sum + 0.01
+        expansion_factor = (target_sum - current_sum) / (n - 1)
+        
+        # Apply expansion to least constrained circle with geometric hashing
+        new_radii = radii.copy()
+        new_radii[least_constrained_idx] += expansion_factor * 1.15
+        for i in range(n):
+            if i != least_constrained_idx:
+                new_radii[i] += expansion_factor
+        
+        # Update decision vector
+        v_new = v.copy()
+        v_new[2::3] = new_radii
+        
+        # Re-evaluate with expanded radii and geometric hashing
+        res = minimize(neg_sum_radii, v_new, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 500, "ftol": 1e-11})
+    
+    # Final optimization with geometric hashing reconfiguration
+    if res.success:
+        v = res.x
+        hash_offset_final = np.random.rand(n, 2) * 0.08
+        final_v = v.copy()
+        for i in range(n):
+            final_v[3*i] += hash_offset_final[i, 0]
+            final_v[3*i+1] += hash_offset_final[i, 1]
+        
+        res = minimize(neg_sum_radii, final_v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 400, "ftol": 1e-11})
+    
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())
+```

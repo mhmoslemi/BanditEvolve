@@ -1,0 +1,107 @@
+```python
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = 5
+    rows = (n + cols - 1) // cols
+    
+    # Initialize positions with dynamic fractal-like placement
+    xs = []
+    ys = []
+    for i in range(n):
+        row = i // cols
+        col = i % cols
+        # Base position with fractal-like scaling
+        base_x = (col + 0.5) / cols
+        base_y = (row + 0.5) / rows
+        # Add fractal-like perturbation based on row and column
+        fractal_perturbation = np.sin(np.pi * (row + col) / 10) * 0.05
+        x = base_x + fractal_perturbation
+        y = base_y + fractal_perturbation
+        # Alternate row staggering for asymmetry
+        if row % 2 == 1:
+            x += 0.5 / cols
+        xs.append(x)
+        ys.append(y)
+    
+    r0 = 0.35 / cols - 1e-3
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = np.full(n, r0)
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    # Vectorized constraints for boundaries
+    cons = []
+    for i in range(n):
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+    
+    # Vectorized overlap constraints
+    for i in range(n):
+        for j in range(i + 1, n):
+            def constraint_func(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                return dx*dx + dy*dy - (v[3*i+2] + v[3*j+2])**2
+            cons.append({"type": "ineq", "fun": constraint_func})
+
+    # Initial optimization with increased max iterations and tighter tolerance
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 1500, "ftol": 1e-10})
+    
+    # Enforce radical spatial reconfiguration
+    if res.success:
+        v = res.x
+        # Create a new spatial configuration with outermost circle perturbed
+        outermost_idx = np.argmin(v[0::3])  # Select leftmost circle as outermost
+        perturbed_v = v.copy()
+        # Move outermost circle slightly outward and expand its radius
+        perturbed_v[3*outermost_idx] += 0.01
+        perturbed_v[3*outermost_idx+1] += 0.01
+        perturbed_v[3*outermost_idx+2] += 0.005
+        # Re-evaluate with new configuration
+        res = minimize(neg_sum_radii, perturbed_v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 300, "ftol": 1e-10})
+    
+    # Final refinement: expand the most constrained circle
+    if res.success:
+        v = res.x
+        centers = v[0::3], v[1::3]
+        radii = v[2::3]
+        # Calculate constraint metric (minimum distance to neighbors)
+        min_dist_to_neighbors = np.zeros(n)
+        for i in range(n):
+            x, y, r = centers[0][i], centers[1][i], radii[i]
+            min_dist = np.inf
+            for j in range(n):
+                if i != j:
+                    dx = x - centers[0][j]
+                    dy = y - centers[1][j]
+                    dist = np.sqrt(dx*dx + dy*dy)
+                    min_dist = min(min_dist, dist - (r + radii[j]))
+            min_dist_to_neighbors[i] = min_dist
+        # Identify the most constrained circle (least constraint)
+        most_constrained_idx = np.argmin(min_dist_to_neighbors)
+        # Expand its radius slightly and adjust its position to maintain feasibility
+        v[3*most_constrained_idx + 2] += 0.003
+        v[3*most_constrained_idx] += 0.005
+        v[3*most_constrained_idx+1] += 0.005
+        # Re-evaluate with adjusted parameters
+        res = minimize(neg_sum_radii, v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 300, "ftol": 1e-10})
+
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())
+```

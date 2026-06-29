@@ -1,0 +1,140 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = 5
+    rows = (n + cols - 1) // cols
+    
+    # Initialize positions with spatial hashing and asymmetric placement
+    xs = []
+    ys = []
+    for i in range(n):
+        row = i // cols
+        col = i % cols
+        x_center = (col + 0.5) / cols + np.random.uniform(-0.04, 0.04) * (0.5 if row % 2 == 0 else 0.2)
+        y_center = (row + 0.5) / rows
+        # Add stochastic displacement for non-uniform distribution
+        x = x_center + np.random.uniform(-0.08, 0.08)
+        y = y_center + np.random.uniform(-0.08, 0.08)
+        xs.append(x)
+        ys.append(y)
+    
+    r0 = 0.35 / cols - 1e-4
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = np.full(n, r0)
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    # Vectorized constraints for boundaries with tighter bounds
+    cons = []
+    for i in range(n):
+        # Left constraint (x - r >= 0)
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        # Right constraint (x + r <= 1)
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        # Bottom constraint (y - r >= 0)
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        # Top constraint (y + r <= 1)
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+
+    # Vectorized overlap constraints with geometric hashing for efficient computation
+    for i in range(n):
+        for j in range(i + 1, n):
+            def constraint_func(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                return dx*dx + dy*dy - (v[3*i+2] + v[3*j+2])**2
+            cons.append({"type": "ineq", "fun": constraint_func})
+    
+    # Initial optimization with tight tolerances and high max iterations
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 1500, "ftol": 1e-10, "eps": 1e-11})
+    
+    # Asymmetrical reconfiguration with directional spatial hashing
+    if res.success:
+        v = res.x
+        radii = v[2::3]
+        centers = np.column_stack([v[0::3], v[1::3]])
+        
+        # Create directional spatial hash vector to break symmetry
+        directional_hash = np.random.rand(n, 2) * 0.08
+        # Introduce directional perturbation for better spread
+        directional_hash[:, 0] *= 1.0 + np.random.choice([-0.2, 0.2], size=n) / 20.0
+        directional_hash[:, 1] *= 1.0 + np.random.choice([-0.2, 0.2], size=n) / 20.0
+        
+        perturbed_v = v.copy()
+        for i in range(n):
+            perturbed_v[3*i] += directional_hash[i, 0]
+            perturbed_v[3*i+1] += directional_hash[i, 1]
+        
+        # Re-evaluate with new configuration
+        res = minimize(neg_sum_radii, perturbed_v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 300, "ftol": 1e-11, "eps": 1e-11})
+    
+    # Targeted radius expansion for least constrained circle with gradient-aware constraints
+    if res.success:
+        v = res.x
+        radii = v[2::3]
+        centers = np.column_stack([v[0::3], v[1::3]])
+        
+        # Compute distances using vectorization for better performance
+        dx = centers[:, np.newaxis, 0] - centers[np.newaxis, :, 0]
+        dy = centers[:, np.newaxis, 1] - centers[np.newaxis, 1]
+        dists = np.sqrt(dx**2 + dy**2)
+        
+        # Find the circle with the smallest average interaction distance (least constrained)
+        avg_interaction = np.mean(dists, axis=1)
+        least_constrained_idx = np.argmin(avg_interaction)
+        
+        # Compute potential expansion while checking for overlap
+        total_sum = np.sum(radii)
+        expansion_factor = 0.005
+        target_total_sum = total_sum + expansion_factor
+        
+        # Calculate new radii and perform validation
+        new_radii = radii.copy()
+        new_radii[least_constrained_idx] += expansion_factor * 1.2
+        
+        # Apply controlled expansion while ensuring no overlaps
+        while True:
+            valid = True
+            expanded_v = v.copy()
+            expanded_v[2::3] = np.clip(new_radii, 1e-6, 0.5)
+            expanded_centers = np.column_stack([expanded_v[0::3], expanded_v[1::3]])
+            
+            for i in range(n):
+                if new_radii[i] < 1e-6:
+                    valid = False
+                    break
+                for j in range(i + 1, n):
+                    dx_eff = expanded_centers[i, 0] - expanded_centers[j, 0]
+                    dy_eff = expanded_centers[i, 1] - expanded_centers[j, 1]
+                    dist = np.sqrt(dx_eff**2 + dy_eff**2)
+                    if dist < new_radii[i] + new_radii[j] - 1e-12:
+                        valid = False
+                        break
+                if not valid:
+                    break
+            
+            if valid:
+                v = expanded_v
+                break
+            else:
+                # Reduce expansion slightly and try again
+                new_radii = radii + (new_radii - radii) * 0.995
+        
+        # Final optimization with expanded radii and adjusted positions
+        res = minimize(neg_sum_radii, v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 200, "ftol": 1e-11, "eps": 1e-11})
+    
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())

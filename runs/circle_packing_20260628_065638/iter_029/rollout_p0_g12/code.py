@@ -1,0 +1,166 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = 5
+    rows = (n + cols - 1) // cols
+    
+    # Initialize with a hybrid tiling strategy that ensures non-collapsing spacing
+    xs = []
+    ys = []
+    
+    # Phase 1: Base grid with fixed offset for uniform density and spacing
+    for i in range(n):
+        row = i // cols
+        col = i % cols
+        base_x = (col + 0.5) / cols
+        base_y = (row + 0.5) / rows
+        
+        # Introduce controlled geometric perturbation to break symmetry and distribute density better
+        x_offset = np.random.uniform(-0.05, 0.05) * np.sin(np.pi * row / rows)
+        y_offset = np.random.uniform(-0.05, 0.05) * np.cos(np.pi * col / cols)
+        x = base_x + x_offset
+        y = base_y + y_offset
+        
+        # Staggered grid logic based on even-rows for better spatial separation
+        if row % 2 == 0:
+            # Even row shift to create more spaced columns
+            x += np.random.uniform(-0.015, 0.015)
+        xs.append(x)
+        ys.append(y)
+    
+    # Phase 2: Introduce adaptive spacing based on row density and distance to neighbors
+    # We will do this in a second pass after initial optimization
+    
+    r0 = 0.35 / cols - 1e-3
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = np.full(n, r0)
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    # Vectorized, fast-inference constraints with lambda-capturing that avoids closure errors
+    # Use a vectorized constraint function that returns a scalar for each i,j
+    cons = []
+    # Add boundary constraints
+    for i in range(n):
+        # Left + radius <= 1
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        # Right - radius >= 0
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        # Bottom + radius <= 1
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+        # Top - radius >= 0
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+    
+    # Vectorized overlap constraint vectorizer with explicit capture
+    # This avoids lambda closure issues with variable i,j
+    for i in range(n):
+        for j in range(i + 1, n):
+            # We use a closure to avoid redundant recomputation
+            def constraint_func(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                return dx**2 + dy**2 - (v[3*i+2] + v[3*j+2])**2
+            cons.append({"type": "ineq", "fun": constraint_func})
+    
+    # Perform initial optimization with stricter tolerances
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 2000, "ftol": 1e-11, "gtol": 1e-11})
+    
+    if res.success:
+        # Phase 2: Spatial perturbation with adaptive geometric hashing
+        v = res.x
+        radii = v[2::3]
+        centers = np.column_stack([v[0::3], v[1::3]])
+        # Precompute distance matrix
+        dx = centers[:, np.newaxis, 0] - centers[np.newaxis, :, 0]
+        dy = centers[:, np.newaxis, 1] - centers[np.newaxis, :, 1]
+        dists = np.sqrt(dx**2 + dy**2)
+        
+        # Compute influence map
+        min_dists = np.min(dists, axis=1)
+        normalized_influence = min_dists / (np.max(min_dists) + 1e-12)
+        
+        # Introduce randomized spatial hashing that leverages density patterns
+        spatial_hash = np.random.rand(n, 2) * 0.04
+        # Generate perturbation vectors that reflect density and influence
+        perturb_multiplier = np.maximum(np.sqrt(normalized_influence**1.5), 0.01) * np.ones(n)
+        perturbed_v = v.copy()
+        for i in range(n):
+            # Apply perturbation with density-aware scaling
+            perturbed_v[3*i] += spatial_hash[i, 0] * (radii[i] / np.mean(radii)) * perturb_multiplier[i]
+            perturbed_v[3*i+1] += spatial_hash[i, 1] * (radii[i] / np.mean(radii)) * perturb_multiplier[i]
+        
+        # Re-optimization with perturbed configuration
+        res = minimize(neg_sum_radii, perturbed_v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 400, "ftol": 1e-11, "gtol": 1e-11})
+        
+        if res.success:
+            # Spatial-aware expansion on the most isolated circle for growth
+            v = res.x
+            radii = v[2::3]
+            centers = np.column_stack([v[0::3], v[1::3]])
+            dx = centers[:, np.newaxis, 0] - centers[np.newaxis, :, 0]
+            dy = centers[:, np.newaxis, 1] - centers[np.newaxis, :, 1]
+            dists = np.sqrt(dx**2 + dy**2)
+            min_dists = np.min(dists, axis=1)
+            least_constrained_idx = np.argmin(min_dists)  # Most isolated circle
+            
+            # Targeted radius expansion with adaptive growth
+            current_total = np.sum(radii)
+            target_growth = 0.005  # Increased from 0.004 to 0.005
+            expansion_factor = target_growth / (n - 1) * (current_total / np.sum(radii) ** 0.75)
+            
+            # Create expansion vector with targeted expansion on the most isolated
+            new_radii = radii.copy()
+            new_radii[least_constrained_idx] += expansion_factor * 1.1  # Higher growth multiplier
+            for i in range(n):
+                if i != least_constrained_idx:
+                    expansion_i = expansion_factor * (1.0 + 0.15 * np.random.rand())  # Stochastic expansion
+                    new_radii[i] += expansion_i
+            
+            # Apply expansion with constraint validation using vectorization
+            valid = False
+            dist_matrix = np.sqrt((centers[:, np.newaxis, 0] - centers[np.newaxis, :, 0])**2
+                                + (centers[:, np.newaxis, 1] - centers[np.newaxis, :, 1])**2)
+            while True:
+                expanded_v = v.copy()
+                expanded_v[2::3] = new_radii
+                expanded_centers = np.column_stack([expanded_v[0::3], expanded_v[1::3]])
+                
+                # Use precomputed distance matrix for fast validation
+                dist_matrix_expanded = np.sqrt((expanded_centers[:, np.newaxis, 0] - expanded_centers[np.newaxis, :, 0])**2
+                                               + (expanded_centers[:, np.newaxis, 1] - expanded_centers[np.newaxis, :, 1])**2)
+                valid = True
+                for i in range(n):
+                    for j in range(i + 1, n):
+                        if dist_matrix_expanded[i, j] < new_radii[i] + new_radii[j] - 1e-12:
+                            valid = False
+                            break
+                    if not valid:
+                        break
+                
+                if valid:
+                    break
+                else:
+                    # If too large, scale down slightly and recheck
+                    new_radii = radii + (new_radii - radii) * 0.98
+                    
+            # Update with the validated expansion
+            v_new = v.copy()
+            v_new[2::3] = new_radii
+            # Re-optimization with expanded radii and new configuration
+            res = minimize(neg_sum_radii, v_new, method="SLSQP", bounds=bounds,
+                           constraints=cons, options={"maxiter": 400, "ftol": 1e-11, "gtol": 1e-11})
+    
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())

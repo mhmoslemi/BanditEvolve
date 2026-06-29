@@ -1,0 +1,152 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = int(np.ceil(np.sqrt(n)))
+    rows = (n + cols - 1) // cols
+    
+    # Initialize with a geometric hashing scheme to distribute circles more evenly
+    xs = []
+    ys = []
+    radius_hash = np.random.rand(n) * 0.15 + 0.02
+    for i in range(n):
+        row_idx = i // cols
+        col_idx = i % cols
+        x_base = (col_idx + 0.5) / cols
+        y_base = (row_idx + 0.5) / rows
+        # Apply stochastic displacement for geometric hashing
+        dx = np.random.uniform(-0.1, 0.1) * np.cos(2 * np.pi * i / n)
+        dy = np.random.uniform(-0.1, 0.1) * np.sin(2 * np.pi * i / n)
+        x = x_base + dx
+        y = y_base + dy
+        xs.append(x)
+        ys.append(y)
+    
+    # Initial radii based on hashing and spacing
+    r0 = (np.sqrt(2) / (cols * 1.2)) + np.random.uniform(-0.02, 0.02, size=n)
+    r0[r0 < 1e-5] = 1e-5
+    r0[r0 > 0.5] = 0.5
+    
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = r0
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    # Vectorized boundary constraints with caching to reduce overhead
+    def constraint_func_boundary(v, dim, offset):
+        if dim == 0:
+            return 1.0 - v[offset] - v[offset + 2]
+        elif dim == 1:
+            return v[offset] - v[offset + 2]
+        elif dim == 2:
+            return 1.0 - v[offset + 1] - v[offset + 2]
+        elif dim == 3:
+            return v[offset + 1] - v[offset + 2]
+        else:
+            return 0.0
+
+    cons = []
+    for i in range(n):
+        # Left boundary constraint
+        cons.append({"type": "ineq", "fun": lambda v, i=i: constraint_func_boundary(v, 0, 3*i)})
+        # Right boundary constraint
+        cons.append({"type": "ineq", "fun": lambda v, i=i: constraint_func_boundary(v, 1, 3*i)})
+        # Bottom boundary constraint
+        cons.append({"type": "ineq", "fun": lambda v, i=i: constraint_func_boundary(v, 2, 3*i)})
+        # Top boundary constraint
+        cons.append({"type": "ineq", "fun": lambda v, i=i: constraint_func_boundary(v, 3, 3*i)})
+    
+    # Overlap constraints using batched matrix operations for efficiency
+    for i in range(n):
+        for j in range(i + 1, n):
+            # Precompute indices for efficient access in constraints
+            i_start = 3*i
+            j_start = 3*j
+            # Create closure with pre-computed indices
+            def overlap_constraint(v, i=i, j=j, i_start=i_start, j_start=j_start):
+                dx = v[i_start] - v[j_start]
+                dy = v[i_start + 1] - v[j_start + 1]
+                dist_sq = dx*dx + dy*dy
+                sum_rad = v[i_start+2] + v[j_start+2]
+                return dist_sq - sum_rad*sum_rad
+            cons.append({"type": "ineq", "fun": overlap_constraint})
+
+    # Initial optimization with aggressive exploration
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 1600, "ftol": 5e-11, "maxls": 300})
+    
+    # Disruptive geometric transformation: reconfigure based on radius distribution 
+    if res.success:
+        v = res.x
+        radii = v[2::3]
+        centers = np.column_stack([v[0::3], v[1::3]])
+        
+        # Create radius-based sorting
+        sorted_indices = np.argsort(radii)
+        new_radii = radii.copy()
+        # Reduce radii for larger circles to create space for expansion
+        new_radii[sorted_indices[-4:]] = np.clip(radii[sorted_indices[-4:]] * 0.8, 1e-5, 0.5)
+        
+        # Apply stochastic spatial transformation to break symmetry
+        spatial_hash = np.random.rand(n, 2) * 0.15
+        perturbed_v = v.copy()
+        for i in range(n):
+            perturbed_v[3*i] += spatial_hash[i, 0]
+            perturbed_v[3*i+1] += spatial_hash[i, 1]
+        
+        # Re-optimize with new configuration and radius distribution
+        res = minimize(neg_sum_radii, perturbed_v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 400, "ftol": 5e-11, "maxls": 200})
+    
+    # Targeted reconfiguration of most isolated circles using isolation metric
+    if res.success:
+        v = res.x
+        radii = v[2::3]
+        centers = np.column_stack([v[0::3], v[1::3]])
+        dists = np.sqrt((centers[:, np.newaxis, 0] - centers[np.newaxis, :, 0])**2 + 
+                        (centers[:, np.newaxis, 1] - centers[np.newaxis, :, 1])**2)
+        
+        # Compute isolation metric: average minimum distance to other circles
+        min_dists = np.min(dists, axis=1)
+        isolation = np.mean(min_dists, axis=1)
+        
+        # Select the 3 most isolated circles for expansion
+        isolated_indices = np.argsort(isolation)[-3:]
+        isolated_radii = radii[isolated_indices]
+        
+        # Calculate maximum allowable expansion based on current configuration
+        current_sum = np.sum(radii)
+        expansion_factor = 0.007 * (current_sum ** 0.8) / (n - 3)
+        
+        # Expand the isolated circles while maintaining non-overlap
+        new_radii = radii.copy()
+        for idx in isolated_indices:
+            # Expand with over-optimization to trigger reconfiguration
+            new_radii[idx] += expansion_factor * 1.1
+            # Adjust neighboring circles to maintain spacing
+            for j in range(n):
+                if j != idx:
+                    dx = centers[idx, 0] - centers[j, 0]
+                    dy = centers[idx, 1] - centers[j, 1]
+                    dist = np.sqrt(dx*dx + dy*dy)
+                    overlap = dist - (new_radii[idx] + radii[j])
+                    if overlap < 1e-10:
+                        new_radii[j] = dist - new_radii[idx]
+        
+        # Apply expansion and re-evaluate
+        expanded_v = v.copy()
+        expanded_v[2::3] = new_radii
+        res = minimize(neg_sum_radii, expanded_v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 300, "ftol": 5e-11, "maxls": 100})
+    
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())

@@ -1,0 +1,92 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = 5
+    rows = (n + cols - 1) // cols
+    
+    # Randomized geometric clustering initialization
+    centers = np.random.rand(n, 2)
+    radii = np.random.uniform(0.01, 0.1, n)
+    
+    # Ensure all circles are inside the unit square
+    centers = np.clip(centers, 0.0, 1.0)
+    
+    # Normalize radii to avoid initial overlaps
+    for i in range(n):
+        for j in range(i + 1, n):
+            dist = np.hypot(centers[i, 0] - centers[j, 0], centers[i, 1] - centers[j, 1])
+            if dist < radii[i] + radii[j]:
+                radii[i] = 0.5 * dist
+                radii[j] = 0.5 * dist
+    
+    # Create decision vector
+    v0 = np.empty(3 * n)
+    v0[0::3] = centers[:, 0]
+    v0[1::3] = centers[:, 1]
+    v0[2::3] = radii
+    
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    cons = []
+    for i in range(n):
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+    for i in range(n):
+        for j in range(i + 1, n):
+            cons.append({"type": "ineq", "fun": lambda v, i=i, j=j: (v[3*i] - v[3*j])**2 + (v[3*i+1] - v[3*j+1])**2 - (v[3*i+2] + v[3*j+2])**2})
+
+    # Initial optimization
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 1500, "ftol": 1e-10})
+    
+    # Non-local reconfiguration: find and expand the most isolated cluster
+    if res.success:
+        v = res.x
+        centers = np.column_stack([v[0::3], v[1::3]])
+        radii = v[2::3]
+        
+        # Find the cluster with the largest minimum distance to other clusters
+        distances = np.zeros(n)
+        for i in range(n):
+            min_dist = np.inf
+            for j in range(n):
+                if i != j:
+                    dist = np.hypot(centers[i, 0] - centers[j, 0], centers[i, 1] - centers[j, 1])
+                    min_dist = min(min_dist, dist)
+            distances[i] = min_dist
+        
+        # Select the most isolated cluster
+        isolated_index = np.argmax(distances)
+        
+        # Expand the radius of the most isolated cluster as much as possible
+        max_expansion = 0
+        for j in range(n):
+            if j != isolated_index:
+                dist = np.hypot(centers[isolated_index, 0] - centers[j, 0], centers[isolated_index, 1] - centers[j, 1])
+                max_expansion = max(max_expansion, (dist - radii[isolated_index] - radii[j]) / 2)
+        
+        # Apply controlled expansion
+        new_radius = radii[isolated_index] + max_expansion * 0.5
+        new_radii = radii.copy()
+        new_radii[isolated_index] = new_radius
+        
+        # Create new decision vector
+        perturbed_v = v.copy()
+        perturbed_v[2::3] = new_radii
+        
+        # Re-evaluate with expanded cluster
+        res = minimize(neg_sum_radii, perturbed_v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 300, "ftol": 1e-10})
+    
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())

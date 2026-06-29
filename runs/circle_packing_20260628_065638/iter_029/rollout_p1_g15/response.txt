@@ -1,0 +1,159 @@
+```python
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols, rows = 6, 5  # Adjusted to account for 8 rows (better grid alignment)
+    xs = []
+    ys = []
+    
+    # Use a refined staggered hexagonal grid with randomized seed for diversity
+    random_seed = np.random.randint(0, 100000)
+    np.random.seed(random_seed)
+    for i in range(n):
+        row = i // cols
+        col = i % cols
+        x_center = (col + 0.5) / cols + np.random.uniform(-0.05, 0.05)
+        y_center = (row + 0.5) / rows + np.random.uniform(-0.05, 0.05)
+        if row % 2 == 1:
+            x_center += 0.5 / cols * np.random.uniform(0.6, 1.4)
+        x = x_center
+        y = y_center
+        xs.append(x)
+        ys.append(y)
+    
+    r0 = 0.36 / cols  # Slightly optimized base radius for better convergence
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = np.full(n, r0)
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]  # 3n bounds for 3n variables
+
+    # Vectorized objective for maximizing radii
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    # Efficient constraint setup with lambda capture and proper i binding
+    cons = []
+    for i in range(n):
+        # Left constraint: x_i - r_i >= 0
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        # Right constraint: 1.0 - (x_i + r_i) >= 0
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        # Bottom constraint: y_i - r_i >= 0
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        # Top constraint: 1.0 - (y_i + r_i) >= 0
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+    
+    # Vectorized pairwise distance constraint
+    for i in range(n):
+        for j in range(i + 1, n):
+            # Distance squared minus sum of radii squared
+            cons.append({"type": "ineq", 
+                         "fun": lambda v, i=i, j=j: 
+                         (v[3*i] - v[3*j])**2 + (v[3*i+1] - v[3*j+1])**2 
+                         - (v[3*i+2] + v[3*j+2])**2})
+
+    # Phase 1: Initial optimization with high iteration limit
+    max_iterations_phase1 = 2500
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={
+                       "maxiter": max_iterations_phase1, 
+                       "ftol": 1e-12,
+                       "eps": 1e-9,
+                       "disp": False
+                   })
+
+    # If optimization was successful, reconfigure with directional spatial hashing
+    if res.success:
+        v = res.x
+        radii = v[2::3]
+        centers = np.column_stack([v[0::3], v[1::3]])
+        
+        # Generate directional spatial and adjacency hashing (enhanced)
+        spatial_hash = np.random.rand(n, 3)  # Add orientation information
+        adjacency_hash = np.random.rand(n, 3)  # Add edge and face connectivity bias
+        perturbed_v = v.copy()
+        
+        # Apply directional spatial perturbation proportional to radius
+        for i in range(n):
+            # Spatial offset
+            perturbed_v[3*i] += (spatial_hash[i, 0] - 0.5) * radii[i] * 1.2
+            perturbed_v[3*i+1] += (spatial_hash[i, 1] - 0.5) * radii[i] * 1.2
+            # Orientation offset (biasing movement direction)
+            perturbed_v[3*i+2] += (spatial_hash[i, 2] - 0.5) * radii[i] * 0.7
+        
+        # Apply adjacency-guided expansion to enhance spatial diversity 
+        for i in range(n):
+            perturbed_v[3*i+2] += adjacency_hash[i, 0] * 0.005 * (radii[i] ** 0.8)
+        
+        # Phase 2: Reconfiguration with directional perturbations
+        res = minimize(neg_sum_radii, perturbed_v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={
+                           "maxiter": 400, 
+                           "ftol": 1e-11,
+                           "eps": 1e-9,
+                           "disp": False
+                       })
+
+    # Targeted enhancement with forced spatial dissection (as per directive)
+    if res.success:
+        v = res.x
+        radii = v[2::3]
+        centers = np.column_stack([v[0::3], v[1::3]])
+        
+        # Calculate distance matrix for nearest neighbors
+        dx = centers[:, np.newaxis, 0] - centers[np.newaxis, :, 0]
+        dy = centers[:, np.newaxis, 1] - centers[np.newaxis, :, 1]
+        dists = np.sqrt(dx ** 2 + dy ** 2)
+        
+        # Identify two most dynamically interacting circles (least minimal distance)
+        min_dists = np.min(dists, axis=1)
+        most_interacting_idx = np.argmin(min_dists)  # Circle that's closest to others
+        adjacent_idx = np.argsort(dists[most_interacting_idx])[1:3]  # Top 2 neighbors
+        
+        # Isolate most_interacting_idx and one adjacent index to perform surgical geometric dissection
+        for idx in adjacent_idx:
+            if idx != most_interacting_idx:
+                # Force movement and radius adjustment for these two
+                # Apply directional perturbation away from each other
+                v[3*idx] += np.random.uniform(0.005, 0.01) * (centers[most_interacting_idx, 0] - centers[idx, 0])
+                v[3*idx+1] += np.random.uniform(0.005, 0.01) * (centers[most_interacting_idx, 1] - centers[idx, 1])
+                v[3*most_interacting_idx] -= np.random.uniform(0.005, 0.01) * (centers[most_interacting_idx, 0] - centers[idx, 0])
+                v[3*most_interacting_idx+1] -= np.random.uniform(0.005, 0.01) * (centers[most_interacting_idx, 1] - centers[idx, 1])
+                
+                # Apply radial expansion to most_interacting_idx only with adjacency-based growth
+                rad_growth = 0.004 * (radii[most_interacting_idx] / np.mean(radii)) * 1.3
+                v[3*most_interacting_idx+2] += rad_growth
+                # Apply limited expansion to neighbor based on spatial adjacency
+                v[3*idx+2] += rad_growth * 0.5 * (1 + np.random.uniform(0.2, 0.7))
+        
+        # Update centers after surgical dissection
+        centers = np.column_stack([v[0::3], v[1::3]])
+        radii = v[2::3]
+        
+        # Phase 3: Re-evaluation with spatial reconfiguration and optimized growth
+        res = minimize(neg_sum_radii, v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={
+                           "maxiter": 300, 
+                           "ftol": 1e-11,
+                           "eps": 1e-9,
+                           "disp": False
+                       })
+
+    # Final fallback to initial attempt if all phases fail
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    
+    # Apply final validation with strict checking
+    valid, reason = validate_packing(centers, radii)
+    if not valid:
+        # Fallback to the first valid configuration
+        centers, radii, _ = run_packing()
+    
+    return centers, radii, float(radii.sum())
+```

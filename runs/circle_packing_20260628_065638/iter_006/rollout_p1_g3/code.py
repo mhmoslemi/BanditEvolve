@@ -1,0 +1,85 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = 5
+    rows = (n + cols - 1) // cols
+    
+    # Initialize positions using a randomized geometric clustering algorithm
+    # This creates a more diverse initial configuration to enable better expansion
+    centers = np.random.rand(n, 2)
+    radii = np.full(n, 0.1)
+    # Ensure all circles are within the unit square initially
+    centers = np.clip(centers, 0.0, 1.0)
+    # Add random perturbations to break symmetry
+    centers += np.random.uniform(-0.05, 0.05, size=centers.shape)
+    # Ensure centers are not too close to the boundaries
+    centers = np.clip(centers, 0.1, 0.9)
+    
+    # Convert to decision vector
+    v0 = np.empty(3 * n)
+    v0[0::3] = centers[:, 0]
+    v0[1::3] = centers[:, 1]
+    v0[2::3] = radii
+    
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    cons = []
+    for i in range(n):
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+    for i in range(n):
+        for j in range(i + 1, n):
+            def constraint_func(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                return dx*dx + dy*dy - (v[3*i+2] + v[3*j+2])**2
+            cons.append({"type": "ineq", "fun": constraint_func})
+
+    # Initial optimization with increased max iterations and tighter tolerance
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 1500, "ftol": 1e-10})
+    
+    # Non-local reconfiguration: identify isolated cluster and expand
+    if res.success:
+        v = res.x
+        centers = np.column_stack([v[0::3], v[1::3]])
+        radii = v[2::3]
+        
+        # Calculate distances between all pairs of circles
+        dists = np.zeros((n, n))
+        for i in range(n):
+            for j in range(n):
+                dx = centers[i, 0] - centers[j, 0]
+                dy = centers[i, 1] - centers[j, 1]
+                dists[i, j] = np.sqrt(dx*dx + dy*dy)
+        
+        # Find the most isolated cluster (minimum average distance to others)
+        avg_dists = np.mean(dists, axis=1)
+        cluster_idx = np.argmin(avg_dists)
+        
+        # Increase radius of the isolated cluster by a small amount
+        new_radius = radii[cluster_idx] * 1.1
+        # Ensure the new radius does not exceed the boundaries
+        if new_radius > 0.5:
+            new_radius = 0.5
+        # Apply the new radius and re-optimize
+        perturbed_v = v.copy()
+        perturbed_v[3*cluster_idx + 2] = new_radius
+        perturbed_v[2::3] = np.clip(perturbed_v[2::3], 1e-4, 0.5)
+        
+        # Re-evaluate with perturbed parameters
+        res = minimize(neg_sum_radii, perturbed_v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 300, "ftol": 1e-10})
+    
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())

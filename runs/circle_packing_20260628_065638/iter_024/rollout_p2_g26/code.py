@@ -1,0 +1,111 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = 5
+    rows = (n + cols - 1) // cols
+    
+    # Step 1: Asymmetric geometric hashing for initial spatial layout
+    xs = []
+    ys = []
+    for i in range(n):
+        row = i // cols
+        col = i % cols
+        x_center = (col + 0.5) / cols + np.random.uniform(-0.02, 0.02)
+        y_center = (row + 0.5) / rows + np.random.uniform(-0.02, 0.02)
+        # Alternate rows for staggered grid
+        if row % 2 == 1:
+            x_center += 0.5 / cols
+        xs.append(x_center)
+        ys.append(y_center)
+    
+    # Step 2: Initial radii with more dynamic sizing
+    r0 = 0.25 / cols - 1e-3
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = np.full(n, r0)
+
+    # Step 3: Define bounds with explicit length matching
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    # Step 4: Vectorized constraints
+    cons = []
+    # Boundary constraints
+    for i in range(n):
+        cons.append({"type": "ineq", "fun": lambda v, idx=i: v[3*idx] - v[3*idx + 2]})
+        cons.append({"type": "ineq", "fun": lambda v, idx=i: 1.0 - v[3*idx] - v[3*idx + 2]})
+        cons.append({"type": "ineq", "fun": lambda v, idx=i: v[3*idx + 1] - v[3*idx + 2]})
+        cons.append({"type": "ineq", "fun": lambda v, idx=i: 1.0 - v[3*idx + 1] - v[3*idx + 2]})
+
+    # Pairwise overlap constraints
+    for i in range(n):
+        for j in range(i + 1, n):
+            def constraint_func(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i + 1] - v[3*j + 1]
+                return dx * dx + dy * dy - (v[3*i + 2] + v[3*j + 2]) ** 2
+            cons.append({"type": "ineq", "fun": constraint_func})
+
+    # Step 5: Initial optimization with tighter tolerances
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 2000, "ftol": 1e-10})
+
+    # Step 6: Topological disruption via asymmetric spatial hashing
+    if res.success:
+        v = res.x
+        # Generate asymmetric spatial displacement based on geometric hashing
+        perturb_strength = 0.07
+        hash_grid = np.random.rand(n, 2) * perturb_strength
+        perturbed_v = v.copy()
+        for i in range(n):
+            perturbed_v[3 * i] += hash_grid[i, 0]
+            perturbed_v[3 * i + 1] += hash_grid[i, 1]
+        
+        # Re-optimize with perturbed configuration
+        res = minimize(neg_sum_radii, perturbed_v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 400, "ftol": 1e-10})
+
+    # Step 7: Targeted radius expansion on most under-constrained circle
+    if res.success:
+        v = res.x
+        radii = v[2::3]
+        centers = np.column_stack([v[0::3], v[1::3]])
+
+        # Vectorized distance computation
+        dx = centers[:, np.newaxis, 0] - centers[np.newaxis, :, 0]
+        dy = centers[:, np.newaxis, 1] - centers[np.newaxis, :, 1]
+        dists = np.sqrt(dx**2 + dy**2)
+
+        # Compute minimum distances for each circle
+        min_dists = np.min(dists, axis=1)
+        least_constrained_idx = np.argmax(min_dists)  # Most under-constrained circle
+
+        # Calculate expansion factor based on gradient of constraints
+        expanded_radius = radii[least_constrained_idx] + 0.005
+        new_radii = radii.copy()
+        new_radii[least_constrained_idx] = expanded_radius
+
+        # Apply controlled expansion to neighboring circles to avoid instability
+        for j in range(n):
+            if j != least_constrained_idx:
+                # Expand neighboring circles proportionally
+                new_radii[j] = radii[j] + (expanded_radius - radii[least_constrained_idx]) * 0.6
+
+        # Reconstruct decision vector
+        v_new = v.copy()
+        v_new[2::3] = new_radii
+
+        # Final optimization with refined configuration
+        res = minimize(neg_sum_radii, v_new, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 300, "ftol": 1e-11})
+
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())

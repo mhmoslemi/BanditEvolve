@@ -1,0 +1,105 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    # Random initial positions for circle centers
+    np.random.seed(42)  # Fix seed for reproducibility
+    xs = np.random.uniform(0.1, 0.9, n)
+    ys = np.random.uniform(0.1, 0.9, n)
+    v0 = np.empty(3 * n)
+    v0[0::3] = xs
+    v0[1::3] = ys
+    r0 = 0.1  # Initial radius
+    v0[2::3] = np.full(n, r0)
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    # Create constraints for boundaries
+    cons = []
+    for i in range(n):
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+
+    # Create constraints for circle-circle overlaps
+    for i in range(n):
+        for j in range(i + 1, n):
+            def constraint_func(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                return dx*dx + dy*dy - (v[3*i+2] + v[3*j+2])**2
+            cons.append({"type": "ineq", "fun": constraint_func})
+
+    # Initial optimization
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 1500, "ftol": 1e-10})
+
+    if res.success:
+        v = res.x
+        centers = np.column_stack([v[0::3], v[1::3]])
+        radii = v[2::3]
+        
+        # Cluster the circles using k-means
+        from sklearn.cluster import KMeans
+        kmeans = KMeans(n_clusters=5, random_state=42).fit(centers)
+        clusters = kmeans.labels_
+        
+        # Find the most isolated cluster (largest minimum distance to other clusters)
+        cluster_distances = []
+        for cluster_id in np.unique(clusters):
+            cluster_points = centers[clusters == cluster_id]
+            distances = []
+            for other_cluster_id in np.unique(clusters):
+                if other_cluster_id != cluster_id:
+                    other_points = centers[clusters == other_cluster_id]
+                    min_dist = np.min(np.min(np.sum((cluster_points - other_points)**2, axis=1)))
+                    distances.append(min_dist)
+            cluster_distances.append(np.min(distances))
+        
+        isolated_cluster = np.argmax(cluster_distances)
+        isolated_indices = np.where(clusters == isolated_cluster)[0]
+
+        # Expand radii of the isolated cluster
+        expanded_radii = radii.copy()
+        for i in isolated_indices:
+            # Try expanding radius by 10% until overlap or boundary is reached
+            for _ in range(100):
+                new_r = expanded_radii[i] * 1.1
+                # Check if the new radius would cause overlap with other circles
+                overlap = False
+                for j in range(n):
+                    if j == i:
+                        continue
+                    dx = centers[i, 0] - centers[j, 0]
+                    dy = centers[i, 1] - centers[j, 1]
+                    dist = np.sqrt(dx*dx + dy*dy)
+                    if dist < new_r + radii[j] - 1e-8:
+                        overlap = True
+                        break
+                # Check if the new radius would cause the circle to go out of bounds
+                if (centers[i, 0] - new_r < 0 or centers[i, 0] + new_r > 1 or
+                    centers[i, 1] - new_r < 0 or centers[i, 1] + new_r > 1):
+                    overlap = True
+                if not overlap:
+                    expanded_radii[i] = new_r
+                else:
+                    break
+
+        # Create new decision vector with expanded radii
+        perturbed_v = v.copy()
+        perturbed_v[2::3] = np.clip(expanded_radii, 1e-4, 0.5)
+
+        # Re-optimize with the new configuration
+        res = minimize(neg_sum_radii, perturbed_v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 300, "ftol": 1e-10})
+
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())

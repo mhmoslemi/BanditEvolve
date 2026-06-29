@@ -1,0 +1,246 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    # Implementing the mutation: replace the parent's grid-based spatial constraint enforcement with a randomized geometric hashing and constraint reordering
+    # Additionally, target radial expansion on the most underconstrained circle with adjacency constraints reordering
+    
+    # Initial configuration with randomized cluster-aware placement, using multi-stage spatial hashing to break symmetry
+    cols, rows = 5, (n + 4) // 5
+    xs, ys = [], []
+    hashing_factors = [0.65, 0.72, 0.85, 0.95]  # Different spatial perturbation scales for different clusters
+    spatial_cluster_map = np.random.randint(0, len(hashing_factors), size=n)
+    
+    for i in range(n):
+        row_idx = i // cols
+        col_idx = i % cols
+        x_center = (col_idx + 0.5) / cols
+        y_center = (row_idx + 0.5) / rows
+        # Create dynamic cluster offset using spatial hashing
+        cluster_scale = hashing_factors[spatial_cluster_map[i]]
+        x_offset = np.random.uniform(-0.2 * cluster_scale, 0.2 * cluster_scale)
+        y_offset = np.random.uniform(-0.2 * cluster_scale, 0.2 * cluster_scale)
+        
+        # Alternate row staggering - more pronounced for lower cluster scales
+        if row_idx % 2 == 1:
+            x_offset += (0.5 / cols) * (1 / cluster_scale)
+        xs.append(x_center + x_offset)
+        ys.append(y_center + y_offset)
+    
+    # Radius initialization with cluster-aware scaling, more room for dense clusters
+    r_base = max(1e-3, 0.32 / cols)
+    radius_factors = [1.0, 1.0, 0.9, 0.8, 0.7]  # Densest cluster allows smallest radii
+    r_initial = np.array([r_base * radius_factors[spatial_cluster_map[i]] for i in range(n)])
+    
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = r_initial
+    
+    # Define bounds with 3*n length for all variables
+    bounds = []
+    for _ in range(n):  # Each circle has x, y, radius
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]  # Enforce non-negative, bounded in square, minimal radius
+    
+    # Objective function: minimize negative sum of radii
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+    
+    # Vectorized boundary constraints: ensure the circle fits inside the unit square
+    cons = []
+    for i in range(n):
+        # Ensure x - radius >= 0
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        # Ensure x + radius <= 1
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        # Ensure y - radius >= 0
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        # Ensure y + radius <= 1
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+    
+    # Overlap constraints: distance^2 - (radius1 + radius2)^2 >= 0
+    # Use a new scheme: precompute neighbor groupings based on spatial hash to reorder constraints
+    # This is to enforce topology reordering to avoid local optima
+    # First, create spatial hash grid for neighbor grouping
+    spatial_grid = np.zeros((cols + 1, rows + 1))
+    spatial_grid[0, 0] = 0  # Avoid zero in hash grid
+    for i in range(n):
+        x, y, r = v0[3*i], v0[3*i+1], v0[3*i+2]  # Initial values for spatial hashing grid building
+        grid_x = int((x - r) * cols)  # Left boundary of spatial hash grid cell
+        grid_y = int((y - r) * rows)  # Bottom boundary
+        grid_x = np.clip(grid_x, 0, cols)
+        grid_y = np.clip(grid_y, 0, rows)
+        spatial_grid[grid_y, grid_x] += 1  # Marking that this position is occupied by a circle
+    
+    # Create neighbor grouping based on spatial grid - only adjacent cells count
+    neighbors = [[] for _ in range(n)]
+    for i in range(n):
+        x, y, r = v0[3*i], v0[3*i+1], v0[3*i+2]
+        grid_x = int((x - r) * cols)
+        grid_y = int((y - r) * rows)
+        grid_x = np.clip(grid_x, 0, cols)
+        grid_y = np.clip(grid_y, 0, rows)
+        for dx in [-1, 0, 1]:
+            for dy in [-1, 0, 1]:
+                nx, ny = grid_x + dx, grid_y + dy
+                if 0 <= nx < cols + 1 and 0 <= ny < rows + 1:
+                    for j in range(n):
+                        if j == i:
+                            continue
+                        xj, yj, rj = v0[3*j], v0[3*j+1], v0[3*j+2]
+                        # Check if circles are close enough to be grouped in this neighborhood hash
+                        if not (abs(x - xj) > 2 * r or abs(y - yj) > 2 * r):
+                            # Heuristically assume possible neighbor
+                            neighbors[i].append(j)
+    
+    # Now, generate overlap constraints, but only between neighbor groups for topology reordering
+    # We also enforce that each circle has at least 3 distinct neighbors (topological reordering constraint)
+    for i in range(n):
+        # For constraint reordering, enforce that each circle has at least 3 distinct neighbors
+        if len(neighbors[i]) < 3:
+            for j in range(n):
+                if j == i:
+                    continue
+                # Enforce a weak constraint that they are at least 5% apart for reconfiguration
+                cons.append({"type": "ineq", 
+                             "fun": lambda v, i=i, j=j: (v[3*i] - v[3*j])**2 + (v[3*i+1] - v[3*j+1])**2 
+                                                 - (v[3*i+2] + v[3*j+2])**2 * 0.95})
+        
+        # Add proper overlap constraint to neighbors list only
+        for j in neighbors[i]:
+            if j > i:  # Avoid duplicate constraint
+                # Compute constraint once using the same as before but with more efficient evaluation
+                cons.append({"type": "ineq", 
+                             "fun": lambda v, i=i, j=j: (v[3*i] - v[3*j])**2 + (v[3*i+1] - v[3*j+1])**2 
+                                                 - (v[3*i+2] + v[3*j+2])**2})
+    
+    # Initial optimization with high precision and advanced solver parameters
+    initial_res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds, 
+                         constraints=cons, options={
+                             "maxiter": 1800, 
+                             "ftol": 1e-11, 
+                             "gtol": 1e-10, 
+                             "eps": 1e-9,
+                             "disp": False
+    })
+    
+    # After initial optimization, apply targeted reconfiguration through spatial cluster hashing
+    if initial_res.success:
+        v = initial_res.x
+        radii = v[2::3]
+        centers = np.column_stack([v[0::3], v[1::3]])
+        
+        # Generate spatial clustering-based perturbation
+        # First, recompute the cluster map with current centers
+        spatial_cluster_map = []
+        for i in range(n):
+            x, y, r = centers[i]
+            grid_x = int((x - r) * cols)
+            grid_y = int((y - r) * rows)
+            grid_x = np.clip(grid_x, 0, cols)
+            grid_y = np.clip(grid_y, 0, rows)
+            spatial_cluster_map.append(hashing_factors.index(np.random.choice(hashing_factors, 1)[0]))  # Random cluster assignment
+        
+        # Create spatial perturbation that favors reordering based on cluster
+        spatial_perturbation = [0] * n
+        for i in range(n):
+            grid_x = int((centers[i, 0] - radii[i]) * cols)
+            grid_y = int((centers[i, 1] - radii[i]) * rows)
+            grid_x = np.clip(grid_x, 0, cols)
+            grid_y = np.clip(grid_y, 0, rows)
+            spatial_perturbation[i] = np.random.uniform(-0.05 * hashing_factors[spatial_cluster_map[i]], 0.05 * hashing_factors[spatial_cluster_map[i]])
+        
+        # Apply spatial reconfiguration with non-overlapping enforcement
+        perturbed_v = v.copy()
+        for i in range(n):
+            perturbed_v[3*i] += spatial_perturbation[i]
+            # For y, add a stronger perturbation in the cluster-based domain
+            # This helps break symmetry in cluster-reorder scenarios
+            perturbed_v[3*i + 1] += np.random.uniform(-0.05 * hashing_factors[spatial_cluster_map[i]], 0.05 * hashing_factors[spatial_cluster_map[i]])
+        
+        # Perform reconfiguration phase with optimized constraints
+        reconfigure_res = minimize(neg_sum_radii, perturbed_v, method="SLSQP", bounds=bounds, 
+                                constraints=cons, options={
+                                    "maxiter": 400, 
+                                    "ftol": 1e-11, 
+                                    "gtol": 1e-11, 
+                                    "eps": 1e-9,
+                                    "disp": False
+        })
+        
+        if reconfigure_res.success:
+            v = reconfigure_res.x
+            radii = v[2::3]
+            centers = np.column_stack([v[0::3], v[1::3]])
+            
+            # Calculate the minimal distance of each circle to all others to find the most underconstrained one
+            dists = np.sqrt(((centers[:, np.newaxis] - centers[np.newaxis, :]) ** 2).sum(axis=2))
+            min_dists = np.min(dists, axis=1)
+            most_underconstrained_idx = np.argmax(min_dists)  # circle with largest minimal distance to others
+            
+            # Find 3 most isolated circles for targeted expansion
+            isolated_indices = np.argsort(min_dists)[-3:]
+            
+            # Targeted expansion on these circles with radial growth
+            # Apply growth factor based on their distance to others but also to their radius
+            # Create a more intelligent expansion profile
+            radius_growth_factors = [0.8, 1.0, 1.2]  # Growth rates based on isolation
+            radii_copy = radii.copy()
+            for idx in isolated_indices:
+                # Calculate potential growth space
+                # Use the minimal distance to neighbors as a cap
+                max_possible_growth = min_dists[idx] - (radii[idx] * 2)
+                if max_possible_growth > 0:
+                    # Radial growth based on isolation and distance
+                    new_radius = radii[idx] + max(0, max_possible_growth * radius_growth_factors[isolated_indices.tolist().index(idx)])
+                    radii_copy[idx] = new_radius
+            
+            # Apply growth to the most underconstrained circle by a higher multiplier
+            radii_copy[most_underconstrained_idx] += (min_dists[most_underconstrained_idx] - (radii[most_underconstrained_idx] * 2)) * 1.2
+            
+            # Reconstruct the decision vector with new radii
+            v_new = v.copy()
+            v_new[2::3] = radii_copy
+            
+            # Check feasibility of radial expansion before reoptimizing
+            # We only apply this if the circles still don't overlap
+            valid = True
+            for i in range(n):
+                for j in range(i + 1, n):
+                    dx = v_new[3*i] - v_new[3*j]
+                    dy = v_new[3*i+1] - v_new[3*j+1]
+                    dist_sq = dx * dx + dy * dy
+                    if dist_sq < (v_new[3*i+2] + v_new[3*j+2])**2 - 1e-10:
+                        valid = False
+                        break
+                if not valid:
+                    break
+            
+            if valid:
+                # Final optimization with the new configuration
+                final_res = minimize(neg_sum_radii, v_new, method="SLSQP", bounds=bounds, 
+                                    constraints=cons, options={
+                                        "maxiter": 400, 
+                                        "ftol": 1e-11, 
+                                        "gtol": 1e-11, 
+                                        "eps": 1e-9,
+                                        "disp": False
+                })
+                
+                if final_res.success:
+                    v = final_res.x
+                else:
+                    # Revert to last valid state if failure
+                    v = v_new
+            else:
+                # Revert to last valid state if invalid
+                v = v_new
+        
+        # Final fallback
+        if not reconfigure_res.success:
+            v = initial_res.x
+    
+    v = initial_res.x if initial_res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, np.min(radii) + 1e-6)  # Ensure we don't have too small or zero radii
+    return centers, radii, float(radii.sum())

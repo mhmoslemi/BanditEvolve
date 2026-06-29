@@ -1,0 +1,120 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = 5
+    rows = (n + cols - 1) // cols
+    
+    # Initialize positions using a randomized geometric clustering algorithm
+    # This creates a more flexible initial configuration to enable better expansion
+    xs = []
+    ys = []
+    cluster_centers = np.random.rand(3, 2)  # 3 cluster centers
+    for i in range(n):
+        # Assign each circle to a cluster based on distance
+        dists = np.sqrt(np.sum((np.random.rand(2) - cluster_centers) ** 2, axis=1))
+        cluster = np.argmin(dists)
+        # Place the circle within the cluster area
+        x = np.random.rand()
+        y = np.random.rand()
+        if cluster == 0:
+            x = 0.25 + 0.5 * x
+            y = 0.25 + 0.5 * y
+        elif cluster == 1:
+            x = 0.5 + 0.5 * x
+            y = 0.5 + 0.5 * y
+        elif cluster == 2:
+            x = 0.75 + 0.5 * x
+            y = 0.75 + 0.5 * y
+        xs.append(x)
+        ys.append(y)
+    
+    r0 = 0.2 / cols - 1e-3
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = np.full(n, r0)
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    # Vectorized overlap constraints
+    def vectorized_overlap_constraints(v):
+        centers = v[0::3], v[1::3]
+        radii = v[2::3]
+        dx = centers[0][:, None] - centers[0][:]
+        dy = centers[1][:, None] - centers[1][:]
+        dist_sq = dx**2 + dy**2
+        min_dist_sq = (radii[:, None] + radii[None, :])**2
+        return dist_sq - min_dist_sq
+
+    cons = []
+    for i in range(n):
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+    
+    # Vectorized constraints for all pairs
+    for i in range(n):
+        for j in range(i + 1, n):
+            def constraint_func(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                return dx*dx + dy*dy - (v[3*i+2] + v[3*j+2])**2
+            cons.append({"type": "ineq", "fun": constraint_func})
+
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 2000, "ftol": 1e-12})
+    
+    # Trigger controlled radius expansion on the most tightly packed cluster
+    if res.success:
+        v = res.x
+        centers = v[0::3], v[1::3]
+        radii = v[2::3]
+        # Identify cluster centers based on density
+        cluster_densities = []
+        for i in range(3):
+            cluster_points = []
+            for j in range(n):
+                if (centers[0][j] > 0.2 and centers[0][j] < 0.75 and
+                    centers[1][j] > 0.2 and centers[1][j] < 0.75):
+                    cluster_points.append(j)
+            cluster_densities.append(len(cluster_points))
+        # Find the cluster with the highest density
+        densest_cluster = np.argmax(cluster_densities)
+        # Identify the most tightly packed circles within the densest cluster
+        cluster_centers_x = []
+        cluster_centers_y = []
+        cluster_radii = []
+        for j in range(n):
+            if (centers[0][j] > 0.2 and centers[0][j] < 0.75 and
+                centers[1][j] > 0.2 and centers[1][j] < 0.75):
+                cluster_centers_x.append(centers[0][j])
+                cluster_centers_y.append(centers[1][j])
+                cluster_radii.append(radii[j])
+        # Compute pairwise distances within the cluster
+        dx = np.array(cluster_centers_x)[:, None] - np.array(cluster_centers_x)[None, :]
+        dy = np.array(cluster_centers_y)[:, None] - np.array(cluster_centers_y)[None, :]
+        dist_sq = dx**2 + dy**2
+        min_dist_sq = (np.array(cluster_radii)[:, None] + np.array(cluster_radii)[None, :])**2
+        tightest_pairs = np.argwhere(dist_sq < min_dist_sq - 1e-8)
+        if len(tightest_pairs) > 0:
+            # Select the pair with the smallest distance
+            tightest_pair = tightest_pairs[np.argmin(dist_sq[tightest_pairs])]
+            i, j = tightest_pair[0], tightest_pair[1]
+            # Expand the radii of these two circles by a small amount
+            v[3*i+2] += 0.003
+            v[3*j+2] += 0.003
+            # Re-evaluate with the modified parameters
+            res = minimize(neg_sum_radii, v, method="SLSQP", bounds=bounds,
+                           constraints=cons, options={"maxiter": 400, "ftol": 1e-12})
+    
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())

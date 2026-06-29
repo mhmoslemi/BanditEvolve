@@ -1,0 +1,93 @@
+```python
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = 5
+    rows = (n + cols - 1) // cols
+    
+    # Initialize positions using a randomized geometric clustering algorithm
+    xs = np.random.rand(n)
+    ys = np.random.rand(n)
+    # Cluster points using k-means to create dense regions
+    from sklearn.cluster import KMeans
+    kmeans = KMeans(n_clusters=cols, random_state=42).fit(np.column_stack([xs, ys]))
+    cluster_ids = kmeans.labels_
+    # Distribute points within clusters to form clusters
+    cluster_centers = kmeans.cluster_centers_
+    cluster_rads = np.full(n, 0.05)
+    # Assign points to clusters
+    for i in range(n):
+        cluster = cluster_ids[i]
+        dx = xs[i] - cluster_centers[cluster, 0]
+        dy = ys[i] - cluster_centers[cluster, 1]
+        xs[i] = cluster_centers[cluster, 0] + dx * 0.8
+        ys[i] = cluster_centers[cluster, 1] + dy * 0.8
+    
+    r0 = 0.15
+    v0 = np.empty(3 * n)
+    v0[0::3] = xs
+    v0[1::3] = ys
+    v0[2::3] = np.full(n, r0)
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    # Vectorized overlap constraints
+    def vectorized_overlap(v):
+        radii = v[2::3]
+        x = v[0::3]
+        y = v[1::3]
+        dist_sq = np.zeros((n, n))
+        for i in range(n):
+            dx = x - x[i]
+            dy = y - y[i]
+            dist_sq[:, i] = dx*dx + dy*dy
+        return dist_sq - (radii[:, np.newaxis] + radii[np.newaxis, :]) ** 2
+
+    # Create constraints for all pairs using vectorized calculation
+    cons = []
+    for i in range(n):
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+    
+    # Create constraints for all pairs
+    for i in range(n):
+        for j in range(i + 1, n):
+            cons.append({"type": "ineq", "fun": lambda v, i=i, j=j: vectorized_overlap(v)[i, j]})
+
+    # Initial optimization with increased max iterations and tighter tolerance
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 1500, "ftol": 1e-10})
+    
+    # Non-local reconfiguration: expand the most isolated cluster
+    if res.success:
+        v = res.x
+        radii = v[2::3]
+        # Find the cluster with the largest radius gap
+        cluster_ids = kmeans.labels_
+        cluster_radii = np.zeros(cols)
+        for i in range(n):
+            cluster = cluster_ids[i]
+            cluster_radii[cluster] = max(cluster_radii[cluster], radii[i])
+        # Select the cluster with the largest radius gap for expansion
+        isolated_cluster = np.argmin(cluster_radii)
+        # Increase radii of cluster points
+        for i in range(n):
+            if cluster_ids[i] == isolated_cluster:
+                v[3*i+2] = min(v[3*i+2] + 0.05, 0.5)
+        # Re-evaluate with modified parameters
+        res = minimize(neg_sum_radii, v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 300, "ftol": 1e-10})
+    
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())
+```

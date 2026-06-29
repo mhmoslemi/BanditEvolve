@@ -1,0 +1,144 @@
+```python
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = 5
+    rows = (n + cols - 1) // cols
+    
+    # Initialize positions with randomized geometric clustering and zig-zag grid
+    xs = []
+    ys = []
+    for i in range(n):
+        row = i // cols
+        col = i % cols
+        
+        # Base grid points with some spacing
+        base_x = col / cols + 0.5 / cols
+        base_y = row / rows + 0.5 / rows
+        
+        # Apply randomized perturbation to avoid symmetry locking
+        x = base_x + np.random.uniform(-0.06, 0.06)
+        y = base_y + np.random.uniform(-0.06, 0.06)
+        
+        # Alternate rows for offset (zig-zag)
+        if row % 2 == 1:
+            x += 0.5 / cols
+        
+        xs.append(x)
+        ys.append(y)
+    
+    # Base radius estimation based on grid density
+    r0 = 0.34 / cols - 1e-3
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = np.full(n, r0)
+
+    bounds = []
+    # Consistent bounds with 3*n elements
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        radii = v[2::3]
+        return -np.sum(radii)
+
+    # Constraints: boundaries - radius >= 0 (left, bottom)
+    #              1 - (x + radius) >= 0 (right)
+    #              1 - (y + radius) >= 0 (top)
+    cons = []
+    for i in range(n):
+        # Left bound
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        # Right bound
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        # Bottom bound
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        # Top bound
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+    
+    # Overlap constraints with vectorized calculation
+    for i in range(n):
+        for j in range(i + 1, n):
+            def constraint_func(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                return dx*dx + dy*dy - (v[3*i+2] + v[3*j+2])**2
+            cons.append({"type": "ineq", "fun": constraint_func})
+
+    # First optimization with high tolerance
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 800, "ftol": 1e-11})
+
+    # Shake heuristic: reoptimize with jittered small circles
+    if res.success:
+        v = res.x
+        radii = v[2::3]
+        centers = np.column_stack([v[0::3], v[1::3]])
+        # Identify circles with low radii for targeted perturbation
+        low_rad_indices = np.where(radii < np.mean(radii) * 0.7)[0]
+        
+        # Add small random perturbation to centers of low radius circles
+        perturbation = 0.04 * np.random.rand(len(low_rad_indices), 2)
+        for idx, i in enumerate(low_rad_indices):
+            v[3*i] += perturbation[idx, 0] * np.sqrt(radii[i])  # Proportional to radius
+            v[3*i+1] += perturbation[idx, 1] * np.sqrt(radii[i])
+
+        # Re-optimization with perturbed centers
+        res = minimize(neg_sum_radii, v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 400, "ftol": 1e-11})
+
+    # Targeted expansion with adaptive gradient control for deep local minima
+    if res.success:
+        v = res.x
+        radii = v[2::3]
+        centers = np.column_stack([v[0::3], v[1::3]])
+
+        # Find circle with both low radius and high minimum separation
+        min_distances = []
+        for i in range(n):
+            min_dist = np.inf
+            for j in range(n):
+                if i != j:
+                    dx = centers[i, 0] - centers[j, 0]
+                    dy = centers[i, 1] - centers[j, 1]
+                    dist = np.sqrt(dx*dx + dy*dy)
+                    if dist < min_dist:
+                        min_dist = dist
+            min_distances.append(min_dist)
+        
+        # Select circle with highest ratio of min distance to radius
+        # This avoids choosing circles in tight clusters
+        ratio = np.array(min_distances) / radii
+        least_constrained_idx = np.argmin(ratio)
+
+        # Calculate possible expansion, proportional to current sum and radius gradient
+        current_total = np.sum(radii)
+        target_growth = 0.006
+        expansion_factor = (target_growth / (current_total - radii[least_constrained_idx]))
+        
+        # Create expansion vector with targeted and stochastic growth
+        expansion_radii = np.copy(radii)
+        expansion_radii[least_constrained_idx] += expansion_factor * 1.2
+        
+        # Apply stochastic expansion to surrounding circles
+        for i in range(n):
+            if i != least_constrained_idx:
+                expansion_coeff = 1.0 + 0.1 * np.random.rand()
+                expansion_radii[i] += expansion_factor * expansion_coeff
+        
+        # Create perturbation vector with constrained expansion
+        perturbed_v = v.copy()
+        perturbed_v[2::3] = expansion_radii
+        
+        # Re-optimization with enhanced expansion vector
+        res = minimize(neg_sum_radii, perturbed_v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 500, "ftol": 1e-11})
+
+    # Final clean-up and validation
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())
+```

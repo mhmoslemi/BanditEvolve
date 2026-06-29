@@ -1,0 +1,204 @@
+```python
+import numpy as np
+
+def run_packing():  # Ensure 26 strictly
+    n = 26  # Hardcode for consistency
+    
+    # Optimize grid pattern: 5x6 grid with 24 spots, 2 extra to be placed at edges
+    # 5 columns, 6 rows => grid 5x6 = 30, so need to use only 26
+    # Introduce edge-aware expansion and asymmetric grid layout for better performance
+    
+    cols = 5
+    rows = 6  # 5 rows and 6 cols gives 30 slots; 26 needed
+    
+    # Generate initial grid (5x6, 30 slots) and select 26 for positioning
+    grid_positions = np.array([(i / cols, j / rows) for j in range(rows) for i in range(cols)])
+    
+    # 26 positions: take first 26 out of the 30 positions (randomize to avoid symmetry)
+    indices = np.random.permutation(30)[:26]
+    positions = grid_positions[indices]
+    
+    # Add controlled asymmetric randomness to each position
+    # This introduces edge-aware bias and prevents clustering in corners
+    randomness_per = 0.035  # 3.5% max displacement, less than 5% used in previous
+    random_offsets = np.random.uniform(-randomness_per, randomness_per, size=(26, 2))  # Ensure 26 entries
+    xs = positions[:, 0] + random_offsets[:, 0]
+    ys = positions[:, 1] + random_offsets[:, 1]
+    
+    # Initialize radii based on grid spacing
+    # Estimate max initial radius based on grid density
+    grid_spacing_x = 1.0 / cols
+    grid_spacing_y = 1.0 / rows
+    # Maximum possible radius without overlapping in grid (assuming perfect packing)
+    initial_radius_estimate = 0.3 / (cols + rows) * 0.98  # 0.3 is empirically tuned
+    r0 = initial_radius_estimate - 1e-3  # Slight initial under-estimate for stability
+    
+    v0 = np.empty(3 * n)
+    v0[0::3] = xs
+    v0[1::3] = ys
+    v0[2::3] = np.full(n, r0)  # All start at same baseline
+    
+    # Enforce strict bounds for 3n dimensions
+    bounds = []
+    for _ in range(n):   # 26 circles, 3 * 26 = 78 total decision variables
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]  # Consistent length
+    
+    # Objective: maximize sum of radii
+    def neg_sum_radii(v):  # Negative because we use minimize to find a minimum
+        return -np.sum(v[2::3])  # radii are in positions 2,5,8,... so 2::3
+    
+    # Constraints: boundary and circle overlap
+    cons = []  # Must match 3n variables length exactly; each constraint refers to v
+    
+    # First pass: build boundary constraints for all circles
+    for idx in range(n):  # 26 circles
+        i = idx
+        # Left + radius <= 1 (x - r <= 1 - x => x - r >= 0 and x + r <= 1 => x - r >= 0 is redundant
+        # Left boundary: ensure x - r > -1e-12 (not needed, but in case of numerical imprecision: ensure x > r)
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i + 2]})
+        # Right boundary: x + r < 1 + 1e-12 => 1 - x - r > -1e-12 -> 1 - x - r >= 0 
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i + 2]})  # 1 - x - r
+        # Bottom boundary: y - r > -1e-12 => y - r >= 0
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i + 1] - v[3*i + 2]})
+        # Top boundary: y + r < 1 + 1e-12 => 1 - y - r > -1e-12 => 1 - y - r >= 0
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i + 1] - v[3*i + 2]})
+    
+    # Pairwise circle separation constraints: distance between i and j must be > r_i + r_j
+    for i in range(n):
+        for j in range(i+1, n):
+            # To avoid redundancy, we do (distance squared - sum of radii squared) >= 0
+            # This is because (distance - r_i - r_j)^2 = distance^2 - 2(r_i + r_j)*distance + (r_i + r_j)^2
+            # We can avoid the square root by comparing distance^2 >= (r_i + r_j)^2
+            cons.append({"type": "ineq",
+                         "fun": lambda v, i=i, j=j: 
+                             (v[3*i] - v[3*j])**2 + (v[3*i+1] - v[3*j+1])**2
+                             - (v[3*i+2] + v[3*j+2])**2
+                            })
+    
+    # Optimization settings with enhanced numerical safety: avoid overfitting, improve convergence
+    # Use tighter tolerance, more iterations; avoid early stopping
+    
+    # First-stage optimization: base layout with boundary and overlap constraints
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds, 
+                   constraints=cons, options={"maxiter": 2000, "ftol": 1e-10, "eps": 1e-9})
+    
+    if res.success:
+        # First-stage success: we can try a refinement with spatial perturbation and radius expansion
+        # Let's try spatial perturbation with spatial hashing to avoid local minima
+        
+        v = res.x
+        
+        # Build adjacency graph and identify critical nodes
+        # Compute distance matrix in vectorized form avoiding for loops (critical for speed)
+        dx = v[0::3][:, None] - v[0::3]
+        dy = v[1::3][:, None] - v[1::3]
+        dists = np.sqrt(dx**2 + dy**2)
+        radius_vec = v[2::3]
+        
+        # Compute min distance for each circle
+        min_dists = np.min(dists, axis=1)
+        # Find circles with largest minimal distance (most "free" to expand)
+        top_nodes = np.argsort(min_dists)[-10:]  # top 10 most free nodes
+        
+        # Randomized perturbation matrix
+        # Perturb nodes based on their freedom: more perturbation for free nodes
+        # We can do this in a vectorized way
+        perturbation_scale = 0.02  # smaller than previous 0.08 to avoid over-displacement in later steps
+        perturbation_grid = np.random.uniform(-perturbation_scale, perturbation_scale, (n, 2))
+        # Weighted by freedom of node
+        # Top 10 most free will have 4x the perturbation of others
+        weight_factor = np.zeros(n)
+        weight_factor[top_nodes] = 1.0
+        weight_factor[~top_nodes] = 0.25
+        perturbation_grid *= np.sqrt(weight_factor)  # Apply square root for softer effect
+        
+        perturbed_v = v.copy()
+        for i in range(n):
+            perturbed_v[3*i] += perturbation_grid[i, 0]
+            perturbed_v[3*i+1] += perturbation_grid[i, 1]
+        
+        # Second-stage optimization: spatial perturbation and reconfiguration
+        res = minimize(neg_sum_radii, perturbed_v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 600, "ftol": 1e-11, "eps": 1e-9})
+        
+        # If second stage succeeded, we can target radius expansion
+        if res.success:
+            v = res.x
+            # Build new adjacency matrix and min distance calculation again
+            dx = v[0::3][:, None] - v[0::3]
+            dy = v[1::3][:, None] - v[1::3]
+            dists = np.sqrt(dx**2 + dy**2)
+            radius_vec = v[2::3]
+            
+            # Calculate max available expansion for each circle
+            # We look for the circle where adding even more expansion would not cause overlap
+            # To avoid over-optimization, track the most "free" node
+            
+            # Build available expansion for each node
+            available_expansion = np.zeros(n)
+            for i in range(n):
+                max_radius_possible = 0.0
+                for j in range(n):
+                    if i == j:
+                        continue
+                    dx_ij = v[3*i] - v[3*j]
+                    dy_ij = v[3*i+1] - v[3*j+1]
+                    dist_ij = np.sqrt(dx_ij**2 + dy_ij**2)
+                    possible_radius = (dist_ij - radius_vec[j]) * 0.5
+                    if possible_radius < 0:
+                        possible_radius = 0
+                    # For node i, the max expansion is limited by the closest neighbor
+                    if possible_radius < available_expansion[i]:
+                        available_expansion[i] = possible_radius
+            
+            # Find the node with the most available expansion
+            max_expansion_idx = np.argmax(available_expansion)
+            
+            # Compute current sum and desired target increment
+            current_sum = np.sum(radius_vec)
+            target_increment = 0.003  # from 2.63... toward higher target
+            
+            # Calculate maximum safe expansion by finding how much can be added without overlap
+            # This is the minimum amount of expansion that would cause overlap with any neighbor
+            # We'll expand that node more than average for aggressive growth
+            safe_increment = (1.0 - radius_vec[max_expansion_idx]) * 0.3
+            
+            # Expand that node by 2x safe, and others by 50% of safe
+            # We ensure that expansion does not violate constraints
+            new_radii = radius_vec.copy()
+            expansion = safe_increment * 0.5  # base expansion
+            new_radii[max_expansion_idx] += expansion * 1.8  # extra for targeted node
+            for idx in range(n):
+                if idx != max_expansion_idx:
+                    new_radii[idx] += expansion * 0.7  # moderate expansion for others
+            
+            # Now, we need to check validity
+            # Build decision vector with new radii
+            v_new = v.copy()
+            v_new[2::3] = new_radii
+            
+            # Validate: check if these new radii are valid with current centers
+            # Implement a fast validation loop that breaks early
+            valid = True
+            for i in range(n):
+                for j in range(i + 1, n):
+                    dx = v_new[3*i] - v_new[3*j]
+                    dy = v_new[3*i+1] - v_new[3*j+1]
+                    distance_squared = dx*dx + dy*dy
+                    min_distance_squared = (v_new[3*i+2] + v_new[3*j+2]) ** 2
+                    if distance_squared < min_distance_squared - 1e-12:
+                        valid = False
+                        break
+                if not valid:
+                    break
+            if valid:
+                res = minimize(neg_sum_radii, v_new, method="SLSQP", 
+                               bounds=bounds, constraints=cons,
+                               options={"maxiter": 300, "ftol": 1e-11, "eps": 1e-9})
+            
+    # Final fallback check; ensure all constraints are satisfied before returning
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)  # Avoid negative radii
+    return centers, radii, float(radii.sum())
+```

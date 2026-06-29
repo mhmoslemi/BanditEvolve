@@ -1,0 +1,89 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = 5
+    rows = (n + cols - 1) // cols
+    
+    # Initialize positions using randomized geometric clustering
+    centers = np.random.rand(n, 2)
+    radii = np.random.rand(n) * 0.1 + 0.05
+    # Ensure initial positions are within the square and non-overlapping
+    for i in range(n):
+        centers[i] = np.clip(centers[i], 0.0, 1.0)
+    for i in range(n):
+        for j in range(i + 1, n):
+            dist = np.sqrt(np.sum((centers[i] - centers[j]) ** 2))
+            if dist < radii[i] + radii[j] - 1e-12:
+                # Adjust positions to resolve overlap
+                dx = centers[i][0] - centers[j][0]
+                dy = centers[i][1] - centers[j][1]
+                dist = np.sqrt(dx*dx + dy*dy)
+                overlap = radii[i] + radii[j] - dist
+                centers[i] += np.array([dx * overlap / dist * 0.5, dy * overlap / dist * 0.5])
+                centers[j] -= np.array([dx * overlap / dist * 0.5, dy * overlap / dist * 0.5])
+                # Clip positions to avoid going out of bounds
+                centers[i] = np.clip(centers[i], 0.0, 1.0)
+                centers[j] = np.clip(centers[j], 0.0, 1.0)
+    
+    # Convert to decision vector
+    v0 = np.empty(3 * n)
+    v0[0::3] = centers[:, 0]
+    v0[1::3] = centers[:, 1]
+    v0[2::3] = radii
+    
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    cons = []
+    for i in range(n):
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+    for i in range(n):
+        for j in range(i + 1, n):
+            cons.append({"type": "ineq", "fun": lambda v, i=i, j=j: (v[3*i] - v[3*j])**2 + (v[3*i+1] - v[3*j+1])**2 - (v[3*i+2] + v[3*j+2])**2})
+
+    # Initial optimization
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 1500, "ftol": 1e-10})
+    
+    # Identify the most isolated cluster
+    if res.success:
+        v = res.x
+        centers = np.column_stack([v[0::3], v[1::3]])
+        radii = v[2::3]
+        # Compute pairwise distances and cluster centroids
+        distances = np.zeros((n, n))
+        for i in range(n):
+            for j in range(n):
+                distances[i, j] = np.sqrt(np.sum((centers[i] - centers[j]) ** 2))
+        # Compute cluster centroids using k-means with 3 clusters
+        from sklearn.cluster import KMeans
+        kmeans = KMeans(n_clusters=3, random_state=0).fit(centers)
+        cluster_centers = kmeans.cluster_centers_
+        cluster_radii = np.mean(radii[kmeans.labels_])
+        # Select the cluster with the largest distance from the others
+        cluster_distances = np.zeros(3)
+        for i in range(3):
+            avg_dist = np.mean(distances[kmeans.labels_ == i, :][:, kmeans.labels_ == i])
+            cluster_distances[i] = avg_dist
+        cluster_index = np.argmax(cluster_distances)
+        # Expand the radii of the most isolated cluster
+        perturbed_v = v.copy()
+        for i in range(n):
+            if kmeans.labels_[i] == cluster_index:
+                perturbed_v[3*i+2] = np.clip(radii[i] * 1.1, 1e-4, 0.5)
+        # Re-evaluate with perturbed parameters
+        res = minimize(neg_sum_radii, perturbed_v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 300, "ftol": 1e-10})
+    
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())

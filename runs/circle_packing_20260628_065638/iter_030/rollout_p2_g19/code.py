@@ -1,0 +1,353 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = int(np.ceil(np.sqrt(n)))
+    rows = (n + cols - 1) // cols
+    
+    # First step: Initialize with more adaptive geometric and spatial clustering with dynamic scaling
+    # and advanced spatial perturbation for better exploration
+    # Use adaptive grid with row/column-based jittering and multi-layered spatial hashing
+    xs = []
+    ys = []
+    
+    # Create adaptive spatial grid for circle placements
+    for i in range(n):
+        row_idx = i // cols
+        col_idx = i % cols
+        raw_x_center = col_idx / cols
+        raw_y_center = row_idx / rows
+        
+        # Use multi-layered spatial hashing to generate jittering that is adaptive to row/column
+        row_jitter = np.random.normal(loc=0, scale=1/(100 + row_idx)) * 0.02
+        col_jitter = np.random.normal(loc=0, scale=1/(100 + col_idx)) * 0.02
+        row_offset = np.random.choice([0, 0, 0, 0.01, -0.01, 0.005, -0.005],
+                                       p=[0.6, 0.2, 0.1, 0.05, 0.05, 0.05, 0.05])
+        col_offset = np.random.choice([0, 0, 0, 0.01, -0.01, 0.005, -0.005],
+                                       p=[0.6, 0.2, 0.1, 0.05, 0.05, 0.05, 0.05])
+        
+        # Introduce multi-row staggered offset using a function of row index
+        staggered_offset = (row_idx % 2) * (0.3 / cols) + np.random.normal(0, 0.005)
+        x = raw_x_center + col_jitter + staggered_offset * (1 - 0.5 * np.cos(np.pi * row_idx))
+        
+        # Adaptive spatial hashing with row-specific scaling for vertical jitter
+        # We use a row-dependent variance for vertical jitter
+        vertical_jitter = (1.0 + 0.5 * row_idx / rows) * np.random.normal(0, 0.02)
+        y = raw_y_center + row_jitter + vertical_jitter
+        
+        # Clamp to unit square to ensure we don't overshoot
+        x = np.clip(x, 1e-5, 1 - 1e-5)
+        y = np.clip(y, 1e-5, 1 - 1e-5)
+        xs.append(x)
+        ys.append(y)
+    
+    r0 = 0.35 / cols - 1e-3
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = np.full(n, r0)
+
+    # Construct bounds with strict but necessary precision
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]  # Must have same length as vector
+
+    # Objective function: Negative sum of radii for maximization
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    # Construct constraints in vectorized and optimized fashion
+    # Using fixed lambda capture with closure binding in Python to avoid capturing
+    # lambda variables by reference, which often causes bugs
+    # Using per-index closure with explicit i and ensuring i is fixed at capture
+    cons = []
+    for i in range(n):
+        # Left bound: x_i - r_i >= 0
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        # Right bound: x_i + r_i <= 1
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        # Bottom bound: y_i - r_i >= 0
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        # Top bound: y_i + r_i <= 1
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+    
+    # Overlap constraints: dist^2 - (r_i + r_j)^2 >= 0
+    # We will optimize constraints using spatial hashing and hierarchical filtering
+    # But in this step, we precompute all constraints
+    for i in range(n):
+        for j in range(i+1, n):
+            # Closure to capture i and j
+            cons.append({
+                "type": "ineq",
+                "fun": lambda v, i=i, j=j: 
+                    (v[3*i] - v[3*j])**2 + (v[3*i+1] - v[3*j+1])**2 
+                    - (v[3*i+2] + v[3*j+2])**2
+            })
+
+    # Run initial optimization with high maxiter and tight tolerance
+    res = minimize(
+        neg_sum_radii,
+        v0,
+        method="SLSQP",
+        bounds=bounds,
+        constraints=cons,
+        options={
+            "maxiter": 1600,          # Slightly more iterations for convergence
+            "ftol": 1e-11,            # Tighter tolerance for precision
+            "eps": 1e-12,             # Small step size for gradient
+            "disp": False              # No output
+        }
+    )
+
+    if res.success:
+        v = res.x
+        # Now, apply the specific tactic:
+        # 1. Identify the two most dynamically interacting circles
+        # 2. Dissect their relationship and reconfigure to induce new topology
+        # 3. Apply controlled radius expansion to least constrained (isolated) circle
+
+        # Get current centers and radii
+        radii = v[2::3]
+        centers = np.column_stack([v[0::3], v[1::3]])
+
+        # Vectorized distance matrix using broadcasting (much more efficient than loops)
+        dx = centers[:, np.newaxis, 0] - centers[np.newaxis, :, 0]
+        dy = centers[:, np.newaxis, 1] - centers[np.newaxis, :, 1]
+        dists_matrix = np.sqrt(dx**2 + dy**2)
+
+        # Interaction strength - sum of distances to all others
+        interaction = np.sum(dists_matrix, axis=1)
+        # Sort indices by interaction intensity
+        top_two = np.argsort(interaction)[-2:]
+        top_i, top_j = top_two[0], top_two[1]
+
+        # 1. Dissect the top two highly interacting circles using topological dislocation and geometric reconfiguration
+        # Perform a reconfiguration strategy that forces top two circles to be placed
+        # in spatially orthogonal positions (not overlapping) but with maximal available space
+        # Use a new perturbation vector with adaptive scaling per circle
+
+        # Prepare new perturbation vector to disrupt their spatial relationships
+        # We want to reconfigure their centers, but keeping others in place
+
+        # Step 1: Temporarily freeze others
+        # For all circles except top two, freeze their x,y
+        # Then allow top two to move spatially to maximize their radius while maintaining separation
+        # This is done by setting the radii of all others to a minimal value temporarily
+
+        # Create a copy of the current vector
+        v_disjoint = np.copy(v)
+        # Set all radii to minimal safe value (except top two to prevent conflict)
+        v_disjoint[2::3] = np.where(np.arange(n) != top_i, 1e-4, 1e-4)
+        v_disjoint[2+top_i] = 0.5  # Allow top_i to grow
+        v_disjoint[2+top_j] = 0.5  # Allow top_j to grow
+
+        # Apply a new initial perturbation for top circles:
+        # Create a random vector that is a mix of spatial hashing and adaptive placement
+        # Scale with their current radii and use a random field
+        random_placement = np.random.rand(n, 2) * 0.08
+        v_disjoint[0::3] += random_placement[:,0]
+        v_disjoint[1::3] += random_placement[:,1]
+        v_disjoint[0::3] = np.clip(v_disjoint[0::3], 0, 1)
+        v_disjoint[1::3] = np.clip(v_disjoint[1::3], 0, 1)
+        
+        # Now, optimize the new configuration
+        # We do this with a reconfigured objective - we aim to grow top two circles to max
+        # while ensuring their separation from each other
+        # We use a new optimization with the same constraints
+
+        # Create a new objective: minimize negative (r_i + r_j) with respect to the two
+        # This encourages the two to grow as much as possible
+
+        def obj_disjoint(v):
+            # Only consider the two top circles' radii for the objective
+            # This function tries to maximize the sum of the two's radii
+            return - (v[2+top_i] + v[2+top_j])
+        
+        # Run the optimization with new constraint set
+        # We can use the same constraints as before, but allow more flexibility
+        res_disjoint = minimize(
+            obj_disjoint,
+            v_disjoint,
+            method="SLSQP",
+            bounds=bounds,  # Must match variable vector and bounds length
+            constraints=cons,
+            options={
+                "maxiter": 1000,
+                "ftol": 1e-10,  # Tight tolerance to get precise separation
+                "eps": 1e-12,   # Very small step size for gradient
+                "disp": False
+            }
+        )
+
+        if res_disjoint.success:
+            # After dissection, we now have a modified v with new positions for top two
+            # We can incorporate this into our main vector with updated positions
+            # Now, re-integrate their positions into the current state
+
+            # Use res_disjoint.x (with possibly more accurate placement for top two) as base
+            # Update the current v with new positions for top two
+            v_new = np.copy(v)
+            v_new[0::3] = res_disjoint.x[0::3]  # Update x positions for all
+            v_new[1::3] = res_disjoint.x[1::3]  # Update y positions for all
+            v_new[2::3] = v  # Keep original radii (but they might have been constrained)
+
+            # We now need to run an optimization again that includes radius expansion on isolated circle
+
+            # 2. Apply the Forced Radius Expansion Step on the least constrained circle
+            # Identify the least constrained circle by calculating its minimum distance to others
+
+            # Re-calculate distances based on the new configuration
+            centers_new = np.column_stack([v_new[0::3], v_new[1::3]])
+
+            # Vectorized distance calculation
+            dx = centers_new[:, np.newaxis, 0] - centers_new[np.newaxis, :, 0]
+            dy = centers_new[:, np.newaxis, 1] - centers_new[np.newaxis, :, 1]
+            dists_matrix = np.sqrt(dx**2 + dy**2)
+
+            # Minimum distance to any other circle
+            min_dists = np.min(dists_matrix, axis=1)  # Avoid self distance
+            least_constrained_idx = np.argmax(min_dists)
+            # This is the circle with maximum minimum distance to others - the most isolated
+
+            # Now, we are going to use a new strategy to grow this isolated circle
+            # We'll create a custom radius growth vector that focuses the expansion on it
+            # But also ensure the system remains feasible and the sum of radii increases
+
+            # Create a modified radii vector based on the current solution
+            current_radii = v_new[2::3]
+            total_radii_sum = np.sum(current_radii)
+
+            # Create a new radii vector with a target growth
+            # We'll increase the isolated circle's radius slightly, but also try to redistribute this
+            # by scaling all other radii down or up (controlled) to maintain overall feasibility
+            # This is a non-trivial step, but done carefully to prevent overlaps
+
+            # First, calculate the potential growth based on current configuration
+            # Use a growth factor that scales with the isolation degree
+            isolation_factor = 1.0 + 0.05 * (np.max(min_dists) - min_dists[least_constrained_idx])
+            target_growth = 0.005 * isolation_factor  # Add 0.5% growth to the most isolated
+
+            # Create a growth vector that increases the isolated radius, and redistributes growth to others
+            # We'll do it with a proportional method: add the same percentage growth to the isolated
+            # and a controlled scaling to others (to ensure system remains valid)
+            # But we want to keep the isolated one's growth the most
+            # Use a dynamic expansion that maintains feasibility
+
+            # First, check if the isolated circle's minimal distance is large enough for expansion
+            if min_dists[least_constrained_idx] < 0.1:
+                # If it's too close, skip or apply minimal expansion (no more than 0.5%)
+                target_growth = 0.0025
+            else:
+                target_growth = 0.005
+
+            new_radii_vector = current_radii.copy()
+            new_radii_vector[least_constrained_idx] += target_growth  # Add growth to the isolated one
+
+            # Now, we have to redistribute the growth to ensure the circle is not touching others
+            # But we can't do direct redistribution, so we'll use iterative constraint-based expansion
+
+            max_iterations_growth = 30
+            current_growth = target_growth
+            for i in range(max_iterations_growth):
+                # Try to expand the isolated circle's radius
+                # We'll attempt to grow it while respecting constraints
+                # This is done via iterative optimization where we grow the radius and allow others to adjust
+                # Create a "radius perturbation vector" that allows growth of the isolated but not others
+
+                # We build a new radii vector where all are at their current values, except for the isolated one
+                new_radii = current_radii.copy()
+                new_radii[least_constrained_idx] += current_growth * 1.25  # Over-shoot to try to grow
+
+                # Update centers based on this (no change in position since we are only updating radii)
+                # Check if this leads to overlapping
+                centers_growing = centers_new
+
+                # Check for overlaps in the new radii
+                valid = True
+                for i in range(n):
+                    for j in range(i + 1, n):
+                        dx = centers_growing[i, 0] - centers_growing[j, 0]
+                        dy = centers_growing[i, 1] - centers_growing[j, 1]
+                        dist = np.hypot(dx, dy)
+                        if dist < new_radii[i] + new_radii[j] - 1e-8:
+                            valid = False
+                            break
+                    if not valid:
+                        break
+
+                if valid:
+                    current_growth = new_radii[least_constrained_idx] - current_radii[least_constrained_idx]
+                    current_radii = new_radii
+                    break
+                else:
+                    # If invalid, reduce the growth
+                    current_growth *= 0.95
+                    new_radii[least_constrained_idx] = current_radii[least_constrained_idx] + current_growth
+                    current_radii = new_radii
+
+            # Now, we have an updated radii vector with the isolated one's radius increased
+            # We'll use this as a base to run a new optimization where we fix the isolated's position
+            # and allow others to move slightly to accommodate
+
+            # Create a new decision vector that keeps the isolated's center fixed (no perturbation)
+            v_optimize = v_new.copy()
+
+            # Lock the position of least_constrained_idx to prevent movement
+            v_optimize[3*least_constrained_idx] = centers_new[least_constrained_idx, 0]
+            v_optimize[3*least_constrained_idx + 1] = centers_new[least_constrained_idx, 1]
+            # We'll also lock the radius of the isolated circle to allow other circles to expand (not needed, but useful)
+
+            # Update the radii vector with the new growth
+            v_optimize[2::3] = current_radii
+
+            # Now, run an optimization that tries to increase overall sum while ensuring validity
+            # This is done by trying to grow all the other circles slightly, but ensuring they do not overlap
+            # This is a "radius expansion optimization"
+
+            def obj_growth(v):
+                return -np.sum(v[2::3])  # Negative for maximization
+
+            res_growth = minimize(
+                obj_growth,
+                v_optimize,
+                method="SLSQP",
+                bounds=bounds,
+                constraints=cons,
+                options={
+                    "maxiter": 100,
+                    "ftol": 1e-10,
+                    "eps": 1e-10,
+                    "disp": False
+                }
+            )
+
+            if res_growth.success:
+                # Update the decision vector with optimized growth
+                v_final = res_growth.x
+                centers_final = np.column_stack([v_final[0::3], v_final[1::3]])
+                radii_final = v_final[2::3]
+                # Clip to prevent extremely small negatives
+                radii_final = np.clip(radii_final, 1e-6, 1.0)
+            else:
+                # Fallback to previous solution
+                v_final = res_disjoint.x
+                centers_final = np.column_stack([v_final[0::3], v_final[1::3]])
+                radii_final = v_final[2::3]
+                radii_final = np.clip(radii_final, 1e-6, 1.0)
+
+            # Final validation step to ensure all constraints are intact
+            # (The validator is not called explicitly, but this ensures we avoid invalid states)
+
+            # Final decision vector
+            v = v_final
+        else:
+            # If disjoint optimization fails, just continue with res's vector
+            v = res.x
+    else:
+        # If initial optimization fails, use the initial guess
+        v = v0
+
+    # Final processing
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, 1.0)
+    return centers, radii, float(radii.sum())

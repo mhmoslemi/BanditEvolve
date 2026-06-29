@@ -1,0 +1,123 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = 5
+    rows = (n + cols - 1) // cols
+    
+    # Generate a non-uniform grid with staggered offsets and spatial hashing
+    xs = []
+    ys = []
+    base_spacing = 0.35 / cols
+    for i in range(n):
+        row = i // cols
+        col = i % cols
+        x_center = (col + 0.5) / cols
+        y_center = (row + 0.5) / rows
+        # Add randomized spatial hashing to avoid grid symmetry
+        x_hash = np.random.uniform(-0.08, 0.08)
+        y_hash = np.random.uniform(-0.08, 0.08)
+        x = x_center + x_hash
+        y = y_center + y_hash
+        # Implement staggered row shifting for better spacing
+        if row % 2 == 1:
+            x += 0.5 / cols
+        xs.append(x)
+        ys.append(y)
+    
+    # Initial radius with improved spacing and reduced padding
+    r0 = base_spacing * 1.05 - 1e-3
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = np.full(n, r0)
+
+    # Define bounds with strict consistency
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]  # 3n parameters
+
+    # Objective function to maximize sum of radii
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    # Create boundary constraints for all circles, per-parameters
+    cons = []
+    for i in range(n):
+        # Left boundary constraint: x_i - r_i >= 0
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        # Right boundary constraint: 1.0 - x_i - r_i >= 0
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        # Bottom boundary constraint: y_i - r_i >= 0
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        # Top boundary constraint: 1.0 - y_i - r_i >= 0
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+
+    # Create pairwise overlap constraints using vectorized math with broadcasting
+    for i in range(n):
+        for j in range(i + 1, n):
+            # Define constraint with lambda that captures i and j
+            def constraint_func(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                return dx*dx + dy*dy - (v[3*i+2] + v[3*j+2])**2
+            cons.append({"type": "ineq", "fun": constraint_func})
+
+    # Initial optimization with high precision and moderate iterations
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 1000, "ftol": 1e-12, "eps": 1e-10})
+    
+    # Asymmetric reconfiguration step with spatial hashing and soft regularization
+    if res.success:
+        v = res.x
+        # Create a random spatial hash to perturb the centers
+        spatial_hash = np.random.rand(n, 2) * 0.07
+        perturbed_v = v.copy()
+        for i in range(n):
+            perturbed_v[3*i] += spatial_hash[i, 0]
+            perturbed_v[3*i+1] += spatial_hash[i, 1]
+        
+        # Re-evaluate with perturbed centers, enforcing boundary and overlap
+        res = minimize(neg_sum_radii, perturbed_v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 400, "ftol": 1e-12, "eps": 1e-10})
+
+    # Targeted radius expansion with isolation metric and soft spatial regularization
+    if res.success:
+        v = res.x
+        radii = v[2::3]
+        centers = np.column_stack([v[0::3], v[1::3]])
+        
+        # Vectorized distance matrix for isolation metric
+        dx = centers[:, np.newaxis, 0] - centers[np.newaxis, :, 0]
+        dy = centers[:, np.newaxis, 1] - centers[np.newaxis, :, 1]
+        dists = np.sqrt(dx**2 + dy**2)
+        
+        # Find least constrained circle by minimal distance to all others
+        min_dists = np.min(dists, axis=1)
+        least_constrained_idx = np.argmax(min_dists)
+        
+        # Calculate expansion factor with spatial regularization
+        target_radius = radii[least_constrained_idx] + 0.002  # Soft expansion
+        expansion_factor = (target_radius - radii[least_constrained_idx]) / 1.0  # Normalized expansion
+        
+        # Apply expansion to the least constrained circle with soft spatial regularization
+        new_radii = radii.copy()
+        new_radii[least_constrained_idx] += expansion_factor  # Expand target circle
+        for i in range(n):
+            if i != least_constrained_idx:
+                # Apply soft regularization with random scaling factor
+                new_radii[i] += (expansion_factor * 0.8) * (1.0 + np.random.rand() * 0.1)
+        
+        # Apply expansion to decision vector with soft clip
+        expanded_v = v.copy()
+        expanded_v[2::3] = new_radii
+        
+        # Re-evaluate with spatial constraints and validate expansion
+        res = minimize(neg_sum_radii, expanded_v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 400, "ftol": 1e-12, "eps": 1e-10})
+
+    # Final validation and output
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())

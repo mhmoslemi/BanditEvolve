@@ -1,0 +1,110 @@
+```python
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = 5
+    rows = (n + cols - 1) // cols
+    
+    # Initialize positions using a randomized geometric clustering algorithm
+    xs = []
+    ys = []
+    # Create 5 clusters with 5, 5, 5, 5, 6 circles
+    cluster_sizes = [5, 5, 5, 5, 6]
+    cluster_centers = []
+    for i in range(5):
+        # Randomly place cluster centers in the square
+        cx = np.random.uniform(0.1, 0.9)
+        cy = np.random.uniform(0.1, 0.9)
+        cluster_centers.append((cx, cy))
+    
+    # Assign circles to clusters
+    for cluster_idx, size in enumerate(cluster_sizes):
+        for _ in range(size):
+            # Generate random position within cluster area
+            dx = np.random.uniform(-0.2, 0.2)
+            dy = np.random.uniform(-0.2, 0.2)
+            x = cluster_centers[cluster_idx][0] + dx
+            y = cluster_centers[cluster_idx][1] + dy
+            # Ensure within bounds
+            x = np.clip(x, 0.0, 1.0)
+            y = np.clip(y, 0.0, 1.0)
+            xs.append(x)
+            ys.append(y)
+    
+    r0 = 0.2 / cols - 1e-3
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = np.full(n, r0)
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    # Vectorized overlap constraints
+    def vectorized_overlap_constraints(v):
+        x = v[0::3]
+        y = v[1::3]
+        r = v[2::3]
+        dx = x[:, np.newaxis] - x[np.newaxis, :]
+        dy = y[:, np.newaxis] - y[np.newaxis, :]
+        dist_sq = dx ** 2 + dy ** 2
+        r_sum = r[:, np.newaxis] + r[np.newaxis, :]
+        return dist_sq - r_sum ** 2
+
+    # Convert to list of constraint functions for scipy.optimize
+    cons = []
+    for i in range(n):
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+    
+    # Convert vectorized constraints to individual constraint functions
+    for i in range(n):
+        for j in range(i + 1, n):
+            def constraint_func(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                return dx*dx + dy*dy - (v[3*i+2] + v[3*j+2])**2
+            cons.append({"type": "ineq", "fun": constraint_func})
+
+    # Initial optimization with increased max iterations and tighter tolerance
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 1500, "ftol": 1e-10})
+    
+    # Controlled radius expansion for most isolated cluster
+    if res.success:
+        v = res.x
+        # Calculate distances from each circle to all others
+        x = v[0::3]
+        y = v[1::3]
+        r = v[2::3]
+        dist = np.zeros((n, n))
+        for i in range(n):
+            for j in range(n):
+                dx = x[i] - x[j]
+                dy = y[i] - y[j]
+                dist[i, j] = dx*dx + dy*dy
+        # Find the cluster with the largest minimum distance
+        min_dist = np.min(dist, axis=1)
+        isolated_idx = np.argsort(min_dist)[-5:]  # Select 5 most isolated circles
+        
+        # Increase radius for these circles by a controlled amount
+        max_radius_increase = 0.05
+        for i in isolated_idx:
+            v[3*i+2] = np.clip(v[3*i+2] + max_radius_increase, 1e-4, 0.5)
+        
+        # Re-evaluate with updated radii
+        res = minimize(neg_sum_radii, v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 300, "ftol": 1e-10})
+    
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())
+```

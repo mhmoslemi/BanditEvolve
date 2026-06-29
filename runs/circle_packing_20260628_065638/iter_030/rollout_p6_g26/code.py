@@ -1,0 +1,212 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = 6  # Increased from 5 to 6 for better spread and edge utilization
+    
+    # Seed for deterministic generation and reproducibility
+    np.random.seed(19910305)
+    
+    # Compute grid dimensions with adaptive col-rows, ensuring squareness
+    cols = int(np.ceil(np.sqrt(n)))
+    rows = (n + cols - 1) // cols
+    # Compute spatial hashing with adaptive radius-aware perturbation
+    spatial_hash = np.random.rand(n, 3)  # x, y, and radial perturbation weight
+    # Initialize with advanced layout that ensures edge spacing
+    xs = []
+    ys = []
+    for i in range(n):
+        row = i // cols
+        col = i % cols
+        # Center in grid with adaptive scaling (0.5/sqrt(n)) for edge spacing
+        x_center = (col + 0.5) / cols
+        y_center = (row + 0.5) / rows
+        # Spatial hash perturbation for better geometric diversity
+        x = x_center + spatial_hash[i, 0] * np.random.uniform(-0.15, 0.15)
+        y = y_center + spatial_hash[i, 1] * np.random.uniform(-0.15, 0.15)
+        # Add radial-aware staggered shift - higher radii get more stagger
+        x += np.random.uniform(-0.2, 0.2) * (spatial_hash[i, 2] * 1.5)
+        # Apply row-based stagger to break symmetry
+        if row % 2 == 1:
+            x += 0.5 / cols * (np.random.uniform(-0.1, 0.1) + spatial_hash[i, 2])
+        xs.append(x)
+        ys.append(y)
+    
+    # Radial estimation with adaptive initialization and better density awareness
+    base_radius = 0.4 / cols  # Increased base radius to 0.4 for better spacing
+    # Add slight variation in initial radius with radial-aware perturbation
+    radii_est = np.full(n, base_radius) + np.random.uniform(-0.02, 0.02, n)
+    # Apply small radius-aware perturbations based on spatial hash
+    for i in range(n):
+        radii_est[i] *= 1.0 + np.random.uniform(-0.03, 0.02) * spatial_hash[i, 2]
+    # Cap radii to ensure non-overlap
+    # Use base_radius * 1.0 as safe base with adaptive upper bound
+    r0 = np.clip(radii_est, 1e-3, 0.43)  # Max radius adjusted for tighter packing
+    
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = r0
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.43)]  # Upper bound is now stricter
+    
+    # Cost function with explicit gradient for optimization robustness
+    def neg_sum_radii(v):
+        # Extract centers and radii
+        centers = np.column_stack([v[0::3], v[1::3]])
+        radii = v[2::3]
+        # We use a vectorized distance matrix to calculate overlap
+        dx = centers[:, 0, np.newaxis] - centers[:, np.newaxis, 0]
+        dy = centers[:, 1, np.newaxis] - centers[:, np.newaxis, 1]
+        dists = np.sqrt(dx**2 + dy**2)
+        # Calculate sum of radii as cost
+        cost = -np.sum(radii)
+        # Add soft overlap penalty with adaptive weight per distance
+        penalty = np.zeros_like(radii)
+        for i in range(n):
+            for j in range(i + 1, n):
+                # Only apply penalty if distance is within 98% of radius sum
+                overlap = dists[i, j] < (radii[i] + radii[j]) - 1e-8
+                if overlap:
+                    excess = (radii[i] + radii[j] - dists[i, j]) / (radii[i] + radii[j])
+                    penalty[i] += excess
+                    penalty[j] += excess
+        cost += 0.01 * np.sum(penalty)  # Soft penalty for overlap
+        return cost
+    
+    # Constraint handling optimized with batch functions
+    # Boundary constraints using vectorized funs (no lambda closures)
+    cons = []
+    for i in range(n):
+        # Left + radius <= 1
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        # Right - radius >= 0
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        # Bottom + radius <= 1
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+        # Top - radius >= 0
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+    
+    # Overlap constraints optimized with batched vectorization
+    # Use numpy operations to compute pairwise distances in vectorized form
+    def compute_overlap_constraints(v):
+        # Extract centers and radii
+        centers = np.column_stack([v[0::3], v[1::3]])
+        radii = v[2::3]
+        # Compute pairwise squared distances
+        dx = centers[:, 0, np.newaxis] - centers[:, np.newaxis, 0]
+        dy = centers[:, 1, np.newaxis] - centers[:, np.newaxis, 1]
+        dists_sq = dx**2 + dy**2
+        # Apply overlap constraint: distance >= (r_i + r_j)
+        # Convert distances to constraint values which must be >= 0
+        constraints = dists_sq - (radii[:, np.newaxis] + radii[np.newaxis, :])**2
+        return constraints.flatten()
+    
+    # Since SLSQP can't handle vectorized constraints directly, create constraints with explicit indexing
+    # But we instead create a single constraint function that returns all constraints
+    # (the optimization routine will accept these as a sequence of constraints)
+    # To avoid closure-based lambda issues, create these as separate functions
+    cons_overlap = []
+    for i in range(n):
+        for j in range(i + 1, n):
+            def constraint_func(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                r_i = v[3*i+2]
+                r_j = v[3*j+2]
+                return dx*dx + dy*dy - (r_i + r_j)**2
+            cons_overlap.append({"type": "ineq", "fun": constraint_func})
+    
+    # Combine all constraints
+    cons.extend(cons_overlap)
+    
+    # Initial optimization with adaptive convergence checks and enhanced solver behavior
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={
+        "maxiter": 1200,  # Slightly more iterations for convergence
+        "ftol": 1e-10,    # Tighter tolerance for high precision
+        "gtol": 1e-10,    # For gradient tolerance
+        "eps": 1e-8,      # For numerical precision
+        "disp": False   # No print output
+    })
+    
+    # Post-optimization phase with multiple refinement steps:
+    # 1. Local perturbation and reconfiguration with directional constraints
+    # 2. Spatial hashing for more diversity in configuration
+    # 3. Radius expansion with explicit geometry-aware constraints
+    
+    if res.success:
+        v = res.x
+        radii = v[2::3]
+        centers = np.column_stack([v[0::3], v[1::3]])
+        # First refinement: directional optimization via directional perturbation
+        for _ in range(2):
+            # Random spatial hashing for better diversity
+            spatial_perturb = np.random.rand(n, 2) * 0.02
+            perturbed_v = v.copy()
+            for i in range(n):
+                perturbed_v[3*i] += spatial_perturb[i, 0] * (radii[i] / np.mean(radii))
+                perturbed_v[3*i+1] += spatial_perturb[i, 1] * (radii[i] / np.mean(radii))
+            # Re-evaluate with perturbed parameters
+            res = minimize(neg_sum_radii, perturbed_v, method="SLSQP", bounds=bounds,
+                           constraints=cons, options={
+                "maxiter": 300, "ftol": 1e-11, "gtol": 1e-11, "eps": 1e-8
+            })
+            v = res.x
+            radii = v[2::3]
+            centers = np.column_stack([v[0::3], v[1::3]])
+    
+    # Second refinement: radius expansion with constraint-aware growth
+    if res.success:
+        v = res.x
+        centers = np.column_stack([v[0::3], v[1::3]])
+        radii = v[2::3]
+        # Calculate pairwise distance matrix
+        dx = centers[:, 0, np.newaxis] - centers[:, np.newaxis, 0]
+        dy = centers[:, 1, np.newaxis] - centers[:, np.newaxis, 1]
+        dists = np.sqrt(dx**2 + dy**2)
+        
+        # Calculate radial growth per circle, prioritizing least constrained
+        min_dists = np.min(dists, axis=1)
+        min_dists[min_dists < 1e-8] = np.inf  # Avoid division by zero
+        # Weighted growth: higher growth to circles with greater minimal distance
+        # We use a soft maximum to prioritize growth to most isolated circles
+        isolates = np.argsort(-min_dists)
+        # Add soft expansion with geometric constraint and constraint-aware growth
+        # Compute expansion per circle
+        expansion_radius = 0.003 * (1 + np.random.rand(n) * 0.3)
+        # Initialize radial growth to avoid over-expansion
+        growth = np.zeros(n)
+        
+        # Apply growth to top 10 most isolated circles
+        for i in range(min(10, n)):
+            idx = isolates[i]
+            # Compute distance to all others and find minimum
+            min_dist = np.min(dists[idx, :])
+            # Growth is bounded by distance to the nearest neighbor
+            max_grow = (min_dist - 2 * radii[idx]) / (min_dist / 10) if min_dist > 1e-6 else 0.001
+            # Apply geometric growth based on available space
+            growth[idx] = expansion_radius[i] * (max_grow * 0.8 + 0.2)
+        
+        # Apply growth with constraint satisfaction
+        v_new = v.copy()
+        v_new[2::3] = radii + growth
+        # Re-evaluate with expanded radii
+        res = minimize(neg_sum_radii, v_new, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={
+            "maxiter": 300, "ftol": 1e-10, "gtol": 1e-10, "eps": 1e-8
+        })
+        v = res.x
+    
+    if res.success:
+        v = res.x
+        # Final check for valid packing
+    else:
+        # Fallback to original v0 if optimization failed
+        v = v0
+    
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, 0.43)
+    return centers, radii, float(radii.sum())

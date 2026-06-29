@@ -1,0 +1,21 @@
+{
+  "record": {
+    "kind": "mutate",
+    "band": "elite",
+    "arm_idx": 12,
+    "arm_source": "reflection",
+    "outcome": "invalid:eval",
+    "value": null,
+    "dmu": null,
+    "dsigma": null
+  },
+  "eval": {
+    "per_seed": {
+      "0": 0.0
+    },
+    "value": 0.0,
+    "valid": false,
+    "raw": null,
+    "msg": "run_failed:index 114 is out of bounds for axis 0 with size 26"
+  }
+}

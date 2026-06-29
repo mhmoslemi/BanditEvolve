@@ -1,0 +1,218 @@
+```python
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = 6  # 6 columns for better spatial dispersion
+    rows = (n + cols - 1) // cols  # dynamic row allocation using ceiling division
+    
+    # Advanced spatial initialization using randomized geometric clustering with symmetry breaking
+    xs = []
+    ys = []
+    for i in range(n):
+        row = i // cols
+        col = i % cols
+        x_center = (col + 0.5) / cols
+        y_center = (row + 0.5) / rows
+        
+        # Add asymmetric perturbation in random walk style to break symmetry
+        # Introduce small spatial correlation to promote non-uniform distribution
+        perturbation = np.random.randn(2) * 0.04  # slight random movement
+        x = x_center + perturbation[0]
+        y = y_center + perturbation[1]
+        # Shift alternate rows to create offset alignment
+        if row % 2 == 1:
+            x += 0.5 / cols  # horizontal shift for staggered grid
+        # Add radial displacement to simulate soft clustering effect
+        radial_displacement = np.random.randn() * 0.02
+        x += radial_displacement * (col / cols)
+        y += radial_displacement * (row / rows)
+        
+        x = np.clip(x, 0.0, 1.0)
+        y = np.clip(y, 0.0, 1.0)
+        xs.append(x)
+        ys.append(y)
+    
+    # Radius scaling with spatial density-aware coefficient and dynamic adjustment
+    # Spatial density factor: higher density reduces available radius, lower density increases
+    base_row_density = 1.0 / rows  # inverse of row spacing
+    rows_density_factor = np.sqrt(base_row_density)  # non-linear density scaling
+    base_column_density = 1.0 / cols  # inverse of column spacing
+    cols_density_factor = np.sqrt(base_column_density)
+    spatial_density_factor = (rows_density_factor + cols_density_factor) / 2.0
+    
+    # Radius calculation with adaptive density and optimization-friendly scaling
+    # Base radius is tuned to ensure dense packability with 26 circles
+    base_radius = 0.365 / (cols + rows) * (1.2 + spatial_density_factor)  # enhanced base with density
+    r0 = base_radius * np.ones(n) - 1e-3  # subtract small to avoid singularities
+
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = r0
+
+    # Ensure bounds match decision vector length
+    bounds = []
+    for _ in range(n):
+        bounds.append((0.0, 1.0))   # x bounds
+        bounds.append((0.0, 1.0))   # y bounds
+        bounds.append((1e-4, 0.5))  # radius bounds
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])  # negate for maximization
+
+    # Vectorized boundary constraints with strict and optimized lambda closure
+    cons = []
+    for i in range(n):
+        # Left side constraint: x_i ≥ r_i
+        cons.append({"type": "ineq", "fun": (lambda v, i=i: v[3*i] - v[3*i+2])})
+        # Right side constraint: x_i + r_i ≤ 1
+        cons.append({"type": "ineq", "fun": (lambda v, i=i: 1.0 - v[3*i] - v[3*i+2])})
+        # Bottom side constraint: y_i ≥ r_i
+        cons.append({"type": "ineq", "fun": (lambda v, i=i: v[3*i+1] - v[3*i+2])})
+        # Top side constraint: y_i + r_i ≤ 1
+        cons.append({"type": "ineq", "fun": (lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2])})
+
+    # Vectorized circle-circle constraints with optimized lambda closure and
+    # precomputed indices to avoid repeated closure generation
+    for i in range(n):
+        for j in range(i + 1, n):
+            cons.append({
+                "type": "ineq",
+                "fun": (lambda v, i=i, j=j: 
+                    (v[3*i] - v[3*j])**2 + (v[3*i+1] - v[3*j+1])**2
+                    - (v[3*i+2] + v[3*j+2])**2
+                )
+            })
+
+    # Initial optimization with enhanced convergence parameters
+    res = minimize(neg_sum_radii, v0, method="SLSQP",
+                   bounds=bounds, constraints=cons,
+                   options={"maxiter": 1500, "ftol": 1e-12, "gtol": 1e-11, "eps": 1e-10})
+
+    if not res.success:
+        print("Initial optimization failed")
+        # Adaptive fallback grid with randomized offset and staggered grid logic
+        xs = []
+        ys = []
+        for i in range(n):
+            row = i // cols
+            col = i % cols
+            x_center = (col + 0.5) / cols
+            y_center = (row + 0.5) / rows
+            # Add asymmetric spatial perturbation and radial displacement
+            perturbation = np.random.randn(2) * 0.04
+            x = x_center + perturbation[0]
+            y = y_center + perturbation[1]
+            if row % 2 == 1:
+                x += 0.5 / cols
+            radial_displacement = np.random.randn() * 0.02
+            x += radial_displacement * (col / cols)
+            y += radial_displacement * (row / rows)
+            x = np.clip(x, 0.0, 1.0)
+            y = np.clip(y, 0.0, 1.0)
+            xs.append(x)
+            ys.append(y)
+        v0 = np.empty(3 * n)
+        v0[0::3] = np.array(xs)
+        v0[1::3] = np.array(ys)
+        v0[2::3] = r0
+        res = minimize(neg_sum_radii, v0, method="SLSQP", 
+                       bounds=bounds, constraints=cons,
+                       options={"maxiter": 1500, "ftol": 1e-12, "gtol": 1e-11, "eps": 1e-10})
+
+    # Adaptive spatial perturbation with directional bias
+    if res.success:
+        v = res.x
+        radii = v[2::3]
+        centers = np.column_stack([v[0::3], v[1::3]])
+        
+        # Generate directional spatial hash for gradient-aware perturbation
+        spatial_hash = np.random.rand(n, 2) * 0.05
+        perturbed_v = v.copy()
+        for i in range(n):
+            dx_perturb = spatial_hash[i, 0] * (radii[i] / np.mean(radii) * (1.05 + 0.1 * np.random.rand()))  
+            dy_perturb = spatial_hash[i, 1] * (radii[i] / np.mean(radii) * (1.05 + 0.1 * np.random.rand()))
+            # Apply directional perturbation biased towards low density regions
+            low_density_factor = np.random.rand() * 0.3  # slight directional bias
+            perturbed_v[3*i] += dx_perturb * (1.0 + low_density_factor)
+            perturbed_v[3*i+1] += dy_perturb * (1.0 + low_density_factor)
+        
+        # Secondary optimization with same constraints
+        res = minimize(neg_sum_radii, perturbed_v, method="SLSQP", 
+                       bounds=bounds, constraints=cons,
+                       options={"maxiter": 700, "ftol": 1e-12, "gtol": 1e-11, "eps": 1e-10})
+
+    # Advanced targeted expansion with dynamic spatial constraint analysis
+    if res.success:
+        v = res.x
+        radii = v[2::3]
+        centers = np.column_stack([v[0::3], v[1::3]])
+        
+        # Vectorized distance matrix for constraint analysis with memory optimization
+        dx = centers[:, np.newaxis, 0] - centers[np.newaxis, :, 0]
+        dy = centers[:, np.newaxis, 1] - centers[np.newaxis, :, 1]
+        dists = np.sqrt(dx**2 + dy**2)  # distance matrix
+        
+        # Find least constrained circle using dynamic min distance criterion
+        # Use max of minimal distance to other circles to optimize expansion
+        min_dists = np.min(dists, axis=1)
+        least_constrained_idx = np.argmax(min_dists)  # index with farthest neighbors
+        
+        # Calculate growth with dynamic density-aware scaling
+        current_total = np.sum(radii)
+        target_growth = 0.01  # dynamic target for expansion
+        expansion_target = current_total + target_growth
+        expansion_rate = target_growth / (n - 1) * (current_total / np.sum(radii))
+        
+        # Create expansion vector with enhanced directional expansion
+        new_radii = radii.copy()
+        new_radii[least_constrained_idx] += expansion_rate * 1.3
+        
+        # Stochastic expansion with bias towards high density regions
+        for i in range(n):
+            if i != least_constrained_idx:
+                expansion_i = expansion_rate * (1.0 + 0.1 * np.random.rand())
+                # Add density-aware bias: higher density circles get smaller expansions
+                radius_density_ratio = radii[i] / np.mean(radii)
+                expansion_i *= (1.0 - radius_density_ratio * 0.3)
+                new_radii[i] += expansion_i
+        
+        # Apply expansion with validation and iterative correction
+        for _ in range(4):  # iterative refinement with directional constraints
+            expanded_v = v.copy()
+            expanded_v[2::3] = new_radii
+            expanded_centers = np.column_stack([expanded_v[0::3], expanded_v[1::3]])
+            
+            valid = True
+            for i in range(n):
+                for j in range(i + 1, n):
+                    dx_exp = expanded_centers[i, 0] - expanded_centers[j, 0]
+                    dy_exp = expanded_centers[i, 1] - expanded_centers[j, 1]
+                    dist_exp = np.sqrt(dx_exp**2 + dy_exp**2)
+                    if dist_exp < new_radii[i] + new_radii[j] - 1e-12:
+                        valid = False
+                        break
+                if not valid:
+                    break
+            
+            if valid:
+                break
+            else:
+                # Reduce expansion based on density-aware factor
+                new_radii = radii + (new_radii - radii) * 0.95
+        
+        # Update vector and re-optimize
+        v_new = v.copy()
+        v_new[2::3] = new_radii
+        
+        # Final optimization with directional constraint bias
+        res = minimize(neg_sum_radii, v_new, method="SLSQP", 
+                       bounds=bounds, constraints=cons,
+                       options={"maxiter": 800, "ftol": 1e-12, "gtol": 1e-11, "eps": 1e-10})
+
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())
+```

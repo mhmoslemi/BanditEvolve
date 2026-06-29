@@ -1,0 +1,108 @@
+```python
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = 5
+    rows = (n + cols - 1) // cols
+    
+    # Random geometric clustering initialization
+    np.random.seed(42)  # Ensure reproducibility
+    cluster_centers = np.random.rand(4, 2)
+    cluster_centers = np.vstack((cluster_centers, np.array([0.5, 0.5])))
+    cluster_centers = cluster_centers / 2.0  # Normalize to [0,1] range
+    
+    # Assign points to clusters with a radial distribution
+    xs = []
+    ys = []
+    for _ in range(n):
+        cluster_idx = np.random.choice(len(cluster_centers))
+        theta = np.random.rand() * 2 * np.pi
+        r = np.sqrt(np.random.rand()) * 0.3
+        dx = r * np.cos(theta)
+        dy = r * np.sin(theta)
+        x = cluster_centers[cluster_idx, 0] + dx
+        y = cluster_centers[cluster_idx, 1] + dy
+        xs.append(x)
+        ys.append(y)
+    
+    r0 = 0.3 / cols - 1e-3
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = np.full(n, r0)
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    cons = []
+    for i in range(n):
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+    
+    for i in range(n):
+        for j in range(i + 1, n):
+            def constraint_func(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                return dx*dx + dy*dy - (v[3*i+2] + v[3*j+2])**2
+            cons.append({"type": "ineq", "fun": constraint_func})
+
+    # Initial optimization with increased max iterations and tighter tolerance
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 1500, "ftol": 1e-10})
+    
+    # Trigger controlled radius expansion on the most tightly packed cluster
+    if res.success:
+        v = res.x
+        centers = v[0::3], v[1::3]
+        radii = v[2::3]
+        
+        # Compute pairwise distances and identify cluster memberships
+        dist_matrix = np.zeros((n, n))
+        for i in range(n):
+            for j in range(n):
+                if i != j:
+                    dx = centers[0][i] - centers[0][j]
+                    dy = centers[1][i] - centers[1][j]
+                    dist_matrix[i, j] = np.sqrt(dx*dx + dy*dy)
+        
+        # Assign cluster indices based on proximity to original cluster centers
+        cluster_assignments = np.argmin(np.abs(dist_matrix[:, np.newaxis, :] - cluster_centers[np.newaxis, :, :]), axis=2)
+        cluster_assignments = np.argmax(np.sum(cluster_assignments == np.arange(len(cluster_centers)), axis=1))
+        
+        # Identify the cluster with the smallest average inter-circle distance
+        cluster_distances = []
+        for cluster_id in range(len(cluster_centers)):
+            cluster_mask = cluster_assignments == cluster_id
+            cluster_mask = np.logical_and(cluster_mask, np.arange(n) != np.arange(n))
+            if np.sum(cluster_mask) > 1:
+                distances = dist_matrix[np.ix_(cluster_mask, cluster_mask)]
+                cluster_distances.append(np.mean(distances[distances > 0]))
+        
+        if cluster_distances:
+            target_cluster = np.argmin(cluster_distances)
+            cluster_mask = cluster_assignments == target_cluster
+            cluster_mask = np.logical_and(cluster_mask, np.arange(n) != np.arange(n))
+            
+            # Expand radii of the most tightly packed cluster
+            for i in np.arange(n)[cluster_mask]:
+                v[3*i+2] += 0.005
+                v[3*i] += np.random.uniform(-0.01, 0.01)
+                v[3*i+1] += np.random.uniform(-0.01, 0.01)
+            
+            # Re-optimization after controlled expansion
+            res = minimize(neg_sum_radii, v, method="SLSQP", bounds=bounds,
+                           constraints=cons, options={"maxiter": 300, "ftol": 1e-10})
+    
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())
+```

@@ -1,0 +1,218 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = 5
+    rows = (n + cols - 1) // cols
+
+    # Initialize positions with randomized geometric clustering and staggered grid
+    xs = []
+    ys = []
+    for i in range(n):
+        row = i // cols
+        col = i % cols
+        base_x = (col + 0.5) / cols
+        base_y = (row + 0.5) / rows
+
+        # Introduce spatial noise for diverse cluster formation
+        spatial_noise = np.random.uniform(-0.02, 0.02, size=2)
+        x = base_x + spatial_noise[0]
+        y = base_y + spatial_noise[1]
+
+        # Create staggered grid with dynamic vertical displacement
+        if row % 2 == 1:
+            x += 0.5 / cols * np.random.uniform(0.1, 0.3)
+
+        # Ensure bounds by clamping
+        x = np.clip(x, 0.0, 1.0)
+        y = np.clip(y, 0.0, 1.0)
+
+        xs.append(x)
+        ys.append(y)
+    
+    r0 = 0.35 / cols - 1e-4
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = np.full(n, r0)
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (np.finfo(float).eps, 0.5)]  # Ensure numerical stability for small radii
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])  # Minimize negative sum (maximize sum)
+
+    # Vectorized constraints for boundaries
+    cons = []
+    for i in range(n):
+        # Left side
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        # Right side
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        # Bottom side
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        # Top side
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+
+    # Vectorized overlap constraints with efficient vectorization
+    # Precompute all pairwise distances in a single vectorized operation
+    # This avoids the overhead of explicit for loops over i and j
+    dx = np.subtract.outer(v0[0::3], v0[0::3])
+    dy = np.subtract.outer(v0[1::3], v0[1::3])
+    dist_sq = dx**2 + dy**2
+    radial_sum = np.add.outer(v0[2::3], v0[2::3])
+    radial_sq = radial_sum**2
+
+    # Vectorized constraint function for pairwise overlaps
+    def pairwise_overlap_constraint(v):
+        dx = np.subtract.outer(v[0::3], v[0::3])
+        dy = np.subtract.outer(v[1::3], v[1::3])
+        dist_sq = dx**2 + dy**2
+        radial_sum = np.add.outer(v[2::3], v[2::3])
+        return dist_sq - radial_sum**2
+
+    # For each pair, create an ineq constraint that is the pairwise overlap function
+    for i in range(n):
+        for j in range(i + 1, n):
+            # Use delayed lambda with fixed i,j to avoid closure capture issues
+            # Lambda captures current i,j values
+            cons.append({"type": "ineq", "fun": lambda v, i=i, j=j: pairwise_overlap_constraint(v)[i,j]})
+    
+    # Initial optimization with increased max iterations and tighter tolerance
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 1500, "ftol": 1e-12, "eps": 1e-8})
+
+    # Forced geometric dissection: isolate and reconfigure two most interacting circles
+    if res.success:
+        v = res.x
+        # Vectorize pairwise distances using matrix operation
+        dx = np.subtract.outer(v[0::3], v[0::3])
+        dy = np.subtract.outer(v[1::3], v[1::3])
+        dist = np.sqrt(dx**2 + dy**2)
+        
+        # Compute pairwise interaction strength for non-adjacent circles
+        # Using weighted distance sum to reflect effective cluster interaction
+        interaction_weights = 1.0 / (dist + 1e-12)  # Avoid zero division
+        interaction_strength = np.sum(interaction_weights, axis=1)
+        
+        # Find top two circles with highest interaction strength
+        top_idx = np.argsort(interaction_strength)[-2:]
+
+        # Generate a spatial perturbation matrix for these two circles
+        # Use geometric hashing and dynamic scaling to inject reconfiguration
+        hash_space = np.random.rand(2, 2) * 0.05
+        expansion_scale = 0.5 * (np.std(interaction_strength) / np.mean(interaction_strength))
+        perturbation = np.random.rand(2, 2) * (1e-3 + expansion_scale)
+        
+        # Apply spatial perturbation and radius expansion
+        new_v = v.copy()
+        for i in top_idx:
+            new_v[3*i] += hash_space[0, 0] + perturbation[0, 0] * interaction_strength[i]
+            new_v[3*i+1] += hash_space[0, 1] + perturbation[0, 1] * interaction_strength[i]
+            new_v[3*i+2] += 0.0005 + np.random.uniform(-0.0001, 0.0001) * interaction_strength[i]
+
+        # Reoptimize with perturbation
+        res = minimize(neg_sum_radii, new_v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 300, "ftol": 1e-12, "eps": 1e-8})
+    
+    # Novel adjacency constraint: enforce complete reorder of layout topology
+    if res.success:
+        v = res.x
+        # Vectorize pairwise distances again
+        dx = np.subtract.outer(v[0::3], v[0::3])
+        dy = np.subtract.outer(v[1::3], v[1::3])
+        dist = np.sqrt(dx**2 + dy**2)
+        
+        # Compute adjacency matrix using threshold-based binarization
+        adj_matrix = (dist < 0.15) * (dist > 0.01)
+        adj_matrix = np.triu(adj_matrix, k=1)  # Focus on non-diagonal adjacency
+        top_adj_idx = np.argwhere(adj_matrix).flatten()
+        if len(top_adj_idx) >= 2:
+            a, b = top_adj_idx[0], top_adj_idx[1]
+            # Inject force-based topology reconfiguration
+            # Create a spatial gradient that pulls these points apart
+            # Apply a perturbation to break existing adjacency
+            dx = v[3*a] - v[3*b]
+            dy = v[3*a+1] - v[3*b+1]
+            # Apply a directional repulsion
+            repulsion_v = np.array([0.0, 0.0])
+            if dx != 0:
+                repulsion_v[0] = dx / abs(dx) * 0.03
+            if dy != 0:
+                repulsion_v[1] = dy / abs(dy) * 0.03
+            
+            new_v = v.copy()
+            new_v[3*a] += repulsion_v[0]
+            new_v[3*a+1] += repulsion_v[1]
+            new_v[3*b] -= repulsion_v[0]
+            new_v[3*b+1] -= repulsion_v[1]
+            
+            res = minimize(neg_sum_radii, new_v, method="SLSQP", bounds=bounds,
+                           constraints=cons, options={"maxiter": 300, "ftol": 1e-12, "eps": 1e-8})
+    
+    # Constrained reconfiguration with stochastic displacement and adaptive tolerance
+    if res.success:
+        v = res.x
+        # Generate a spatial displacement map based on radii distribution
+        displacement = np.random.rand(n, 2) * 0.02 * (v[2::3] / (np.mean(v[2::3])+1e-5))
+        displaced_v = v.copy()
+        for i in range(n):
+            displaced_v[3*i] += displacement[i, 0]
+            displaced_v[3*i+1] += displacement[i, 1]
+        
+        # Re-optimize with perturbation
+        res = minimize(neg_sum_radii, displaced_v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 300, "ftol": 1e-12, "eps": 1e-8})
+    
+    # Targeted radius expansion on least constrained circle with adaptive constraint enforcement
+    if res.success:
+        v = res.x
+        radii = v[2::3]
+        centers = np.column_stack([v[0::3], v[1::3]])
+
+        # Precompute all pairwise distances in a single vectorized operation
+        dx = np.subtract.outer(centers[:, 0], centers[:, 0])
+        dy = np.subtract.outer(centers[:, 1], centers[:, 1])
+        dist = np.sqrt(dx**2 + dy**2)
+
+        # Compute least constrained circle by maximizing minimum distance to others
+        min_dists = np.min(dist, axis=1)
+        least_constrained_idx = np.argmax(min_dists)
+
+        # Compute growth based on current total sum and potential for expansion
+        current_total = np.sum(radii)
+        target_growth = 0.006
+        expansion_factor = target_growth / (n - 1) * (current_total / np.sum(radii))
+        
+        # Create expansion vector with targeted expansion on least constrained
+        new_radii = radii.copy()
+        new_radii[least_constrained_idx] += expansion_factor * 1.2  # Slight over-expansion
+        for i in range(n):
+            if i != least_constrained_idx:
+                expansion_i = expansion_factor * (1.0 + 0.1 * np.random.rand())  # Stochastic expansion
+                new_radii[i] += expansion_i
+
+        # Apply expansion with constraint validation using vectorized method
+        def apply_expanded_radii(v_expanded):
+            centers_expanded = np.column_stack([v_expanded[0::3], v_expanded[1::3]])
+            dist_expanded = np.sqrt(
+                (centers_expanded[:, np.newaxis, 0] - centers_expanded[np.newaxis, :, 0])**2 +
+                (centers_expanded[:, np.newaxis, 1] - centers_expanded[np.newaxis, :, 1])**2
+            )
+            overlaps = (dist_expanded < new_radii[:, np.newaxis] + new_radii[np.newaxis, :] - 1e-12).any(axis=1)
+            return not overlaps.any()
+
+        # Use gradient-based constrained optimization to apply expansion
+        # Create a new vector with expansion
+        expanded_v = v.copy()
+        expanded_v[2::3] = new_radii[:]  # Directly replace radii vector
+
+        # Reoptimize with constraints
+        res = minimize(neg_sum_radii, expanded_v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 300, "ftol": 1e-12, "eps": 1e-8})
+    
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())

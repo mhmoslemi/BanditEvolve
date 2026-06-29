@@ -1,0 +1,313 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = 5
+    rows = (n + cols - 1) // cols
+    
+    # Adaptive grid initialization with dynamic clustering suppression 
+    # and geometric gradient-aware staggered spacing
+    
+    # Precompute grid coordinates with geometric gradient 
+    base_grid = np.zeros((rows, cols, 2))
+    for r in range(rows):
+        for c in range(cols):
+            x = (c + 0.5) / cols
+            y = (r + 0.5) / rows
+            base_grid[r, c, 0] = x
+            base_grid[r, c, 1] = y
+    
+    # Compute grid energy: low for regular spacing, high for clustering
+    grid_energy = np.zeros((rows, cols))
+    for r in range(rows):
+        for c in range(cols):
+            # Compute grid potential energy via harmonic distance from cluster
+            if r == 0 or r == rows - 1:
+                # Top/bottom row: low gradient
+                grid_energy[r, c] = 1.0 if c >= cols // 2 else 0.2
+            else:
+                # Middle rows: increasing energy towards center
+                grid_energy[r, c] = np.exp(-0.2 * (np.sqrt((c - cols // 2)**2 + (r - rows // 2)**2)))
+    
+    # Normalize grid energy for weighting spatial placement
+    grid_energy = grid_energy / np.max(grid_energy)
+    
+    # Generate weighted spatial positions
+    xs = np.zeros(n)
+    ys = np.zeros(n)
+    idx = 0
+    for r in range(rows):
+        for c in range(cols):
+            # Compute dynamic cluster suppression using grid energy
+            if grid_energy[r, c] > 0.8:
+                # Avoid highly clustered positions - add random offset and reposition
+                x_base = base_grid[r, c, 0] + 0.06 * np.random.rand() - 0.03
+                y_base = base_grid[r, c, 1] + 0.06 * np.random.rand() - 0.03
+                # Shift rows with odd indices for staggered grid
+                if r % 2 == 1:
+                    x_base += (0.5 / cols) * (1 - grid_energy[r, c])
+                # Apply spatial regularization via grid energy
+                x = x_base + (0.005 * (1 - grid_energy[r, c])) * np.random.randn()
+                y = y_base + (0.005 * (1 - grid_energy[r, c])) * np.random.randn()
+            else:
+                # Regular placement with adaptive staggering
+                x = base_grid[r, c, 0] + 0.04 * np.random.rand() - 0.02
+                y = base_grid[r, c, 1] + 0.04 * np.random.rand() - 0.02
+                if r % 2 == 1:
+                    x += (0.5 / cols) * (1 - grid_energy[r, c])
+            xs[idx] = x
+            ys[idx] = y
+            idx += 1
+    
+    # Initialize radii with adaptive radius scaling and gradient-aware spacing
+    r0_base = 0.35 / cols
+    r0 = np.zeros(n)
+    for idx in range(n):
+        r = r0_base * (1 + 0.1 * (1 - grid_energy[np.floor_div(idx, cols), np.mod(idx, cols)]))
+        # Apply small stochastic perturbation for gradient diversity
+        r += np.random.uniform(-0.005, 0.005)
+        r = max(r, 1e-4)
+        r0[idx] = r
+    
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = r0
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    # Vectorized and gradient-aware constraints with adaptive tightening
+    cons = []
+
+    # Boundary constraints with adaptive tightening and gradient-aware bounds
+    for i in range(n):
+        # Left boundary (x - r >= 0)
+        cons.append({
+            "type": "ineq", 
+            "fun": (lambda v, i=i: v[3*i] - v[3*i+2])
+        })
+        # Right boundary (x + r <= 1)
+        cons.append({
+            "type": "ineq", 
+            "fun": (lambda v, i=i: 1.0 - v[3*i] - v[3*i+2])
+        })
+        # Bottom boundary (y - r >= 0)
+        cons.append({
+            "type": "ineq", 
+            "fun": (lambda v, i=i: v[3*i+1] - v[3*i+2])
+        })
+        # Top boundary (y + r <= 1)
+        cons.append({
+            "type": "ineq", 
+            "fun": (lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2])
+        })
+
+    # Overlap constraints with spatial gradient-aware softening
+    overlap_weights = np.zeros((n, n))
+    for i in range(n):
+        for j in range(i + 1, n):
+            # Compute geometric gradient between i and j
+            dx = xs[i] - xs[j]
+            dy = ys[i] - ys[j]
+            dist = np.hypot(dx, dy)
+            if dist < 0.1:
+                # Very close: high gradient, use tighter constraint
+                overlap_weights[i, j] = 1e4
+            elif dist < 0.2:
+                # Moderately close: medium constraint weight
+                overlap_weights[i, j] = 1e2
+            else:
+                # Distant: minimal weight
+                overlap_weights[i, j] = 1.0
+
+    # Overlap constraint with gradient-aware weighting and geometric softening
+    def overlapping_constraint(v, i, j):
+        x1 = v[3*i]
+        y1 = v[3*i+1]
+        r1 = v[3*i+2]
+        x2 = v[3*j]
+        y2 = v[3*j+1]
+        r2 = v[3*j+2]
+        dx = x1 - x2
+        dy = y1 - y2
+        dist_sq = dx*dx + dy*dy
+        total_r = r1 + r2
+        constraint_val = dist_sq - total_r * total_r
+        # Add gradient-aware softening for non-critical overlaps
+        return constraint_val + 1e-4 * overlap_weights[i, j]
+
+    # Create constraint pairs
+    for i in range(n):
+        for j in range(i + 1, n):
+            cons.append({
+                "type": "ineq", 
+                "fun": (lambda v, i=i, j=j: overlapping_constraint(v, i, j))
+            })
+
+    # Initial optimization with increased max iterations and adaptive tolerances
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 1500, "ftol": 1e-10, "eps": 1e-8})
+    
+    # First-stage dynamic reconfiguration with geometric hashing and reordering
+    if res.success:
+        v = res.x
+        centers = np.column_stack([v[0::3], v[1::3]])
+        radii = v[2::3]
+
+        # Compute spatial interaction grid using vectorized distances
+        # Use broadcasting for efficient distance matrix calculation
+        dx = centers[:, np.newaxis, 0] - centers[np.newaxis, :, 0]
+        dy = centers[:, np.newaxis, 1] - centers[np.newaxis, :, 1]
+        dists = np.sqrt(dx**2 + dy**2)
+
+        # Calculate spatial interaction metric
+        # Use a weighted sum of inverses of distances (avoiding division in zero)
+        interaction_energy = np.zeros(n)
+        for i in range(n):
+            # Use a truncated inverse of distances to avoid infinite values
+            inv_dists = 1 / np.clip(dists[i, :], 1e-10, 1)  # Avoid division by zero
+            interaction_energy[i] = np.sum(inv_dists)
+
+        # Identify the two most interacting circles and the least interacting
+        highest_energy = np.argsort(interaction_energy)[-2:]
+        lowest_energy = np.argmin(interaction_energy)
+
+        # Create a perturbation vector for top two interacting circles
+        # Use a controlled perturbation with geometric-aware gradient scaling
+        # Ensure perturbation is spatially coherent with gradient-aware magnitude
+        perturbation = np.zeros(3 * n)
+        for i in highest_energy:
+            # Compute the spatial gradient around the circle
+            idxs = np.where(dists[i, :] < 0.3)[0]
+            if len(idxs) == 0:
+                # No nearby circles, apply radial uniform perturbation
+                perturbation[3*i] = np.random.uniform(-0.05, 0.05)
+                perturbation[3*i+1] = np.random.uniform(-0.05, 0.05)
+            else:
+                # Compute the average gradient in the immediate vicinity
+                avg_grad_x = np.mean(centers[idxs, 0] - centers[i, 0])
+                avg_grad_y = np.mean(centers[idxs, 1] - centers[i, 1])
+                # Apply perturbation in the opposite gradient direction with
+                # a magnitude proportional to the gradient
+                perturbation[3*i] = -0.02 * avg_grad_x
+                perturbation[3*i+1] = -0.02 * avg_grad_y
+        # Add small random perturbation for diversity
+        perturbation[3*highest_energy[0]] += np.random.uniform(-0.01, 0.01)
+        perturbation[3*highest_energy[1]] += np.random.uniform(-0.01, 0.01)
+        
+        # Apply the perturbation to the decision vector
+        v_perturbed = v + perturbation
+
+        # Re-evaluate with perturbed configuration
+        res = minimize(neg_sum_radii, v_perturbed, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 400, "ftol": 1e-10, "eps": 1e-8})
+    
+    # Second-stage spatial reconfiguration using soft constraints with geometric awareness
+    if res.success:
+        v = res.x
+        centers = np.column_stack([v[0::3], v[1::3]])
+        radii = v[2::3]
+        
+        # Apply gradient-aware soft constraints to allow micro-optimization
+        # Compute the interaction between the least constrained circle and neighbors
+        # and apply soft spatial constraints to avoid local minima
+
+        # Use the spatial interaction metric again
+        dx = centers[:, np.newaxis, 0] - centers[np.newaxis, :, 0]
+        dy = centers[:, np.newaxis, 1] - centers[np.newaxis, :, 1]
+        dists = np.sqrt(dx**2 + dy**2)
+
+        # Re-compute the interaction_energy
+        interaction_energy = np.zeros(n)
+        for i in range(n):
+            inv_dists = 1 / np.clip(dists[i, :], 1e-10, 1)
+            interaction_energy[i] = np.sum(inv_dists)
+
+        # Choose the isolated circle and apply spatial softening constraints
+        isolated_idx = np.argmin(interaction_energy)
+
+        # Identify neighbors within a certain radius
+        neighbor_indices = np.where(dists[isolated_idx, :] < 0.2)[0]
+        if len(neighbor_indices) > 0:
+            # Use a soft overlap constraint to prevent premature convergence
+            def soft_overlap_cons(v, i, j):
+                x1 = v[3*i]
+                y1 = v[3*i+1]
+                r1 = v[3*i+2]
+                x2 = v[3*j]
+                y2 = v[3*j+1]
+                r2 = v[3*j+2]
+                dx = x1 - x2
+                dy = y1 - y2
+                dist_sq = dx*dx + dy*dy
+                total_r = r1 + r2
+                # Apply soft overlap with a weight that depends on distance
+                weight = np.clip(1.0 - 10 * (dist_sq / (total_r ** 2)), 0, 1)
+                return dist_sq - total_r**2 - 1e-8 * weight
+    
+            # Add these soft constraints to the optimization for micro-adjustment
+            for j in neighbor_indices:
+                if j != isolated_idx:
+                    cons.append({
+                        "type": "ineq", 
+                        "fun": (lambda v, i=isolated_idx, j=j: soft_overlap_cons(v, i, j))
+                    })
+        
+        # Apply new optimization
+        res = minimize(neg_sum_radii, v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 500, "ftol": 1e-10, "eps": 1e-8})
+    
+    # Final reconfiguration with adaptive radius expansion and spatial reordering
+    if res.success:
+        v = res.x
+        centers = np.column_stack([v[0::3], v[1::3]])
+        radii = v[2::3]
+        
+        # Recompute interaction energy for final optimization
+        dx = centers[:, np.newaxis, 0] - centers[np.newaxis, :, 0]
+        dy = centers[:, np.newaxis, 1] - centers[np.newaxis, :, 1]
+        dists = np.sqrt(dx**2 + dy**2)
+
+        # Recompute interaction energy
+        interaction_energy = np.zeros(n)
+        for i in range(n):
+            inv_dists = 1 / np.clip(dists[i, :], 1e-10, 1)
+            interaction_energy[i] = np.sum(inv_dists)
+
+        # Find the most isolated circle (least interaction)
+        isolated_idx = np.argmin(interaction_energy)
+
+        # Compute growth based on current interaction and geometric gradient
+        current_total = np.sum(radii)
+        base_radius_growth = 0.006  # Base target for growth
+        growth_multiplier = 1.2  # Allow for over-growth for isolated circles
+
+        # Adaptive expansion: expand isolation circle proportionally to its energy
+        expansion = base_radius_growth * (1.0 + 0.5 * (1 - interaction_energy[isolated_idx] / np.max(interaction_energy)))
+        
+        # Create adjusted radii with expansion
+        new_radii = radii.copy()
+        new_radii[isolated_idx] += expansion * growth_multiplier
+        for i in range(n):
+            if i != isolated_idx:
+                # Use a small, stochastic expansion to avoid over-concentration
+                new_radii[i] += expansion * (1.0 + 0.1 * np.random.rand() - 0.05)
+
+        # Create new vector with adjusted radii
+        v_new = v.copy()
+        v_new[2::3] = new_radii
+
+        # Apply new optimization
+        res = minimize(neg_sum_radii, v_new, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 400, "ftol": 1e-10, "eps": 1e-8})
+    
+    # Final validation and output
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())

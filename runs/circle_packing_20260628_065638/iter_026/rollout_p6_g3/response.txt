@@ -1,0 +1,129 @@
+<strategy>
+The mutation directive instructs us to replace the spatial constraint enforcement mechanism with a randomized geometric hashing scheme and apply a targeted radius expansion on the circle with the smallest non-zero radius, while ensuring complete reordering of the layout's adjacency relationships. This is a complex, targeted surgery that requires careful implementation of the following steps:
+
+1. **Geometry Reordering with Randomized Hashing**:
+   - Replace the previous adjacency graph-based reordering with a purely randomized geometric hashing strategy to trigger a complete layout transformation.
+   - This involves repositioning the centers of all circles in a non-local, geometrically unpredictable way using spatial hashing based on random seed components.
+
+2. **Finding the Least Constrained Circle (Smallest Radius)**:
+   - Identify the circle with the smallest radius as the target for expansion, based on the current configuration. This will act as the seed for triggering a layout reconfiguration when it is expanded.
+
+3. **Targeted Radius Expansion with Adjacency Enforcement**:
+   - Expand the radius of the smallest circle more heavily, to induce a cascade of spatial adjustment (this is a controlled disruption).
+   - Ensure that each expansion is accompanied by a full re-validation of adjacency constraints (no overlaps) and spatial boundary conditions.
+
+4. **Optimization Strategy**:
+   - Use a combination of iterative optimization (SLSQP) with tighter tolerances and multiple passes to refine the configuration from the chaotic rearrangement.
+   - Use vectorization where possible for performance (like vectorized calculation of all pairwise distances and constraints).
+   - Ensure the final configuration remains fully valid, i.e., no circles are outside the unit square and no circles overlap.
+
+5. **Implementation Notes**:
+   - Remove any redundant spatial reordering and use a direct random perturbation based on geometric hashing.
+   - Ensure that all constraints and the decision vector (v) remain aligned and consistent with the 26-circle requirement.
+   - Introduce a more robust method for finding the least constrained circle based on both distance metrics and radius size.
+
+These changes should result in a more efficient and diverse configuration of circles, potentially leading to a higher total radius sum than the original parent program.
+</strategy>
+
+```python
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = 5
+    rows = (n + cols - 1) // cols
+
+    # Initial positions using grid with random perturbation
+    xs = []
+    ys = []
+    for i in range(n):
+        row = i // cols
+        col = i % cols
+        x_center = (col + 0.5) / cols
+        y_center = (row + 0.5) / rows
+        # Add randomized offset to prevent perfect symmetry
+        x = x_center + np.random.uniform(-0.06, 0.06)
+        y = y_center + np.random.uniform(-0.06, 0.06)
+        if row % 2 == 1:
+            x += 0.5 / cols
+        xs.append(x)
+        ys.append(y)
+    
+    r0 = 0.35 / cols - 1e-3
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = np.full(n, r0)
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]  # length 3*n
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    # Boundary constraints (x+radius ≤ 1, x-radius ≥ 0, y+radius ≤ 1, y-radius ≥ 0)
+    cons = []
+    for i in range(n):
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+
+    # Vectorized overlap constraints (dx^2 + dy^2 >= r_i^2 + r_j^2)
+    for i in range(n):
+        for j in range(i+1, n):
+            def constraint_func(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                return dx*dx + dy*dy - (v[3*i+2] + v[3*j+2])**2
+            cons.append({"type": "ineq", "fun": constraint_func})
+
+    # Initial optimization
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 2000, "ftol": 1e-11})
+
+    if res.success:
+        v = res.x
+
+        # Step 1: Randomized geometric hashing for layout reordering
+        # Create a geometric hash based on random seed for each circle
+        component_hash = np.random.rand(n, 2) * 0.04
+        # Randomly perturb positions to trigger complete reordering
+        for i in range(n):
+            v[3*i] += component_hash[i, 0] * (1.0 + np.random.rand())
+            v[3*i+1] += component_hash[i, 1] * (1.0 + np.random.rand())
+        
+        # Step 2: Second optimization after hashing
+        res = minimize(neg_sum_radii, v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 400, "ftol": 1e-11})
+
+    if res.success:
+        v = res.x
+        radii = v[2::3]
+        centers = np.column_stack([v[0::3], v[1::3]])
+
+        # Step 3: Find circle with smallest radius (least constrained)
+        min_radius_idx = np.argmin(radii)
+        min_radius = radii[min_radius_idx]
+
+        # Step 4: Expand this circle more to trigger reordering
+        target_total = np.sum(radii) + 0.01
+        expansion = (target_total - np.sum(radii)) / (n - 1)
+        # Over-expand the smallest circle to trigger global reordering
+        expanded_radii = radii.copy()
+        expanded_radii[min_radius_idx] += expansion * 1.3
+
+        # Step 5: Construct new vector and re-optimizing
+        v_expanded = v.copy()
+        v_expanded[2::3] = expanded_radii
+
+        # Step 6: Final optimization with reconfigured radii
+        res_final = minimize(neg_sum_radii, v_expanded, method="SLSQP", bounds=bounds,
+                             constraints=cons, options={"maxiter": 400, "ftol": 1e-11})
+
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())
+```

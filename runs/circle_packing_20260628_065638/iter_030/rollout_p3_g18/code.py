@@ -1,0 +1,199 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = 5
+    rows = (n + cols - 1) // cols
+    
+    # Optimized initialization with dynamic geometric hashing and adaptive placement
+    # Use a more dense grid to enable better packing, with adaptive clustering for edge cases
+    xs = []
+    ys = []
+    for i in range(n):
+        row = i // cols
+        col = i % cols
+        
+        # Use adaptive offset based on row spacing to allow denser packing in high-density zones
+        row_density = 1.0 + 0.2 * row / rows * (1 - (1.0 - row / rows) ** 3)
+        col_density = 1.0 + 0.2 * col / cols * (1 - (1.0 - col / cols) ** 3)
+        
+        # Create a base grid that is dynamically scaled per row for spatial efficiency
+        x_center = (col + 0.45) / (cols + 0.1) * row_density * (1 + 0.05) 
+        y_center = (row + 0.45) / (rows + 0.1) * row_density * (1 + 0.05)   
+        
+        # Add spatially adaptive offset with random perturbation in non-symmetrical way
+        # Use non-uniform distribution to prevent clustering in high row indices
+        x_offset = np.random.uniform(
+            -0.04, 0.04,
+            size=1
+        ) + 0.05 * np.sin(3 * np.pi * row / (rows - 1))
+        y_offset = np.random.uniform(
+            -0.04, 0.04,
+            size=1
+        ) + 0.05 * np.cos(6 * np.pi * col / (cols - 1))
+        
+        # Row-wise staggering with more dynamic adjustment for non-regular spacing
+        if row % 3 == 1:
+            x_offset += 0.05 * np.random.rand() - 0.025
+        elif row % 3 == 2:
+            x_offset -= 0.05 * np.random.rand() + 0.025
+        
+        x = x_center + x_offset
+        y = y_center + y_offset
+        
+        # Clamp to bounds to ensure non-overlap with outer boundaries
+        # Use soft clamping to allow more fluid placement
+        x = np.clip(x, 1e-6, 1 - 1e-6)
+        y = np.clip(y, 1e-6, 1 - 1e-6)
+        
+        xs.append(x)
+        ys.append(y)
+    
+    # Set more aggressive initial radius based on refined initial placement
+    # Based on average spacing between adjacent positions in this layout
+    r0 = (0.37 / cols) - 1.5e-3
+    # Apply radius gradient to edge circles for initial layout feasibility
+    r0_gradient = np.linspace(0.2, 0.42, n)
+    r0 = r0_gradient - 1e-3
+    
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = np.array(r0)
+
+    # Ensure bounds list has exactly 3*n entries
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    # Define the objective function as the negative total sum of radii
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+    
+    # Vectorized constraints with proper closures using i as a free variable
+    cons = []
+    for i in range(n):
+        # Left boundary constraint: x - r >= 0
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        # Right boundary: x + r <= 1
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        # Bottom: y - r >= 0
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        # Top: y + r <= 1
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+    
+    # Vectorized overlap constraints with adaptive function closure management
+    for i in range(n):
+        for j in range(i + 1, n):
+            # Use lambda capture with fixed i,j for each constraint
+            def constraint_func(v, i=i, j=j):
+                # Return negative of squared distance minus sum of radii squared
+                # This makes it an inequality constraint: distance >= sum_radii
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                return (dx**2 + dy**2) - (v[3*i+2] + v[3*j+2])**2
+            cons.append({"type": "ineq", "fun": constraint_func})
+    
+    # First pass: initial optimization with high accuracy and multiple iterations
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 1500, "ftol": 1e-10, "eps": 1e-9})
+    
+    # First level: Adaptive spatial hashing with non-uniform perturbation
+    if res.success:
+        v = res.x
+        centers = np.column_stack([v[0::3], v[1::3]])
+        radii = v[2::3]
+        
+        # Use a spatial hashing approach where perturbations correlate with spatial constraints
+        # Create non-uniform spatial perturbation with spatial-aware randomness
+        # Use a gradient-based perturbation: higher values in regions with higher radii
+        
+        # Use the same grid structure to create hash points, but with perturbation based on radii
+        spatial_hashes = []
+        for i in range(n):
+            # Perturbation magnitude is relative to radius (scaled) as well as spatial density
+            spatial_perturbation = np.random.rand(2)
+            
+            # Perturbation magnitude scales inversely with row density to avoid overcrowding
+            # and directly with radius for targeted expansion in underutilized areas
+            perturbation_strength = np.sqrt(radii[i]) / (np.sqrt(1 + row_density[i]))
+            x_perturb = spatial_perturbation[0] * perturbation_strength
+            y_perturb = spatial_perturbation[1] * perturbation_strength
+            
+            spatial_hashes.append((x_perturb, y_perturb))
+        
+        # Apply spatial hashing with non-uniform scaling to allow asymmetric configuration
+        perturbed_v = v.copy()
+        for i in range(n):
+            perturbed_v[3*i] += spatial_hashes[i][0] * (1 + 0.002 * radii[i])
+            perturbed_v[3*i+1] += spatial_hashes[i][1] * (1 + 0.002 * radii[i])
+        
+        # Second optimization with refined perturbations
+        res = minimize(neg_sum_radii, perturbed_v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 600, "ftol": 1e-11, "eps": 1e-9})
+        
+        # Perform a constrained radial expansion with gradient-based adjustment in underused areas
+        if res.success:
+            v = res.x
+            centers = np.column_stack([v[0::3], v[1::3]])
+            radii = v[2::3]
+            
+            # Efficient pair-wise distance calculation using broadcasting
+            dx = centers[:, np.newaxis, 0] - centers[np.newaxis, :, 0]
+            dy = centers[:, np.newaxis, 1] - centers[np.newaxis, :, 1]
+            dists = np.sqrt(dx**2 + dy**2)
+            
+            # Identify the most spatially isolated circle using robust metric
+            isolation = np.min(dists, axis=1)
+            weight = 1.0 / (1.0 + np.exp(-2.0 * isolation))  # Logistic scoring to prioritize weakly connected
+            isolated_idx = np.argmin(weight)
+            
+            # Calculate growth using adaptive scaling based on spatial density and isolation
+            max_possible_growth = 0.015
+            current_total = np.sum(radii)
+            target_density = 0.35 * np.mean(radii)  # Targeted area density improvement
+            
+            # Growth based on both isolation and current density
+            growth_factor = (current_total * max_possible_growth) / (n * target_density)
+            target_radii = radii.copy()
+            target_radii[isolated_idx] += growth_factor * 1.1  # Slight over-target to allow expansion
+            
+            # Apply growth with validation
+            while True:
+                new_v = v.copy()
+                new_v[2::3] = target_radii
+                
+                # Verify all pairwise and boundary constraints with a stricter tolerance
+                valid = True
+                for i in range(n):
+                    for j in range(i+1, n):
+                        dx = new_v[3*i] - new_v[3*j]
+                        dy = new_v[3*i+1] - new_v[3*j+1]
+                        dist = np.sqrt(dx**2 + dy**2)
+                        if dist < target_radii[i] + target_radii[j] - 1e-12:
+                            valid = False
+                            break
+                    if not valid:
+                        break
+                if valid:
+                    break
+                else:
+                    # If invalid, scale back growth until constraints are satisfied
+                    # Backtrack using a binary search approach
+                    # Start from last valid factor, scale back with exponential decay
+                    if growth_factor > 1e-6:
+                        growth_factor = growth_factor * 0.9
+                        target_radii = radii.copy()
+                        target_radii[isolated_idx] += growth_factor * 1.1
+            
+            # Update the decision vector
+            v_new = new_v.copy()
+            
+            # Final optimization after radial expansion with stricter tolerances
+            res = minimize(neg_sum_radii, v_new, method="SLSQP", bounds=bounds,
+                           constraints=cons, options={"maxiter": 600, "ftol": 1e-11, "eps": 1e-9})
+    
+    final_v = res.x if res.success else v0
+    centers = np.column_stack([final_v[0::3], final_v[1::3]])
+    radii = np.clip(final_v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())

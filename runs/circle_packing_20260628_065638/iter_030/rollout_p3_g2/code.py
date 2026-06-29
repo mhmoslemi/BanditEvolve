@@ -1,0 +1,258 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = 5
+    # Optimal grid dimensions for 26 elements (with 5 columns) = 5x6 grid (5 rows)
+    
+    # Advanced initialization: multi-tiered geometric clustering with adaptive perturbation
+    xs, ys, radii_init = [], [], []
+    
+    # Primary grid: base staggered grid with enhanced perturbation
+    base_grid = []
+    for i in range(n):
+        row = i // cols
+        col = i % cols
+        x_base = (col + 0.5) / cols
+        y_base = (row + 0.5) / (rows + 1)   # Rows = ceil(n/cols) (5 for n=26 and cols=5)
+        # Enhanced perturbation that scales by radius of neighboring circles
+        perturbation_weight = 0.1
+        x_perturb = (np.random.rand() - 0.5) * 0.2
+        y_perturb = (np.random.rand() - 0.5) * 0.2
+        x = x_base + x_perturb
+        y = y_base + y_perturb
+        # Apply horizontal stagger for rows with even indices
+        if row % 2 == 1:
+            x += 0.5 / cols * np.random.uniform(0.8, 1.2)
+        base_grid.append((x, y))
+    
+    # Secondary clustering: add micro-clusters in non-compact zones
+    for i in range(n):
+        # Compute grid-based position
+        row = i // cols
+        col = i % cols
+        x_base = (col + 0.5) / cols
+        y_base = (row + 0.5) / (rows + 1)
+        # Add perturbation with adaptive radius scaling
+        r_scale = 0.8  # Radius scale parameter for perturbation
+        x = x_base + np.random.uniform(-0.04, 0.04) * r_scale
+        y = y_base + np.random.uniform(-0.04, 0.04) * r_scale
+        # Alternate row staggering with row-dependent variance
+        if row % 2 == 1:
+            x += 0.5 / cols * np.random.uniform(0.6, 1.4)
+            y += np.random.uniform(-0.02, 0.02) * r_scale
+        xs.append(x)
+        ys.append(y)
+    
+    # Optimize initial radii using grid spacing and geometric constraints
+    r_initial = [0.35 / cols - 1e-3] * n
+    # Apply adaptive radius scaling based on grid proximity
+    for i in range(n):
+        for j in range(n):
+            if i != j:
+                dx = xs[i] - xs[j]
+                dy = ys[i] - ys[j]
+                dist = np.sqrt(dx*dx + dy*dy)
+                if dist < 3.0:  # Close proximity threshold
+                    r_initial[i] = min(r_initial[i], dist / 4.5)  # Ensure spacing
+    # Normalize based on min radius and maximum grid space
+    r_min = np.min(r_initial)
+    r_max = np.max(r_initial)
+    if r_max > r_min:
+        r_initial = (r_initial - r_min) / (1.5 * r_max) * 0.32  # Scale to 0.32 max
+    else:
+        r_initial = [0.15] * n
+    
+    # Decision vector v = [x0,y0,r0, x1,y1,r1, ...], length 3*n
+    v0 = np.zeros(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = np.array(r_initial)
+    
+    # Bounds definitions for 3n variables in decision vector
+    bounds = []
+    for _ in range(n):
+        bounds += [
+            (0.0, 1.0),          # x coordinate
+            (0.0, 1.0),          # y coordinate
+            (0.001, 0.32)        # radius (prevent tiny radii)
+        ]
+
+    # Objective function: negative of total radii
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    # Generate constraints using vectorized lambda functions with capture by assignment 
+    # (to address closure issues in lambda functions via "lambda i=i: ...")
+    # Boundary constraints: ensure circles are inside the square
+    # (x - r >= 0), (x + r <= 1), (y - r >= 0), (y + r <= 1)
+    cons = []
+    for i in range(n):
+        # Left: x - r >= 0 => x >= r
+        cons.append({'type': 'ineq', 'fun': (lambda v, i=i: v[3*i] - v[3*i + 2])})
+        # Right: x + r <= 1 => x <= 1 - r
+        cons.append({'type': 'ineq', 'fun': (lambda v, i=i: 1.0 - v[3*i] - v[3*i + 2])})
+        # Bottom: y - r >= 0 => y >= r
+        cons.append({'type': 'ineq', 'fun': (lambda v, i=i: v[3*i + 1] - v[3*i + 2])})
+        # Top: y + r <= 1 => y <= 1 - r
+        cons.append({'type': 'ineq', 'fun': (lambda v, i=i: 1.0 - v[3*i + 1] - v[3*i + 2])})
+    
+    # Distance constraints between circles (no overlaps)
+    for i in range(n):
+        for j in range(i + 1, n):
+            # For distance constraint: sqrt((x1 - x2)^2 + (y1 - y2)^2) - (r1 + r2) >= 0
+            cons.append({
+                'type': 'ineq',
+                'fun': (lambda v, i=i, j=j: 
+                        (v[3*i] - v[3*j])**2 + 
+                        (v[3*i + 1] - v[3*j + 1])**2 
+                        - (v[3*i + 2] + v[3*j + 2])**2)
+            })
+    
+    # Precompute all pairwise indices for efficiency (can be further optimized)
+    
+    # Initial optimization with advanced settings
+    res_initial = minimize(
+        neg_sum_radii, v0, method="SLSQP", bounds=bounds, constraints=cons,
+        options={"maxiter": 1500, "ftol": 1e-10, "gtol": 1e-9, "disp": False}
+    )
+    
+    # Asymmetric reconfiguration 1: spatial constraint perturbation with radius scaling
+    if res_initial.success:
+        v = res_initial.x
+        radii = v[2::3]
+        centers = np.column_stack([v[0::3], v[1::3]])
+        
+        # Generate spatial hash based on radius and positional clustering
+        # Spatial hash is scaled by radius to ensure less impactful movement for small radii
+        spatial_hash = np.random.rand(n, 2) * 0.06 * (radii / np.mean(radii) + 0.3)
+        perturbed_v = v.copy()
+        for i in range(n):
+            # Apply perturbation with radius-aware intensity
+            perturbed_v[3*i] += spatial_hash[i, 0] * (1.0 + 0.3 * (radii[i] / np.mean(radii)))
+            perturbed_v[3*i+1] += spatial_hash[i, 1] * (1.0 + 0.3 * (radii[i] / np.mean(radii)))
+        
+        # Re-evaluate with new spatial configuration
+        res_perturb = minimize(
+            neg_sum_radii, perturbed_v, method="SLSQP", bounds=bounds, constraints=cons,
+            options={"maxiter": 400, "ftol": 1e-11, "gtol": 1e-10, "disp": False}
+        )
+    
+    # Asymmetric reconfiguration 2: dynamic isolation + radius expansion with geometric weighting
+    if res_perturb.success:
+        v = res_perturb.x
+        radii = v[2::3]
+        centers = np.column_stack([v[0::3], v[1::3]])
+        
+        # Vectorized distance matrix computation with optimized broadcasting
+        dx = centers[:, np.newaxis, 0] - centers[np.newaxis, :, 0]
+        dy = centers[:, np.newaxis, 1] - centers[np.newaxis, :, 1]
+        dists = np.sqrt(dx**2 + dy**2)
+        
+        # Calculate isolation index: min distance from other circles
+        min_dists = np.min(dists, axis=1)
+        # Find the most isolated circle with geometric weighting: inverse of min distance
+        isolation_weights = 1.0 / (min_dists + 1e-12)  # Avoid division by zero
+        isolated_idx = np.argmin(isolation_weights)  # Most isolated = least weight
+        
+        # Calculate growth based on current total sum and potential for expansion
+        current_total = np.sum(radii)
+        target_growth = 0.006  # Small incremental target
+        # Use inverse relation between isolation and potential expansion
+        expansion_factor = target_growth / (n - 1) * (current_total / np.sum(radii))
+        
+        # Create a "reconfiguration vector" with radius expansion
+        # Add stochastic expansion to non-isolated circles with spatial bias
+        radii_reconfigured = radii.copy()
+        
+        # Add expansion to isolated circle
+        # Use a multiplier to allow more expansion for isolated
+        isolated_radius_inc = expansion_factor * 1.3
+        radii_reconfigured[isolated_idx] = min(radii_reconfigured[isolated_idx] + isolated_radius_inc, 0.35)
+        
+        # Add expansion to others with varying amounts
+        # Use distance from isolated as a bias: closer circles get more
+        for i in range(n):
+            if i != isolated_idx:
+                # Bias expansion away from isolated circle
+                dx = centers[i, 0] - centers[isolated_idx, 0]
+                dy = centers[i, 1] - centers[isolated_idx, 1]
+                dist = np.sqrt(dx**2 + dy**2)
+                # Add expansion based on 1/distance (with safety) and randomness
+                expansion_factor_i = expansion_factor * (1.0 + 0.3 * (1.0 / (dist + 1e-6)))
+                # Stochastic factor for variability
+                stochastic = np.random.uniform(0.5, 1.2)
+                expansion = expansion_factor_i * stochastic
+                # Ensure not exceeding upper limit of 0.35
+                radii_reconfigured[i] = min(radii_reconfigured[i] + expansion, 0.35)
+        
+        # Update decision vector with new radii
+        v_new = v.copy()
+        v_new[2::3] = radii_reconfigured
+        
+        # Re-evaluate with expanded configuration
+        # Use a hybrid approach with more aggressive optimization
+        res_expanded = minimize(
+            neg_sum_radii, v_new, method="SLSQP", bounds=bounds, constraints=cons,
+            options={"maxiter": 450, "ftol": 1e-11, "gtol": 1e-12, "disp": False}
+        )
+    
+    # Asymmetric reconfiguration 3: hybrid perturbation and isolation-based radius expansion
+    if res_expanded.success:
+        v = res_expanded.x
+        radii = v[2::3]
+        centers = np.column_stack([v[0::3], v[1::3]])
+        
+        # Use vectorized distance matrix again
+        dx = centers[:, np.newaxis, 0] - centers[np.newaxis, :, 0]
+        dy = centers[:, np.newaxis, 1] - centers[np.newaxis, :, 1]
+        dists = np.sqrt(dx**2 + dy**2)
+        
+        # Recalculate isolation weights
+        min_dists = np.min(dists, axis=1)
+        isolation_weights = 1.0 / (min_dists + 1e-12)  # Avoid division by zero
+        isolated_idx = np.argmin(isolation_weights)  # Most isolated
+        
+        # Final expansion phase: apply more refined expansion
+        # Use a gradient-based expansion that increases with distance to others
+        # Use a radius factor to scale expansion
+        mean_radius = np.mean(radii)
+        expansion_factor_global = 0.005
+        
+        final_radii = radii.copy()
+        
+        # Apply targeted expansion to the most isolated circle
+        isolated_radius_inc = expansion_factor_global * 1.4
+        final_radii[isolated_idx] = min(final_radii[isolated_idx] + isolated_radius_inc, 0.35)
+        
+        # For other circles, compute radius adjustment factor based on their isolation
+        isolated_distances = dists[isolated_idx, :]  # Distances from isolated
+        # Normalize distances against global min and max
+        std = np.std(isolated_distances)
+        # Apply radius expansion based on distance to isolated
+        for i in range(n):
+            if i != isolated_idx:
+                # Compute weight based on 1/(distance + 1e-6) to avoid division by zero
+                weight = 1.0 / (isolated_distances[i] + 1e-6)
+                # Normalize weight against global
+                weight_norm = weight / (np.max(weight) + 1e-6)
+                # Add expansion with a base factor and randomness
+                expansion_factor_i = expansion_factor_global * 0.8 * weight_norm * (1 + np.random.uniform(-0.2, 0.1))
+                final_radii[i] = min(final_radii[i] + expansion_factor_i, 0.35)
+        
+        # Create final decision vector
+        v_final = v.copy()
+        v_final[2::3] = final_radii
+        
+        # Final optimization with tighter constraints
+        res_final = minimize(
+            neg_sum_radii, v_final, method="SLSQP", bounds=bounds, constraints=cons,
+            options={"maxiter": 500, "ftol": 1e-12, "gtol": 1e-12, "disp": False}
+        )
+    
+    # Apply final validation and fallback if needed
+    v = res_final.x if res_final.success else res_expanded.x
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, 0.35)  # Clamp between minimum and upper limit
+    
+    return centers, radii, float(radii.sum())

@@ -1,0 +1,21 @@
+{
+  "record": {
+    "kind": "explore",
+    "band": null,
+    "arm_idx": null,
+    "arm_source": null,
+    "outcome": "valid",
+    "value": 2.1406666666666663,
+    "dmu": null,
+    "dsigma": null
+  },
+  "eval": {
+    "per_seed": {
+      "0": 2.1406666666666663
+    },
+    "value": 2.1406666666666663,
+    "valid": true,
+    "raw": 2.1406666666666663,
+    "msg": "ok"
+  }
+}

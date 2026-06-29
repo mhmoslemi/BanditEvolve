@@ -1,0 +1,169 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = 5
+    rows = (n + cols - 1) // cols
+    
+    # Create a more sophisticated seed with layered spatial distribution
+    # 1. Core grid with staggered offset
+    xs = []
+    ys = []
+    for i in range(n):
+        row = i // cols
+        col = i % cols
+        base_x = (col + 0.5) / cols
+        base_y = (row + 0.5) / rows
+        # Introduce row-based vertical perturbation to prevent vertical clustering
+        # Introduce col-based horizontal perturbation to prevent horizontal clustering
+        x_adjust = np.random.uniform(-0.025, 0.025) * (1.0 + 0.2 * np.sin(np.pi * row / rows))
+        y_adjust = np.random.uniform(-0.025, 0.025) * (1.0 + 0.2 * np.sin(np.pi * col / cols))
+        # Alternate row offset for more complex lattice
+        if row % 2 == 1:
+            base_x += 0.5 / cols * (0.5 + np.random.uniform(-0.1, 0.1))
+        x = base_x + x_adjust
+        y = base_y + y_adjust
+        xs.append(x)
+        ys.append(y)
+    
+    r0 = 0.34 / cols
+    
+    # Create an initial vector with spatial-aware radius allocation
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = np.full(n, r0)
+    
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]  # length 3*n
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    # Vectorized constraints for boundaries with lambda capture
+    cons = []
+    for i in range(n):
+        # Left boundary constraint
+        cons.append({"type": "ineq", "fun": (lambda v, i=i: 1.0 - v[3*i] - v[3*i+2])})
+        # Right boundary constraint
+        cons.append({"type": "ineq", "fun": (lambda v, i=i: v[3*i] - v[3*i+2])})
+        # Bottom boundary constraint
+        cons.append({"type": "ineq", "fun": (lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2])})
+        # Top boundary constraint
+        cons.append({"type": "ineq", "fun": (lambda v, i=i: v[3*i+1] - v[3*i+2])})
+
+    # Vectorized overlap constraints with lambda capture
+    for i in range(n):
+        for j in range(i + 1, n):
+            cons.append({"type": "ineq", 
+                         "fun": (lambda v, i=i, j=j: 
+                                 (v[3*i] - v[3*j])**2 + (v[3*i+1] - v[3*j+1])**2 
+                                 - (v[3*i+2] + v[3*j+2])**2)})
+
+    # Initial optimization phase: dense constraint exploration
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 1200, "ftol": 1e-11, "eps": 1e-7})
+
+    # First refinement: spatial hashing with adaptive perturbation
+    if res.success:
+        v = res.x
+        radii = v[2::3]
+        centers = np.column_stack([v[0::3], v[1::3]])
+        # Generate spatial hash with adaptive scaling
+        spatial_hash_multiplier = np.clip(0.05 + 0.2 * np.sin(np.pi * np.arange(n) / n), 0.04, 0.06)
+        spatial_hash = np.random.rand(n, 2) * spatial_hash_multiplier[:, np.newaxis]
+        perturbed_v = v.copy()
+        for i in range(n):
+            perturbed_v[3*i] += spatial_hash[i, 0] * (radii[i] / np.mean(radii))
+            perturbed_v[3*i+1] += spatial_hash[i, 1] * (radii[i] / np.mean(radii))
+        # Re-evaluate with new spatial configuration
+        res = minimize(neg_sum_radii, perturbed_v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 500, "ftol": 1e-11, "eps": 1e-7})
+
+    # Second refinement: adaptive reconfiguration - geometric dissection of the two most interacting circles
+    if res.success:
+        v = res.x
+        radii = v[2::3]
+        centers = np.column_stack([v[0::3], v[1::3]])
+        # Compute pairwise distances in an optimized way
+        dx = centers[:, np.newaxis, 0] - centers[np.newaxis, :, 0]
+        dy = centers[:, np.newaxis, 1] - centers[np.newaxis, :, 1]
+        dists = np.sqrt(dx**2 + dy**2)
+        # Identify top two interacting pairs via sum of distances
+        interaction_strength = np.sum(dists, axis=1)
+        top_indices = np.argsort(interaction_strength)[-2:]
+        # Isolate and reconfigure the top two circles
+        top_v = v.copy()
+        # Introduce random perturbations with radius-dependent scaling
+        for i in top_indices:
+            # Allow more aggressive movement for more interacting circles
+            perturb_scale = 0.03 * (radii[i] / np.mean(radii))  # radius-dependent perturbation
+            top_v[3*i] += np.random.uniform(-perturb_scale, perturb_scale)
+            top_v[3*i+1] += np.random.uniform(-perturb_scale, perturb_scale)
+            # Radius fine-tuning to avoid over-expansion
+            top_v[3*i+2] += np.random.uniform(-0.001, 0.001)
+        # Re-evaluate with reconfigured top two circles
+        res = minimize(neg_sum_radii, top_v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 400, "ftol": 1e-11, "eps": 1e-7})
+
+    # Third refinement: targeted radius expansion while preserving topology
+    if res.success:
+        v = res.x
+        radii = v[2::3]
+        centers = np.column_stack([v[0::3], v[1::3]])
+        # Calculate pairwise distances
+        dx = centers[:, np.newaxis, 0] - centers[np.newaxis, :, 0]
+        dy = centers[:, np.newaxis, 1] - centers[np.newaxis, :, 1]
+        dists = np.sqrt(dx**2 + dy**2)
+        # Find circle with maximum isolation (largest minimum distances to others)
+        min_dists = np.min(dists, axis=1)
+        isolate_idx = np.argmax(min_dists)
+        # Calculate expansion based on current sum and potential
+        current_total = np.sum(radii)
+        target_growth = 0.008  # aggressive growth in target
+        # Ensure we don't push beyond physical limits
+        total_capacity = np.prod([(1.0 - 2*r) for r in radii])
+        max_possible_growth = total_capacity - current_total
+        actual_growth = np.clip(target_growth, 0.0, np.min([target_growth, max_possible_growth]))
+        # Calculate expansion vector for controlled growth
+        expansion = actual_growth / (n - 1) * (current_total / np.sum(radii)) * (1.2 + np.random.uniform(-0.1, 0.1))
+        # Apply expansion but ensure no overlap
+        new_radii = radii.copy()
+        new_radii[isolate_idx] += expansion
+        # Apply expansion to all others with small stochastic adjustments
+        for i in range(n):
+            if i != isolate_idx:
+                new_radii[i] += np.random.uniform(-0.0001, 0.0004) * (current_total / np.sum(radii)) * (1.0 + 0.1 * np.random.rand())
+        
+        # Validate expanded configuration
+        while True:
+            expanded_v = v.copy()
+            expanded_v[2::3] = new_radii
+            expanded_centers = np.column_stack([expanded_v[0::3], expanded_v[1::3]])
+            valid = True
+            for i in range(n):
+                for j in range(i + 1, n):
+                    dx = expanded_centers[i, 0] - expanded_centers[j, 0]
+                    dy = expanded_centers[i, 1] - expanded_centers[j, 1]
+                    dist = np.sqrt(dx**2 + dy**2)
+                    if dist < new_radii[i] + new_radii[j] - 1e-12:
+                        valid = False
+                        break
+                if not valid:
+                    break
+            if valid:
+                break
+            else:
+                # If invalid, decrement radius slightly
+                new_radii = radii + (new_radii - radii) * 0.98
+        
+        # Final optimization with refined radii
+        res = minimize(neg_sum_radii, expanded_v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 400, "ftol": 1e-11, "eps": 1e-7})
+
+    # Final safety check
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())

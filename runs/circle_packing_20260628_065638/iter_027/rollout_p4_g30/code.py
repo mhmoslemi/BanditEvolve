@@ -1,0 +1,147 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = 6
+    rows = (n + cols - 1) // cols
+    
+    # Initialize positions with randomized geometric clustering and spatial hashing
+    xs = []
+    ys = []
+    for i in range(n):
+        row = i // cols
+        col = i % cols
+        x_center = (col + 0.5) / cols  # More even distribution
+        y_center = (row + 0.5) / rows
+        # Add spatial hashing to break symmetry
+        x = x_center + np.random.uniform(-0.05, 0.05)
+        y = y_center + np.random.uniform(-0.05, 0.05)
+        # Alternate row offset for staggered grid
+        if row % 2 == 1:
+            x += 0.5 / cols
+        xs.append(x)
+        ys.append(y)
+    
+    # Initial radius estimate based on grid spacing and optimization
+    r0 = 0.28 / cols  # Slightly higher than the parent's
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = np.full(n, r0)
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]  # Ensure precise 3*n-length
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    # Vectorized boundary constraints with lambda closures for captured indices
+    cons = []
+    for i in range(n):
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+
+    # Vectorized overlap constraints with lambda closures for i,j
+    for i in range(n):
+        for j in range(i + 1, n):
+            cons.append({"type": "ineq", 
+                         "fun": lambda v, i=i, j=j: 
+                             (v[3*i] - v[3*j])**2 + (v[3*i+1] - v[3*j+1])**2 
+                             - (v[3*i+2] + v[3*j+2])**2})
+
+    # Initial optimization to find a good approximation
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 1500, "ftol": 1e-11})
+
+    # First reconfiguration: Apply spatial displacement with radius scaling
+    if res.success:
+        v = res.x
+        radii = v[2::3]
+        centers = np.column_stack([v[0::3], v[1::3]])
+        
+        # Compute a dynamic spatial hash to enable non-local reconfiguration
+        spatial_hash = np.random.rand(n, 2) * 0.08
+        displacement = spatial_hash * (radii / np.mean(radii))
+        perturbed_v = v.copy()
+        for i in range(n):
+            perturbed_v[3*i] += displacement[i, 0]
+            perturbed_v[3*i+1] += displacement[i, 1]
+        
+        # Re-evaluate with perturbed locations
+        res = minimize(neg_sum_radii, perturbed_v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 400, "ftol": 1e-12})
+
+    # Targeted reconfiguration: Find and grow the circle with the smallest non-zero radius
+    if res.success:
+        v = res.x
+        radii = v[2::3]
+        centers = np.column_stack([v[0::3], v[1::3]])
+        
+        # Find the circle with the smallest non-zero radius
+        min_radii = np.min(radii)
+        min_idx = np.where(radii == min_radii)[0][0]
+        target_radius = radii[min_idx]
+        
+        # Compute distances to others for growth validation
+        dx = centers[:, np.newaxis, 0] - centers[np.newaxis, :, 0]
+        dy = centers[:, np.newaxis, 1] - centers[np.newaxis, :, 1]
+        dists = np.sqrt(dx**2 + dy**2)
+
+        # Compute growth factor relative to average distance to others
+        avg_distance = np.mean(np.min(dists, axis=1))
+        growth_factor = 5.0 * (avg_distance - target_radius) / avg_distance
+        if growth_factor < 0:
+            growth_factor = 0.0
+        
+        # Grow the smallest radius with a soft expansion constraint on total sum
+        total_sum = sum(radii)
+        max_total_sum = total_sum + 0.005  # Allow slight expansion for optimization space
+        growth = growth_factor * (max_total_sum - total_sum) / total_sum
+        
+        new_radii = radii.copy()
+        # Apply targeted growth to smallest-radius circle
+        new_radii[min_idx] += growth * 1.2  # Over-expansion allowed to trigger new spatial arrangements
+        for i in range(n):
+            if i != min_idx:
+                # Apply small expansion to nearby circles with stochastic variation
+                new_radii[i] += growth * (1.0 + 0.1 * np.random.rand()) * 0.3
+        
+        # Apply the new radii with constraint validation
+        while True:
+            expanded_v = v.copy()
+            expanded_v[2::3] = new_radii
+            expanded_centers = np.column_stack([expanded_v[0::3], expanded_v[1::3]])
+            
+            # Validate expanded configuration
+            valid = True
+            for i in range(n):
+                for j in range(i + 1, n):
+                    dx = expanded_centers[i, 0] - expanded_centers[j, 0]
+                    dy = expanded_centers[i, 1] - expanded_centers[j, 1]
+                    dist = np.sqrt(dx**2 + dy**2)
+                    if dist < new_radii[i] + new_radii[j] - 1e-12:
+                        valid = False
+                        break
+                if not valid:
+                    break
+            if valid:
+                break
+            else:
+                # If invalid, scale down expansion proportionally
+                new_radii = radii + (new_radii - radii) * 0.95
+
+        # Update decision vector
+        v_new = v.copy()
+        v_new[2::3] = new_radii
+        
+        # Re-evaluate with enhanced radius configuration
+        res = minimize(neg_sum_radii, v_new, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 400, "ftol": 1e-11})
+
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())

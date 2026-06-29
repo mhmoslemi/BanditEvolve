@@ -1,0 +1,187 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = 5  # 5 columns, rows = 6 (ceil(26/5))
+    rows = (n + cols - 1) // cols
+    
+    # Initialize spatially diverse and non-symmetrical starting positions
+    xs = []
+    ys = []
+    for i in range(n):
+        row = i // cols
+        col = i % cols
+        x_center = (col + np.random.rand() * 0.1 + 0.5) / cols
+        y_center = (row + np.random.rand() * 0.1 + 0.5) / rows
+        # Use geometric distortion for staggered, non-uniform arrangement
+        if row % 2 != 0:  # Alternate row staggering
+            x_center += 0.5 / cols / 1.5 / (np.random.rand() + 1)
+            y_center *= 1.05 if np.random.rand() < 0.5 else 0.95
+        # Add randomness to break symmetry and avoid clustering
+        x = x_center + np.random.uniform(-0.04, 0.04)
+        y = y_center + np.random.uniform(-0.04, 0.04)
+        # Ensure the center remains within [0.0, 1.0] range
+        if x < -1e-12: x = 0
+        if x > 1.0 + 1e-12: x = 1.0
+        if y < -1e-12: y = 0
+        if y > 1.0 + 1e-12: y = 1.0
+        xs.append(x)
+        ys.append(y)
+    
+    r0 = (0.35 / cols) - 1e-2
+    # Use different starting radius distribution for more exploration
+    radius_distribution = np.zeros(n)
+    for c in range(cols):
+        for r in range(rows):
+            idx = r * cols + c
+            if r % 2 == 1:
+                radius_distribution[idx] = r0 * 1.2
+            elif r % 2 == 0:
+                radius_distribution[idx] = r0 * 0.95
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = radius_distribution
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    # Vectorized and robust constraint setup
+    cons = []
+    for i in range(n):
+        # Left boundary constraint
+        cons.append({"type": "ineq", "fun": (lambda v, i=i: 1.0 - v[3*i] - v[3*i+2])})
+        # Right boundary constraint
+        cons.append({"type": "ineq", "fun": (lambda v, i=i: v[3*i] - v[3*i+2])})
+        # Bottom boundary constraint
+        cons.append({"type": "ineq", "fun": (lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2])})
+        # Top boundary constraint
+        cons.append({"type": "ineq", "fun": (lambda v, i=i: v[3*i+1] - v[3*i+2])})
+    
+    # Overlap constraint optimization with improved numerical stability
+    for i in range(n):
+        for j in range(i + 1, n):
+            # Create lambda with safe parameter passing and capture
+            def overlap_func(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                diff = dx**2 + dy**2 - (v[3*i+2] + v[3*j+2])**2
+                # Add small numerical stability term to avoid negative values due to floating point errors
+                return diff + 1e-15
+            cons.append({"type": "ineq", "fun": overlap_func})
+
+    # Initial optimization with increased max iterations and tight tolerances
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 2500, "ftol": 1e-11, "gtol": 1e-10})
+    
+    # Spatial diversification strategy: dynamic perturbation based on geometric influence
+    if res.success:
+        v = res.x
+        centers = np.column_stack([v[0::3], v[1::3]])
+        radii = v[2::3]
+        
+        # Build influence matrix to identify spatially underutilized areas - target for expansion
+        dx = centers[:, np.newaxis, 0] - centers[np.newaxis, :, 0]
+        dy = centers[:, np.newaxis, 1] - centers[np.newaxis, :, 1]
+        dists = np.sqrt(dx**2 + dy**2)
+        # Compute geometric influence by inversely mapping minimal distances
+        influences = np.zeros_like(dists)
+        for i in range(n):
+            for j in range(i+1, n):
+                if dists[i, j] > 1e-12:
+                    influences[i, j] = 1.0 / (dists[i, j] + np.finfo(float).eps)
+                else:
+                    influences[i, j] = 1e6  # Mark as highly constrained
+        # Sum across all influence values to calculate "importance map"
+        influence_sums = np.sum(influences, axis=1)
+        # Find the least constrained circle by selecting minimum influence
+        least_constrained_idx = np.argmin(influence_sums)
+        
+        # Create enhanced perturbation vector that prioritizes expansion of this circle
+        spatial_hash = np.random.rand(n, 2) * 0.06
+        perturbed_v = v.copy()
+        for i in range(n):
+            # Scale spatial perturbation by radius for adaptive influence
+            radii_i = radii[i]
+            base_scale = np.sqrt(radii_i) if radii_i > 1e-6 else 1.0
+            # Apply radius-dependent spatial displacement
+            perturbed_v[3*i] += spatial_hash[i, 0] * base_scale * 1.5
+            perturbed_v[3*i+1] += spatial_hash[i, 1] * base_scale * 1.5
+        
+        # Re-evaluate with perturbed configuration
+        res = minimize(neg_sum_radii, perturbed_v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 300, "ftol": 1e-10})
+        
+        # Dynamic growth strategy: expand least constrained circle with directional perturbation
+        if res.success:
+            v = res.x
+            new_radii = v[2::3]
+            centers = np.column_stack([v[0::3], v[1::3]])
+            
+            # Build influence matrix again for directional expansion
+            dx = centers[:, np.newaxis, 0] - centers[np.newaxis, :, 0]
+            dy = centers[:, np.newaxis, 1] - centers[np.newaxis, :, 1]
+            dists = np.sqrt(dx**2 + dy**2)
+            influences = np.zeros_like(dists)
+            for i in range(n):
+                for j in range(i+1, n):
+                    if dists[i, j] > 1e-12:
+                        influences[i, j] = 1.0 / (dists[i, j] + np.finfo(float).eps)
+                    else:
+                        influences[i, j] = 1e6  # Mark as highly constrained
+            
+            # Compute potential for directional expansion, particularly on the least influenced circle
+            influence_sums = np.sum(influences, axis=1)
+            least_constrained_idx = np.argmin(influence_sums)
+            
+            # Compute expansion vector using directional sensitivity
+            current_total = np.sum(new_radii)
+            target_growth = 0.006  # ~0.15% of total possible sum
+            # Adjust expansion based on geometric influence and radial distribution
+            expansion_factor = (target_growth / (n - 1)) * (current_total / np.sum(new_radii)) * 1.1
+            # Use directional expansion to enhance spatial efficiency
+            direction = np.random.rand(2) * 0.03  # Small directional shift
+            
+            # Apply expansion to least constrained
+            new_radii[least_constrained_idx] += expansion_factor * 1.25
+            # Apply directional shifts to nearby circles to enhance utilization
+            for i in range(n):
+                if i != least_constrained_idx:
+                    expansion_i = expansion_factor * (1.0 + 0.15 * np.random.rand())
+                    # Add directional perturbation to nearby circles
+                    if np.any(dists[i, [least_constrained_idx]] < 1.2 * (new_radii[i] + new_radii[least_constrained_idx])):
+                        new_radii[i] += expansion_i * (1.0 + np.random.rand() * 0.2)
+                    else:
+                        new_radii[i] += expansion_i
+            
+            # Validate with vectorized constraint check and fallback
+            while True:
+                expanded_v = v.copy()
+                expanded_v[2::3] = new_radii
+                expanded_centers = np.column_stack([expanded_v[0::3], expanded_v[1::3]])
+                # Use optimized distance check using broadcasting with np.triu_indices
+                triu_indices = np.triu_indices(n, 1)
+                # Calculate pairwise distances
+                dx = expanded_centers[triu_indices[0], :] - expanded_centers[triu_indices[1], :]
+                dy = expanded_centers[triu_indices[0], :] - expanded_centers[triu_indices[1], :]
+                dists = np.sqrt(dx**2 + dy**2)
+                overlap_mask = np.any(dists < (new_radii[triu_indices[0]] + new_radii[triu_indices[1]]) - 1e-12, axis=1)
+                if not np.any(overlap_mask):
+                    break
+                else:
+                    # Reduce expansion slightly if overlaps
+                    new_radii = new_radii * (1 - 0.02 * np.sum(overlap_mask) / (n * (n-1)/2))
+            # Final update
+            v_new = v.copy()
+            v_new[2::3] = new_radii
+            res = minimize(neg_sum_radii, v_new, method="SLSQP", bounds=bounds,
+                           constraints=cons, options={"maxiter": 200, "ftol": 1e-10})
+    
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())

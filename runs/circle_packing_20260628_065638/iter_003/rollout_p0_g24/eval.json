@@ -1,0 +1,21 @@
+{
+  "record": {
+    "kind": "mutate",
+    "band": "good",
+    "arm_idx": 3,
+    "arm_source": "reflection",
+    "outcome": "invalid:eval",
+    "value": null,
+    "dmu": null,
+    "dsigma": null
+  },
+  "eval": {
+    "per_seed": {
+      "0": 0.0
+    },
+    "value": 0.0,
+    "valid": false,
+    "raw": null,
+    "msg": "run_failed:loop of ufunc does not support argument 0 of type generator which has no callable sqrt method"
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "record": {
+    "kind": "mutate",
+    "band": "elite",
+    "arm_idx": 8,
+    "arm_source": "reflection",
+    "outcome": "sterile:cosmetic_noop",
+    "value": null,
+    "dmu": null,
+    "dsigma": null
+  },
+  "eval": null
+}

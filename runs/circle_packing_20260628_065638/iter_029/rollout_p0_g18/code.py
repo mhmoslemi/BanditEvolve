@@ -1,0 +1,206 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = np.ceil(np.sqrt(n)).astype(int)
+    rows = (n + cols - 1) // cols
+
+    # Initialize with a hybrid geometric grid + random perturbation + asymmetric spacing
+    xs, ys, radii_base = [], [], []
+    for i in range(n):
+        row = i // cols
+        col = i % cols
+        x_ref = (col + 0.5) / cols
+        y_ref = (row + 0.5) / rows
+
+        # Base grid position: symmetric but with controlled spacing
+        base_x = (col + 0.2) / cols + np.random.uniform(-0.03, 0.03)
+        base_y = (row + 0.2) / rows + np.random.uniform(-0.03, 0.03)
+        
+        # Apply alternating row staggering for non-uniform spacing
+        if row % 2 == 1:
+            base_x += 0.3 / cols
+        xs.append(base_x)
+        ys.append(base_y)
+    
+    # Base radius estimation using packing density heuristic and geometric spacing
+    r0 = 0.35 / cols - 1e-3
+    # Adjust based on grid density with a non-linear coefficient for spacing sensitivity
+    radius_multiplier = 1.2 * np.cos(np.pi / (rows * cols))
+    r0 = r0 * radius_multiplier
+
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = np.full(n, r0)
+
+    # Enforce bounds strictly in a 3n-length structure
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]  # x, y, r boundaries
+
+    # Define the objective function to maximize total radii
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])  # we minimize the negative total
+
+    # Constraints are applied with a hybrid constraint formulation:
+    # - Boundary constraints are explicitly defined
+    # - Overlap constraints are vectorized with adaptive tolerance
+    # - Gradient handling improved for numerical stability
+    cons = []
+
+    # Vectorized boundary constraints with direct index mapping
+    for i in range(n):
+        # Left boundary: x - r >= 0
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        # Right boundary: x + r <= 1
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        # Bottom boundary: y - r >= 0
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        # Top boundary: y + r <= 1
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+
+    # Overlap constraints with adaptive tolerance and vectorized calculation
+    # Precompute all pairwise distances with broadcasting
+    for i in range(n):
+        for j in range(i + 1, n):
+            # Use lambda with i,j for closure-based access
+            cons.append({
+                "type": "ineq",
+                "fun": lambda v, i=i, j=j: 
+                    (v[3*i] - v[3*j])**2 + (v[3*i+1] - v[3*j+1])**2 
+                    - (v[3*i+2] + v[3*j+2])**2 + 1e-14  # Add epsilon for numerical stability
+            })
+
+    # Initial optimization with tighter tolerances and dynamic scaling
+    # Use the best method for constrained optimization within feasible bounds
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={
+                       "maxiter": 3000, "ftol": 1e-11, "gtol": 1e-10, "disp": False
+                   })
+
+    # Apply multi-phase configuration refinement with spatial constraint disruption
+    # Phase 1: Perturb spatial hierarchy for non-local exploration
+    if res.success:
+        v = res.x
+        radii = v[2::3]
+        centers = np.column_stack([v[0::3], v[1::3]])
+        
+        # Generate randomized spatial hash for asymmetric perturbations
+        spatial_hash = np.random.rand(n, 2) * 0.045  # small spatial deviation
+        perturbed_v = v.copy()
+        
+        # Apply adaptive perturbations based on current radii distribution
+        for i in range(n):
+            # Use radius as a scaling factor for spatial perturbation
+            perturb_scale = radii[i] / np.mean(radii)
+            if perturb_scale > 0.8:  # high-radius circles get less perturbation
+                perturb_scale = 0.8
+            elif perturb_scale < 0.2:
+                perturb_scale = 0.2  # avoid extreme collapse of small circles
+            perturbed_v[3*i] += spatial_hash[i, 0] * perturb_scale
+            perturbed_v[3*i+1] += spatial_hash[i, 1] * perturb_scale
+        
+        # Evaluate with new configuration and tighter tolerances
+        res = minimize(neg_sum_radii, perturbed_v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={
+                           "maxiter": 600, "ftol": 1e-11, "gtol": 1e-10, "disp": False
+                       })
+
+    # Phase 2: Apply constrained reconfiguration on spatially bound regions
+    if res.success:
+        v = res.x
+        centers = np.column_stack([v[0::3], v[1::3]])
+        radii = v[2::3]
+        
+        # Analyze spatial distribution to identify critical constraints
+        dx = centers[:, np.newaxis, 0] - centers[np.newaxis, :, 0]
+        dy = centers[:, np.newaxis, 1] - centers[np.newaxis, :, 1]
+        dists = np.sqrt(dx**2 + dy**2)
+        
+        # Identify most spatially bound circle via inverse of average min distances
+        min_dists = np.min(dists, axis=1)
+        # Normalize to emphasize spatial constraints
+        influence_weights = 1.0 / (min_dists + 1e-8)
+        # Weighted averaging to find spatially critical region
+        most_bound_idx = np.argmax(influence_weights)
+        
+        # Apply strategic expansion on this circle with global constraint check
+        # Use a gradient-aware expansion that leverages positional freedom
+        # First, simulate a slight expansion to estimate constraint behavior
+        expanded_r = radii.copy()
+        expanded_r[most_bound_idx] += 0.0001  # test expansion
+        
+        # Check if this expansion maintains boundaries (no direct overlap)
+        expanded_center = np.column_stack([v[0::3], v[1::3]])
+        expanded_center[most_bound_idx, :] += 0.0  # no position change for expansion test
+        
+        # Validate expansion with direct distance comparisons
+        valid = True
+        for i in range(n):
+            if i == most_bound_idx:
+                continue
+            dx_e = expanded_center[i, 0] - expanded_center[most_bound_idx, 0]
+            dy_e = expanded_center[i, 1] - expanded_center[most_bound_idx, 1]
+            if np.sqrt(dx_e**2 + dy_e**2) < expanded_r[i] + expanded_r[most_bound_idx] - 1e-12:
+                valid = False
+                break
+        
+        if valid:
+            # Apply actual expansion on most_bound_idx circle
+            v_new = v.copy()
+            v_new[3*most_bound_idx + 2] = np.clip(radii[most_bound_idx] * 1.03, 1e-4, 0.5)
+            
+            # Re-evaluate with new configuration
+            res = minimize(neg_sum_radii, v_new, method="SLSQP", bounds=bounds,
+                           constraints=cons, options={
+                               "maxiter": 700, "ftol": 1e-10, "gtol": 1e-9, "disp": False
+                           })
+
+    # Phase 3: Global expansion under spatial balance constraint
+    if res.success:
+        v = res.x
+        radii = v[2::3]
+        # Calculate total expansion potential based on current configuration's spatial balance
+        # Compute average minimum distance squared for all circles (non-overlapping is already enforced)
+        # Use inverse of this as a metric for expansion potential
+        dx = centers[:, np.newaxis, 0] - centers[np.newaxis, :, 0]
+        dy = centers[:, np.newaxis, 1] - centers[np.newaxis, :, 1]
+        dists = np.sqrt(dx**2 + dy**2)
+        
+        # Calculate average min distance as a balance metric
+        min_dists = np.min(dists, axis=1)
+        avg_min_dist = np.mean(min_dists)
+        # Calculate expansion target as proportion of avg_min_dist to max possible radius
+        expansion_target = np.min(avg_min_dist / 2.0)  # safe margin
+
+        # Apply expansion to all circles proportionally to their spatial freedom
+        # Use inverse proportional growth: smaller min distances get more room
+        growth_factors = np.zeros(n)
+        for i in range(n):
+            # Spatial freedom is inverse of min distance
+            spatial_freedom = 1.0 / (min_dists[i] + 1e-8)
+            growth_factors[i] = spatial_freedom / np.sum(spatial_freedom)
+        
+        # Apply expansion with proportional allocation
+        expansion_amount = 0.0008 * (expansion_target / np.max(radii))
+        new_radii = radii + growth_factors * expansion_amount
+        
+        # Apply clipping and check feasibility
+        new_radii = np.clip(new_radii, 1e-4, 0.5)
+        
+        # Apply new radii in vectorized form
+        v_new = v.copy()
+        v_new[2::3] = new_radii
+        
+        # Re-evaluate with expanded radii and spatial constraints
+        res = minimize(neg_sum_radii, v_new, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={
+                           "maxiter": 500, "ftol": 1e-10, "gtol": 1e-9, "disp": False
+                       })
+
+    # Final validation and output
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())

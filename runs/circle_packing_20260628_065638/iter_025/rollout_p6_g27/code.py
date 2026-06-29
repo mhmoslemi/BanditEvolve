@@ -1,0 +1,85 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = 5
+    rows = (n + cols - 1) // cols
+    
+    # Initialize positions with randomized staggered grid and enhanced symmetry breaking
+    xs = []
+    ys = []
+    for i in range(n):
+        row = i // cols
+        col = i % cols
+        x_center = (col + 0.5) / cols
+        y_center = (row + 0.5) / rows
+        # Randomized offset to break symmetry and avoid clustering
+        x = x_center + np.random.uniform(-0.06, 0.06)
+        y = y_center + np.random.uniform(-0.06, 0.06)
+        # Shift alternate rows to create staggered grid
+        if row % 2 == 1:
+            x += 0.5 / cols
+        xs.append(x)
+        ys.append(y)
+    
+    r0 = 0.35 / cols - 1e-3
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = np.full(n, r0)
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    # Vectorized constraints for boundaries
+    cons = []
+    for i in range(n):
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+    
+    # Vectorized overlap constraints and spatial hashing for efficient distance calculation
+    for i in range(n):
+        for j in range(i + 1, n):
+            def constraint_func(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                return dx*dx + dy*dy - (v[3*i+2] + v[3*j+2])**2
+            cons.append({"type": "ineq", "fun": constraint_func})
+
+    # Initial optimization with increased max iterations and tighter tolerance
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 2500, "ftol": 1e-12, "eps": 1e-10})
+    
+    # Apply perturbation on smallest circles to escape local minima (shake heuristic)
+    if res.success:
+        v = res.x
+        radii = v[2::3]
+        indices = np.argsort(radii)  # Indexes of smallest radii
+        
+        # Apply small perturbations to each of the smallest 4 circles
+        for idx in indices[:4]:
+            perturb_v = v.copy()
+            # Small spatial perturbation (0.005) to move the center slightly
+            perturb_v[3*idx] += np.random.uniform(-0.005, 0.005)
+            perturb_v[3*idx+1] += np.random.uniform(-0.005, 0.005)
+            # Add a tiny expansion to radius to trigger re-evaluation
+            perturb_v[3*idx+2] += np.random.uniform(0.0001, 0.0005)
+            
+            # Re-evaluate perturbed state with new radius and spatial configuration
+            res = minimize(neg_sum_radii, perturb_v, method="SLSQP", bounds=bounds,
+                           constraints=cons, options={"maxiter": 300, "ftol": 1e-12, "eps": 1e-9})
+            if res.success:
+                v = res.x
+                radii = v[2::3]
+    
+    # Final cleanup and return
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())

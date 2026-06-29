@@ -1,0 +1,89 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = 5
+    rows = (n + cols - 1) // cols
+
+    # Improved grid initialization with better spacing
+    xs = []
+    ys = []
+    for i in range(n):
+        row = i // cols
+        col = i % cols
+        x = (col + 0.5) / cols
+        y = (row + 0.5) / rows
+        if row % 2 == 1:
+            x += 0.5 / cols
+        xs.append(x)
+        ys.append(y)
+    
+    r0 = 0.5 / cols - 1e-3
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = np.full(n, r0)
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    cons = []
+    for i in range(n):
+        # Left and right bounds
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        # Bottom and top bounds
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+
+    # Add constraints for circle overlaps
+    for i in range(n):
+        for j in range(i + 1, n):
+            def constraint_func(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                dist_sq = dx*dx + dy*dy
+                min_dist_sq = (v[3*i+2] + v[3*j+2])**2
+                return dist_sq - min_dist_sq
+            cons.append({"type": "ineq", "fun": constraint_func})
+
+    # Add penalty function for out-of-bounds and overlaps
+    def penalty(v):
+        total = 0
+        for i in range(n):
+            x, y, r = v[3*i], v[3*i+1], v[3*i+2]
+            # Penalties for out-of-bounds
+            total += max(0, x - r - 1.0) + max(0, 1.0 - x - r) + max(0, y - r - 1.0) + max(0, 1.0 - y - r)
+            # Penalties for overlaps
+            for j in range(i + 1, n):
+                dx = x - v[3*j]
+                dy = y - v[3*j+1]
+                dist_sq = dx*dx + dy*dy
+                min_dist_sq = (r + v[3*j+2])**2
+                total += max(0, min_dist_sq - dist_sq)
+        return total
+
+    # Hybrid optimization: global search with penalty function followed by local refinement
+    def hybrid_objective(v):
+        return neg_sum_radii(v) + 1e-5 * penalty(v)
+
+    # First global search with SLSQP
+    res_global = minimize(hybrid_objective, v0, method="SLSQP", bounds=bounds,
+                          constraints=cons, options={"maxiter": 300, "ftol": 1e-9})
+
+    # If global search was successful, perform local refinement
+    if res_global.success:
+        v_refined = res_global.x
+        res_local = minimize(neg_sum_radii, v_refined, method="L-BFGS-B", bounds=bounds,
+                             constraints=cons, options={"maxiter": 200, "ftol": 1e-9})
+        v = res_local.x if res_local.success else v_refined
+    else:
+        v = res_global.x
+
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())

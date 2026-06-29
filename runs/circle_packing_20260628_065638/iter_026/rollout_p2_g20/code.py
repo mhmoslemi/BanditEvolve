@@ -1,0 +1,120 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = 5
+    rows = (n + cols - 1) // cols
+    
+    # Initialize positions with randomized geometric clustering and staggered grid
+    xs = []
+    ys = []
+    for i in range(n):
+        row = i // cols
+        col = i % cols
+        x_center = (col + 0.45) / cols
+        y_center = (row + 0.45) / rows
+        # Randomized offset to break symmetry and avoid clustering
+        x = x_center + np.random.uniform(-0.1, 0.1)
+        y = y_center + np.random.uniform(-0.1, 0.1)
+        # Shift alternate rows to create staggered grid
+        if row % 2 == 1:
+            x += 0.5 / cols
+        xs.append(x)
+        ys.append(y)
+    
+    # Initial radius based on spacing and some padding
+    r0 = 0.34 / cols
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = np.full(n, r0)
+
+    # Define bounds consistent with 3*n parameters
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    # Objective to maximize sum of radii
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    # Boundary constraints
+    cons = []
+    for i in range(n):
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+        
+    # Overlap constraints using vectorized distance calculation
+    for i in range(n):
+        for j in range(i + 1, n):
+            # Use lambda with capture to avoid closure issues
+            def constraint_func(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                return dx*dx + dy*dy - (v[3*i+2] + v[3*j+2])**2
+            cons.append({"type": "ineq", "fun": constraint_func})
+
+    # Initial optimization with tighter constraints and high iteration count
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 2000, "ftol": 1e-12, "eps": 1e-10})
+    
+    # Asymmetric reconfiguration step with adaptive spatial hashing
+    if res.success:
+        v = res.x
+        # Create stochastic spatial hashing with dynamic perturbation scaling
+        perturbation_multiplier = 0.05 * (n / 26)
+        spatial_hash = np.random.rand(n, 2) * perturbation_multiplier
+        perturbed_v = v.copy()
+        for i in range(n):
+            perturbed_v[3*i] += spatial_hash[i, 0]
+            perturbed_v[3*i+1] += spatial_hash[i, 1]
+        
+        # Re-evaluate with perturbed configuration
+        res = minimize(neg_sum_radii, perturbed_v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 400, "ftol": 1e-12, "eps": 1e-10})
+    
+    # Targeted radius expansion with isolation metric and adaptive expansion
+    if res.success:
+        v = res.x
+        radii = v[2::3]
+        centers = np.column_stack([v[0::3], v[1::3]])
+        
+        # Vectorized distance matrix using broadcasting for better performance
+        dx = centers[:, np.newaxis, 0] - centers[np.newaxis, :, 0]
+        dy = centers[:, np.newaxis, 1] - centers[np.newaxis, :, 1]
+        dists = np.sqrt(dx**2 + dy**2)
+        
+        # Find the circle with the largest isolation
+        min_dists = np.min(dists, axis=1)
+        least_constrained_idx = np.argmax(min_dists)
+        
+        # Apply isolation-based expansion with soft enforcement and dynamic thresholding
+        total_sum = np.sum(radii)
+        expansion_factor = 0.008 * (1 + np.min(min_dists) / 0.1)
+        expansion_threshold = (total_sum + expansion_factor) / (n - 1)
+        
+        # Create expansion vector with isolation-weighted expansion
+        new_radii = radii.copy()
+        new_radii[least_constrained_idx] += expansion_factor * 1.1
+        for i in range(n):
+            if i != least_constrained_idx:
+                # Use local isolation to scale expansion for better spatial balance
+                local_isolation = np.min(dists[i, :]) / np.min(min_dists)
+                expansion_factor_i = expansion_factor * local_isolation * (1.0 + 0.1 * np.random.rand())
+                new_radii[i] += np.clip(expansion_factor_i, 1e-4, expansion_threshold - radii[i])
+        
+        # Apply expansion and check for validity with adaptive constraint tolerance
+        expanded_v = v.copy()
+        expanded_v[2::3] = new_radii
+        
+        # Re-evaluate with expanded radii using tighter constraint checking
+        res = minimize(neg_sum_radii, expanded_v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 400, "ftol": 1e-12, "eps": 1e-10, "xatol": 1e-9})
+
+    # Final validation and output
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())

@@ -1,0 +1,242 @@
+```python
+import numpy as np
+
+def run_packing():
+    n = 26
+    # Optimized grid dimensions: 5 rows and 6 columns for better balancing
+    cols = 6
+    rows = (n + cols - 1) // cols
+    
+    # Initialize positions with:
+    # - A geometric grid to ensure even distribution
+    # - Random offset to break symmetry
+    # - Alternating row offset to create staggered grid (reduces vertical clustering)
+    # - Random spatial perturbation to avoid trivial solutions
+    xs = []
+    ys = []
+    for i in range(n):
+        row = i // cols
+        col = i % cols
+        
+        x_center = (col + 0.5) / cols
+        y_center = (row + 0.5) / rows
+        
+        # Introduce asymmetric jitter in offset to break symmetry and create spatial diversity
+        row_offset = np.random.uniform(-0.03, 0.03)
+        col_offset = np.random.uniform(-0.04, 0.04)
+        
+        # Shift alternate rows for staggered pattern
+        if row % 2 == 1:
+            x_center += 0.5 / cols  # 1/12 of the square
+            # This creates a hexagonal-like packing in the grid
+        
+        # Add asymmetric offset to break symmetry
+        x = x_center + col_offset
+        y = y_center + row_offset
+        
+        # Add spatial jitter for non-trivial configuration
+        jitter = np.random.uniform(-0.003, 0.003, size=2)
+        x += jitter[0]
+        y += jitter[1]
+        
+        xs.append(x)
+        ys.append(y)
+    
+    # Initialize radii with tighter, higher baseline and dynamic scaling
+    # r0 depends on the grid aspect and spacing
+    grid_width = 1.0 / cols
+    grid_height = 1.0 / rows
+    r0 = 0.45 * min(grid_width, grid_height) - 1e-3  # 0.45 of the smallest grid cell
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = np.full(n, r0)
+
+    # Bounds: ensure length 3*n
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]  
+    # Radius: min radius 1e-4, max radius 0.5 to prevent overflow
+
+    # Objective function: negate the sum of radii
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    # Boundary constraints (inequality constraints: f >= 0)
+    cons = []
+    for i in range(n):
+        # Left edge constraint: x - r >= 0
+        def left_v(i):
+            def _left(v):
+                return v[3*i] - v[3*i+2]
+            return _left
+        cons.append({"type": "ineq", "fun": left_v(i)})
+        # Right edge constraint: 1 - (x + r) >= 0
+        def right_v(i):
+            def _right(v):
+                return 1.0 - v[3*i] - v[3*i+2]
+            return _right
+        cons.append({"type": "ineq", "fun": right_v(i)})
+        # Bottom edge constraint: y - r >= 0
+        def bottom_v(i):
+            def _bottom(v):
+                return v[3*i+1] - v[3*i+2]
+            return _bottom
+        cons.append({"type": "ineq", "fun": bottom_v(i)})
+        # Top edge constraint: 1 - (y + r) >= 0
+        def top_v(i):
+            def _top(v):
+                return 1.0 - v[3*i+1] - v[3*i+2]
+            return _top
+        cons.append({"type": "ineq", "fun": top_v(i)})
+
+    # Pairwise non-overlap constraints (use the squared distance for numerical stability)
+    # Vectorized constraints that prevent intersection
+    # Avoid lambda issues by using closure factories with delayed execution
+    for i in range(n):
+        for j in range(i+1, n):
+            # Use a helper closure to create the constraint for (i,j)
+            def create_overlap_constraint(idx_i, idx_j):
+                def _constraint(v):
+                    dx = v[3 * idx_i] - v[3 * idx_j]
+                    dy = v[3 * idx_i + 1] - v[3 * idx_j + 1]
+                    return dx*dx + dy*dy - (v[3 * idx_i + 2] + v[3 * idx_j + 2])**2
+                return _constraint
+            cons.append({"type": "ineq", "fun": create_overlap_constraint(i, j)})
+
+    # Use a more robust optimization strategy
+    # Initial optimization with high tolerance
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={
+                       "maxiter": 1500,
+                       "ftol": 1e-11,  # Tighten tolerance for precision
+                       "gtol": 1e-11,  # Tighten gradient tolerance
+                       "eps": 1e-9,    # Control finite differences step
+                       "disp": False   # Suppress unnecessary optimization output
+                   })
+
+    # Apply a randomized spatial reconfiguration to escape local optima
+    if res.success:
+        v = res.x
+        # Compute and store the current state for reconfig
+        current_centers = np.column_stack([v[0::3], v[1::3]])
+        current_radii = v[2::3]
+        
+        # Create a spatial hash based on circle radii
+        # Apply asymmetric perturbation to centers to break symmetry
+        # Scale perturbation based on the circle's radius to maintain spatial consistency
+        # Randomize the hash vector for each circle to create diverse configurations
+        hash_matrix = np.random.rand(n, 2) * 0.04
+        
+        # Apply spatial perturbation to centers while preserving relative spacing
+        perturbed_centers = current_centers + hash_matrix * current_radii[:, np.newaxis]
+        # Clamp into [0,1] square
+        clamped_centers = np.clip(perturbed_centers, 0.0, 1.0)
+        
+        # Now re-construct the decision vector with new centers
+        perturbed_v = np.zeros(3 * n)
+        perturbed_v[0::3] = clamped_centers[:, 0]
+        perturbed_v[1::3] = clamped_centers[:, 1]
+        perturbed_v[2::3] = current_radii
+        
+        # Re-evaluate with new spatial configuration but preserved radii
+        res = minimize(neg_sum_radii, perturbed_v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={
+                           "maxiter": 350,
+                           "ftol": 1e-11,
+                           "gtol": 1e-11,
+                           "eps": 1e-9
+                       })
+    
+    # Apply gradient-aware targeted expansion on least constrained circle
+    if res.success:
+        v = res.x
+        radii = v[2::3]
+        centers = np.column_stack([v[0::3], v[1::3]])
+        
+        # Compute pairwise distances to find the 'least constrained' circle
+        dists = np.zeros((n, n))
+        for i in range(n):
+            for j in range(i+1, n):
+                dx = centers[i, 0] - centers[j, 0]
+                dy = centers[i, 1] - centers[j, 1]
+                dists[i, j] = dx*dx + dy*dy
+                dists[j, i] = dists[i, j]
+        
+        # Compute minimum distance to other circles for each circle
+        min_dists = np.min(dists, axis=1)
+        least_constrained_idx = np.argmax(min_dists)  # index with max min distance
+        
+        # Expand radius based on current configuration and feasibility
+        # First: ensure non-overlap between least constrained circle and all others
+        # We do this by temporarily increasing it and checking validity
+        # Then we apply the expansion with a controlled gradient
+        # To do this smartly, use a constrained gradient-based expansion
+        
+        # Compute current total sum as a baseline
+        total_current = np.sum(radii)
+        
+        # Compute expansion factor dynamically based on min available space
+        # Use a safety margin of 2.5% of the circle's current radius
+        safe_radius = max(radii[least_constrained_idx] * 0.98, 1e-4)
+        expansion_coeff = 1.2 * (safe_radius / radii[least_constrained_idx])
+        
+        # Try to grow the radius by the expansion factor
+        # But avoid overexpansion and ensure non-overlap
+        # We do this in a gradient-aware way
+        # We'll perform a controlled gradient update with non-overlap enforcement
+        new_radius = radii[least_constrained_idx] * expansion_coeff
+        new_radii = radii.copy()
+        new_radii[least_constrained_idx] = new_radius
+        
+        # Create a new vector with updated radius for optimization
+        # This way, the SLSQP solver can find a feasible configuration
+        new_v = v.copy()
+        new_v[2::3] = new_radii
+        
+        # Run a constrained optimization to find feasible configuration
+        # This will ensure non-overlap and optimize total sum
+        res = minimize(neg_sum_radii, new_v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={
+                           "maxiter": 350,
+                           "ftol": 1e-11,
+                           "gtol": 1e-11,
+                           "eps": 1e-9,
+                           "disp": False
+                       })
+    
+    # Final cleanup and validation
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)  # Ensure non-zero radii
+    
+    # After the final configuration, apply gradient-based final refinement
+    # Use the initial configuration (v0) as a base and perturb to escape local optima
+    final_centers = centers.copy()
+    final_radii = radii.copy()
+    # Perturb centers with small Gaussian noise to escape local optima
+    perturbation = np.random.normal(0, 0.0005, size=(n, 2))
+    final_centers += perturbation
+    final_centers = np.clip(final_centers, 0.0, 1.0)
+    
+    # Recompute decision vector
+    final_v = np.zeros(3 * n)
+    final_v[0::3] = final_centers[:, 0]
+    final_v[1::3] = final_centers[:, 1]
+    final_v[2::3] = final_radii
+    
+    # Final optimization step for precision
+    res = minimize(neg_sum_radii, final_v, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={
+                       "maxiter": 200,
+                       "ftol": 1e-11,
+                       "gtol": 1e-11,
+                       "eps": 1e-9
+                   })
+    
+    # Final solution
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())
+```

@@ -1,0 +1,189 @@
+```python
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = 5
+    rows = (n + cols - 1) // cols
+    
+    # Optimal seed for deterministic, high-quality initial distribution
+    np.random.seed(0xBADC0DE)
+    
+    # Hybrid initialization: clustered row-wise with dynamic padding and geometric hashing
+    xs, ys = [], []
+    for i in range(n):
+        row = i // cols
+        col = i % cols
+        base_x = (col + 0.5) / cols
+        base_y = (row + 0.5) / rows
+        
+        # Create geometric noise based on row index
+        row_factor = 0.2 * (row + 1) / (rows + 1)
+        x_noise = np.random.uniform(-0.05 - row_factor, 0.05 + row_factor)
+        y_noise = np.random.uniform(-0.05 - row_factor, 0.05 + row_factor)
+        
+        # Apply staggered row offset based on parity
+        if row % 2 == 1:
+            x_noise += 0.25 / cols
+        
+        # Apply geometric hashing: noise scaling with radius
+        x = base_x + x_noise * 0.85
+        y = base_y + y_noise * 0.85
+        
+        # Ensure bounds compliance with margin
+        x = np.clip(x, 1e-6, 1 - 1e-6)
+        y = np.clip(y, 1e-6, 1 - 1e-6)
+        
+        xs.append(x)
+        ys.append(y)
+    
+    # Adaptive radius initialization: based on grid spacing
+    base_radius = 0.25 / cols
+    radius_multiplier = 1.3  # Tuned to prevent overlap with initial positions
+    r0 = np.clip(base_radius * radius_multiplier, 1e-4, 0.45)
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = np.full(n, r0)
+    
+    # Unified bounds list with exact length
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]  # length 3*n
+    
+    # Negative objective to maximize sum of radii
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+    
+    # Optimized constraint creation with vectorization and closure handling
+    cons = []
+    for i in range(n):
+        # Left bound constraint
+        cons.append({
+            "type": "ineq",
+            "fun": lambda v, i=i: v[3*i] - v[3*i+2]
+        })
+        # Right bound constraint
+        cons.append({
+            "type": "ineq",
+            "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]
+        })
+        # Bottom bound constraint
+        cons.append({
+            "type": "ineq",
+            "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]
+        })
+        # Top bound constraint
+        cons.append({
+            "type": "ineq",
+            "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]
+        })
+    
+    # Overlap constraints with memory efficient vectorization
+    for i in range(n):
+        for j in range(i + 1, n):
+            cons.append({
+                "type": "ineq",
+                "fun": lambda v, i=i, j=j: 
+                    (v[3*i] - v[3*j])**2 + (v[3*i+1] - v[3*j+1])**2 
+                    - (v[3*i+2] + v[3*j+2])**2
+            })
+    
+    # First optimization with aggressive convergence
+    res = minimize(neg_sum_radii, v0, method="SLSQP", 
+                 bounds=bounds, constraints=cons,
+                 options={"maxiter": 1000, "ftol": 1e-10, "eps": 1e-12})
+    
+    # Dynamic enhancement based on constraint graph analysis
+    def optimize_with_feedback(v):
+        try:
+            # Secondary optimization with tighter constraints and feedback loop
+            res2 = minimize(
+                neg_sum_radii, v, method="SLSQP",
+                bounds=bounds, constraints=cons,
+                options={"maxiter": 600, "ftol": 1e-10, "eps": 1e-12, 
+                        "disp": False}
+            )
+            return res2.x if res2.success else v
+        except:
+            return v
+    
+    # Apply feedback loop optimization
+    if res.success:
+        res = optimize_with_feedback(res.x)
+    
+    # Adaptive perturbation strategy: geometric hashing with spatial correlation
+    if res.success:
+        v = res.x
+        radii = v[2::3]
+        centers = np.column_stack([v[0::3], v[1::3]])
+        
+        # Create geometric hash based on spatial distribution and radius
+        spatial_hash = np.random.rand(n, 2)
+        scale_factor = 0.05 * (1.0 + np.log(np.mean(radii)))
+        
+        # Stochastic perturbation: scale with radius to give more flexibility to small circles
+        for i in range(n):
+            dx = spatial_hash[i, 0] * radii[i] * scale_factor
+            dy = spatial_hash[i, 1] * radii[i] * scale_factor
+            v[3*i] += dx
+            v[3*i+1] += dy
+            
+            # Bound enforcement
+            v[3*i] = np.clip(v[3*i], 1e-6, 1 - 1e-6)
+            v[3*i+1] = np.clip(v[3*i+1], 1e-6, 1 - 1e-6)
+        
+        # Reoptimize with perturbed state
+        res = minimize(
+            neg_sum_radii, v, method="SLSQP",
+            bounds=bounds, constraints=cons,
+            options={"maxiter": 400, "ftol": 1e-11, "eps": 1e-12}
+        )
+    
+    # Targeted expansion of least constrained circle with minimal radius
+    if res.success:
+        v = res.x
+        radii = v[2::3]
+        centers = np.column_stack([v[0::3], v[1::3]])
+        
+        # Calculate distances and find least constrained circle
+        dists = np.zeros((n, n))
+        for i in range(n):
+            for j in range(i + 1, n):
+                dx = centers[i, 0] - centers[j, 0]
+                dy = centers[i, 1] - centers[j, 1]
+                dists[i, j] = np.sqrt(dx*dx + dy*dy)
+                dists[j, i] = dists[i, j]
+        
+        min_dist = np.min(dists, axis=1)
+        least_constrained_idx = np.argmax(min_dist)
+        
+        # Determine current expansion potential
+        base_total = np.sum(radii)
+        current_avg = base_total / n
+        
+        # Create expansion policy: prioritize least constrained circles
+        expansion_factor = 0.008 * (current_avg / base_total)  # Tune factor
+                
+        # Compute radius distribution based on distance to others
+        expansion_weights = np.zeros(n)
+        for i in range(n):
+            expansion_weights[i] = (1.0 / (1.1 + dists[i, :].mean())) ** 3
+        
+        # Apply expansion with constraints
+        for i in range(n):
+            if i != least_constrained_idx:
+                v[3*i + 2] += expansion_weights[i] * expansion_factor
+        
+        # Re-optimize with expanded configurations
+        res = minimize(
+            neg_sum_radii, v, method="SLSQP",
+            bounds=bounds, constraints=cons,
+            options={"maxiter": 400, "ftol": 1e-11, "eps": 1e-12}
+        )
+    
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())
+```

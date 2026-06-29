@@ -1,0 +1,136 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = 6  # Increased column count for denser packing attempt
+    rows = (n + cols - 1) // cols  # Auto-adjusted row count
+
+    # Initialize with a more refined grid + jitter
+    xs = []
+    ys = []
+    for i in range(n):
+        row = i // cols
+        col = i % cols
+        x_center = (col + 0.25) / cols  # Slightly offset for better spacing
+        y_center = (row + 0.25) / rows
+        # Add controlled jitter to prevent perfect grid locking
+        x = x_center + np.random.uniform(-0.03, 0.03)
+        y = y_center + np.random.uniform(-0.03, 0.03)
+        # Alternate row offset for staggered arrangement
+        if row % 2 == 1:
+            x += 0.35 / cols  # Larger offset for better spacing
+        xs.append(x)
+        ys.append(y)
+
+    # Initial radius estimate based on grid spacing
+    r0 = 0.25 / cols - 1e-4
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = np.full(n, r0)
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    # Vectorized boundary constraints with delayed lambda binding
+    cons = []
+    for i in range(n):
+        # x >= r constraint
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        # x + r <= 1 constraint
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        # y >= r constraint
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        # y + r <= 1 constraint
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+    
+    # Overlap constraints with vectorized calculation
+    for i in range(n):
+        for j in range(i + 1, n):
+            # Precompute indices for faster access
+            i0, i1, i2 = 3*i, 3*i+1, 3*i+2
+            j0, j1, j2 = 3*j, 3*j+1, 3*j+2
+            # Use lambda with fixed indices
+            cons.append({"type": "ineq", 
+                         "fun": lambda v, i0=i0, i1=i1, i2=i2, j0=j0, j1=j1, j2=j2: 
+                             (v[i0]-v[j0])**2 + (v[i1]-v[j1])**2 - (v[i2] + v[j2])**2})
+
+    # Initial optimization with high precision
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 2000, "ftol": 1e-12, "eps": 1e-10})
+
+    # Apply a geometric hashing reconfiguration
+    if res.success:
+        v = res.x
+        # Compute distance matrix for all pairwise circles
+        centers = np.column_stack([v[0::3], v[1::3]])
+        dists = np.zeros((n, n))
+        for i in range(n):
+            for j in range(n):
+                dx = centers[i, 0] - centers[j, 0]
+                dy = centers[i, 1] - centers[j, 1]
+                dists[i, j] = np.sqrt(dx * dx + dy * dy)
+        
+        # Build component graph
+        from scipy.sparse import csr_matrix, csgraph
+        graph = csr_matrix(dists <= (v[2::3] + v[2::3].reshape(-1, 1)))
+        components = csgraph.connected_components(graph)[1]
+        
+        # Initialize random hashing
+        random_hash = np.random.rand(n, 2) * 0.05
+        # Apply perturbation per component to avoid global collapse
+        for c in np.unique(components):
+            for i in np.where(components == c)[0]:
+                v[3*i] += random_hash[i, 0]
+                v[3*i+1] += random_hash[i, 1]
+        
+        # Re-optimize with new configuration
+        res = minimize(neg_sum_radii, v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 400, "ftol": 1e-12})
+
+    # Targeted expansion on the circle with smallest non-zero radius
+    if res.success:
+        v = res.x
+        radii = v[2::3]
+        centers = np.column_stack([v[0::3], v[1::3]])
+        dists = np.zeros((n, n))
+        for i in range(n):
+            for j in range(n):
+                dx = centers[i, 0] - centers[j, 0]
+                dy = centers[i, 1] - centers[j, 1]
+                dists[i, j] = np.sqrt(dx * dx + dy * dy)
+        
+        # Find the smallest non-zero radius
+        smallest_idx = np.argmin(np.clip(radii, 1e-6, None))
+        # Calculate current total sum
+        total_sum = np.sum(radii)
+        # Controlled expansion with component-aware adjustment
+        expansion_factor = 0.007 / (n - 1)  # Small but significant expansion
+        
+        # Build adjacency-based radius adjustment
+        new_radii = radii.copy()
+        # Overexpand the smallest circle to trigger reconfiguration
+        new_radii[smallest_idx] += expansion_factor * 1.8
+        for i in range(n):
+            if i != smallest_idx:
+                # Adjust based on distance to smallest circle
+                dist = dists[i, smallest_idx]
+                adj_factor = np.clip(1.0 - (dist / (radii[i] + radii[smallest_idx])), 0.0, 1.0)
+                new_radii[i] += expansion_factor * adj_factor
+        
+        # Update decision vector
+        v_new = v.copy()
+        v_new[2::3] = new_radii
+        
+        # Re-optimize with updated radii
+        res = minimize(neg_sum_radii, v_new, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 400, "ftol": 1e-12})
+
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())

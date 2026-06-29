@@ -1,0 +1,123 @@
+```python
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = 5
+    rows = (n + cols - 1) // cols
+    
+    # Initialize positions with randomized geometric clustering and staggered grid
+    xs = []
+    ys = []
+    for i in range(n):
+        row = i // cols
+        col = i % cols
+        x = (col + 0.5) / cols
+        y = (row + 0.5) / rows
+        # Randomized offset to break symmetry
+        x += np.random.uniform(-0.05, 0.05)
+        y += np.random.uniform(-0.05, 0.05)
+        # Shift alternate rows to create staggered grid
+        if row % 2 == 1:
+            x += 0.5 / cols
+        xs.append(x)
+        ys.append(y)
+    
+    r0 = 0.35 / cols - 1e-3
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = np.full(n, r0)
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    # Vectorized constraints for boundaries
+    cons = []
+    for i in range(n):
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+    
+    # Vectorized overlap constraints with randomized geometric hashing
+    for i in range(n):
+        for j in range(i + 1, n):
+            def constraint_func(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                return dx*dx + dy*dy - (v[3*i+2] + v[3*j+2])**2
+            cons.append({"type": "ineq", "fun": constraint_func})
+
+    # Initial optimization with increased max iterations and tighter tolerance
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 1500, "ftol": 1e-10})
+    
+    # Forced geometric dissection: isolate and reconfigure two dynamically interacting circles
+    if res.success:
+        v = res.x
+        # Identify the two most interacting circles using pairwise distance
+        distances = np.zeros((n, n))
+        for i in range(n):
+            for j in range(n):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                distances[i, j] = np.sqrt(dx*dx + dy*dy)
+        # Find the two circles with the smallest distance that are not already touching
+        min_dist = np.inf
+        interacting_pairs = []
+        for i in range(n):
+            for j in range(i + 1, n):
+                if distances[i, j] < min_dist + 1e-5 and distances[i, j] > v[3*i+2] + v[3*j+2] - 1e-5:
+                    interacting_pairs.append((i, j))
+                    min_dist = distances[i, j]
+        if len(interacting_pairs) >= 2:
+            i1, j1 = interacting_pairs[0]
+            i2, j2 = interacting_pairs[1]
+            # Reconfigure the positions of the two interacting circles
+            # Create a small perturbation to break the symmetry
+            perturbation = np.random.rand(2, 2) * 0.05
+            v[3*i1] += perturbation[0, 0]
+            v[3*i1+1] += perturbation[0, 1]
+            v[3*j1] += perturbation[1, 0]
+            v[3*j1+1] += perturbation[1, 1]
+            # Re-evaluate with the perturbed parameters
+            res = minimize(neg_sum_radii, v, method="SLSQP", bounds=bounds,
+                           constraints=cons, options={"maxiter": 300, "ftol": 1e-10})
+    
+    # Targeted radius expansion with novel adjacency constraint
+    if res.success:
+        v = res.x
+        radii = v[2::3]
+        # Find the circle with the smallest non-zero radius
+        smallest_radius_idx = np.argmin(radii)
+        # Apply a novel adjacency constraint to maintain space for expansion
+        # Create a small buffer zone around the smallest circle to prevent overlap
+        buffer_zone = 0.01
+        # Expand its radius while maintaining a minimum distance to neighboring circles
+        expanded = False
+        for i in range(n):
+            if i != smallest_radius_idx:
+                dx = v[3*i] - v[3*smallest_radius_idx]
+                dy = v[3*i+1] - v[3*smallest_radius_idx+1]
+                dist = np.sqrt(dx*dx + dy*dy)
+                if dist < radii[i] + radii[smallest_radius_idx] + buffer_zone:
+                    # Adjust the radius of the smallest circle to create space
+                    available_space = dist - (radii[i] + buffer_zone)
+                    if available_space > 1e-6:
+                        v[3*smallest_radius_idx + 2] += available_space / 2
+                        expanded = True
+        if expanded:
+            # Re-evaluate with adjusted parameters
+            res = minimize(neg_sum_radii, v, method="SLSQP", bounds=bounds,
+                           constraints=cons, options={"maxiter": 300, "ftol": 1e-10})
+
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())
+```

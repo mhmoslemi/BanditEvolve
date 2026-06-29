@@ -1,0 +1,102 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = 5
+    rows = (n + cols - 1) // cols
+    
+    # Initialize positions with randomized geometric clustering
+    xs = []
+    ys = []
+    for i in range(n):
+        row = i // cols
+        col = i % cols
+        x = (col + 0.5) / cols
+        y = (row + 0.5) / rows
+        # Randomized offset to break symmetry with more variance
+        x += np.random.uniform(-0.1, 0.1)
+        y += np.random.uniform(-0.1, 0.1)
+        # Alternate row shift for staggered grid
+        if row % 2 == 1:
+            x += 0.5 / cols
+        xs.append(x)
+        ys.append(y)
+    
+    r0 = 0.3 / cols - 1e-3
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = np.full(n, r0)
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    # Vectorized constraints for boundaries
+    cons = []
+    for i in range(n):
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+    
+    # Vectorized overlap constraints
+    for i in range(n):
+        for j in range(i + 1, n):
+            def constraint_func(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                return dx*dx + dy*dy - (v[3*i+2] + v[3*j+2])**2
+            cons.append({"type": "ineq", "fun": constraint_func})
+
+    # Initial optimization with increased max iterations and tighter tolerance
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 1500, "ftol": 1e-10})
+    
+    # Asymmetric reconfiguration: apply randomized perturbation to spatial constraints
+    if res.success:
+        v = res.x
+        centers = v[0::3], v[1::3]
+        radii = v[2::3]
+        # Randomized spatial constraint reconfiguration
+        for i in range(n):
+            for j in range(i + 1, n):
+                # Stochastic perturbation to spatial constraint
+                perturbation = np.random.uniform(-0.01, 0.01, size=2)
+                v[3*i] += perturbation[0]
+                v[3*i+1] += perturbation[1]
+                v[3*j] += perturbation[0]
+                v[3*j+1] += perturbation[1]
+        # Re-evaluate with reconfigured spatial constraints
+        res = minimize(neg_sum_radii, v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 300, "ftol": 1e-10})
+    
+    # Targeted radius expansion to least constrained circle
+    if res.success:
+        v = res.x
+        centers = v[0::3], v[1::3]
+        radii = v[2::3]
+        # Calculate constraint tightness for each circle
+        constraint_tightness = np.zeros(n)
+        for i in range(n):
+            for j in range(n):
+                if i != j:
+                    dx = centers[0][i] - centers[0][j]
+                    dy = centers[1][i] - centers[1][j]
+                    dist = np.sqrt(dx*dx + dy*dy)
+                    constraint_tightness[i] += (radii[i] + radii[j] - dist)
+        # Find least constrained circle
+        least_constrained_idx = np.argmin(constraint_tightness)
+        # Expand radius with small increment
+        v[3*least_constrained_idx + 2] += 0.002
+        # Re-evaluate with expanded radius
+        res = minimize(neg_sum_radii, v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 300, "ftol": 1e-10})
+
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())

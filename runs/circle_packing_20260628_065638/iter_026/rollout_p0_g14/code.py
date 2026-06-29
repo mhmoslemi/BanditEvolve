@@ -1,0 +1,158 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = 5
+    rows = (n + cols - 1) // cols
+    
+    # Initialize with staggered grid and stochastic spatial hashing
+    xs = []
+    ys = []
+    for i in range(n):
+        row = i // cols
+        col = i % cols
+        x_center = (col + 0.5) / cols
+        y_center = (row + 0.5) / rows
+        x = x_center + np.random.uniform(-0.08, 0.08)
+        y = y_center + np.random.uniform(-0.08, 0.08)
+        if row % 2 == 1:
+            x += 0.4 / cols
+        xs.append(x)
+        ys.append(y)
+    
+    r0 = 0.35 / cols - 1e-3
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = np.full(n, r0)
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    # Constraint definitions with closure-based lazy binding
+    cons = []
+    for i in range(n):
+        # Left margin constraint
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i + 2]})
+        # Right margin constraint
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i + 2]})
+        # Bottom margin constraint
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i + 1] - v[3*i + 2]})
+        # Top margin constraint
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i + 1] - v[3*i + 2]})
+
+    # Overlap constraints with vectorized broadcasting
+    for i in range(n):
+        for j in range(i + 1, n):
+            def constraint_func(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i + 1] - v[3*j + 1]
+                return dx*dx + dy*dy - (v[3*i + 2] + v[3*j + 2])**2
+            cons.append({"type": "ineq", "fun": constraint_func})
+
+    # Phase 1: Initial optimization with tight constraints and perturbation strategy
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 2000, "ftol": 1e-11,
+                                              "eps": 1e-10, "disp": False})
+    
+    # Phase 2: Apply adversarial spatial transformation to trigger topological change
+    if res.success:
+        v = res.x
+        # Apply controlled spatial perturbation to create new adjacency patterns
+        hash_grid = np.random.rand(n, 2) * 0.03
+        perturbed_v = v.copy()
+        for i in range(n):
+            perturbed_v[3*i] += hash_grid[i, 0]
+            perturbed_v[3*i + 1] += hash_grid[i, 1]
+        
+        # Re-evaluate constraints with perturbed spatial relationships
+        new_cons = []
+        for i in range(n):
+            new_cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i + 2]})
+            new_cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i + 2]})
+            new_cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i + 1] - v[3*i + 2]})
+            new_cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i + 1] - v[3*i + 2]})
+
+        for i in range(n):
+            for j in range(i + 1, n):
+                def constraint_func(v, i=i, j=j):
+                    dx = v[3*i] - v[3*j]
+                    dy = v[3*i + 1] - v[3*j + 1]
+                    return dx*dx + dy*dy - (v[3*i + 2] + v[3*j + 2])**2
+                new_cons.append({"type": "ineq", "fun": constraint_func})
+        
+        res = minimize(neg_sum_radii, perturbed_v, method="SLSQP", bounds=bounds,
+                       constraints=new_cons, options={"maxiter": 800, "ftol": 1e-11,
+                                                     "eps": 1e-10, "disp": False})
+
+    # Phase 3: Targeted radius expansion based on topological metrics
+    if res.success:
+        v = res.x
+        centers = np.column_stack([v[0::3], v[1::3]])
+        dists = np.zeros((n, n))
+        
+        # Vectorized distance calculation with broadcasting
+        dx = centers[:, np.newaxis, 0] - centers[np.newaxis, :, 0]
+        dy = centers[:, np.newaxis, 1] - centers[np.newaxis, :, 1]
+        dists = np.sqrt(dx*dx + dy*dy)
+        
+        # Calculate min distances for topological analysis
+        rowwise_min = np.min(dists, axis=1)
+        colwise_min = np.min(dists, axis=0)
+        min_dists = np.min(rowwise_min)
+        
+        # Identify least constrained circle
+        least_constrained_idx = np.argmin(rowwise_min)
+        
+        # Initialize radius expansion vector
+        radii = v[2::3]
+        radii_expanded = radii.copy()
+        
+        # Compute expansion factor based on spatial density
+        avg_density = np.sum(dists[dists > 1e-8]) / (n * n)  # Exclude close distance
+        expansion_factor = np.clip(0.006 / (n * avg_density), 1e-4, 0.025)  # Dynamic adjustment
+        
+        # Apply expansion on least constrained circle
+        radii_expanded[least_constrained_idx] += expansion_factor * 1.2
+        
+        # Perturb remaining circles for asymmetric expansion
+        directional_perturbation = np.random.rand(n) * 0.2
+        for i in range(n):
+            if i != least_constrained_idx:
+                radii_expanded[i] += expansion_factor * (1.0 + directional_perturbation[i] - 0.2)
+        
+        # Validate and apply expansion vector
+        while True:
+            expanded_v = v.copy()
+            expanded_v[2::3] = radii_expanded
+            expanded_centers = np.column_stack([expanded_v[0::3], expanded_v[1::3]])
+            
+            valid = True
+            for i in range(n):
+                for j in range(i + 1, n):
+                    dx = expanded_centers[i, 0] - expanded_centers[j, 0]
+                    dy = expanded_centers[i, 1] - expanded_centers[j, 1]
+                    dist = np.sqrt(dx*dx + dy*dy)
+                    if dist < radii_expanded[i] + radii_expanded[j] - 1e-12:
+                        valid = False
+                        break
+                if not valid:
+                    break
+            
+            if valid:
+                break
+            else:
+                # Gradual reduction if expansion causes collisions
+                radii_expanded = radii + (radii_expanded - radii) * 0.98
+        
+        v = expanded_v
+
+    # Final result validation and output
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())

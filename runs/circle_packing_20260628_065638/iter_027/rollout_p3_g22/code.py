@@ -1,0 +1,146 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = 5
+    rows = (n + cols - 1) // cols
+    
+    # Initialize positions using randomized geometric tiling and non-local layout
+    xs = []
+    ys = []
+    for i in range(n):
+        row = i // cols
+        col = i % cols
+        x_center = (col + 0.5) / cols
+        y_center = (row + 0.5) / rows
+        
+        # Randomized offset to break symmetry and avoid clustering
+        x = x_center + np.random.uniform(-0.10, 0.10)
+        y = y_center + np.random.uniform(-0.10, 0.10)
+        
+        # Non-local shift for alternating rows to create a non-uniform tiling
+        if row % 2 == 1:
+            x += 0.5 / cols
+        
+        xs.append(x)
+        ys.append(y)
+    
+    r0 = 0.35 / cols
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = np.full(n, r0)
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    # Vectorized constraint list for boundary and overlap
+    cons = []
+    for i in range(n):
+        # Left constraint: x_i >= r_i
+        cons.append({"type": "ineq", "fun": (lambda v, i=i: v[3*i] - v[3*i+2])})
+        # Right constraint: x_i + r_i <= 1
+        cons.append({"type": "ineq", "fun": (lambda v, i=i: 1.0 - v[3*i] - v[3*i+2])})
+        # Bottom constraint: y_i >= r_i
+        cons.append({"type": "ineq", "fun": (lambda v, i=i: v[3*i+1] - v[3*i+2])})
+        # Top constraint: y_i + r_i <= 1
+        cons.append({"type": "ineq", "fun": (lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2])})
+    
+    for i in range(n):
+        for j in range(i + 1, n):
+            # Overlap constraint: (x_i - x_j)^2 + (y_i - y_j)^2 >= (r_i + r_j)^2
+            cons.append({
+                "type": "ineq",
+                "fun": (lambda v, i=i, j=j: (v[3*i] - v[3*j])**2 + (v[3*i+1] - v[3*j+1])**2 
+                        - (v[3*i+2] + v[3*j+2])**2)
+            })
+
+    # First optimization with tight tolerances and dynamic constraint evaluation
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 700, "ftol": 1e-10})
+    
+    if res.success:
+        v = res.x
+        
+        # Spatial hashing reconfiguration with adaptive expansion bias
+        # Generate hash grid with dynamic scale to explore alternative tiling
+        spatial_hash = np.random.rand(n, 2) * 0.08
+        perturbed_v = v.copy()
+        for i in range(n):
+            # Non-uniform expansion guided by spatial hash
+            scale = max(1.0, 1.0 + 0.5 * (spatial_hash[i, 1] - 0.5))
+            perturbed_v[3*i] += spatial_hash[i, 0] * scale
+            perturbed_v[3*i+1] += spatial_hash[i, 1] * scale
+        res = minimize(neg_sum_radii, perturbed_v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 400, "ftol": 1e-11})
+    
+    if res.success:
+        v = res.x
+        
+        # Spatial hashing and radius reconfiguration with dynamic constraints
+        centers = np.column_stack([v[0::3], v[1::3]])
+        radii = v[2::3]
+        dists = np.zeros((n, n))
+        
+        # Vectorized distance computation using broadcasting
+        dx = centers[:, np.newaxis, 0] - centers[np.newaxis, :, 0]
+        dy = centers[:, np.newaxis, 1] - centers[np.newaxis, :, 1]
+        dists = np.sqrt(dx**2 + dy**2)
+        
+        # Identify circle with least spatial constraint (max min distance to other circles)
+        min_dists = np.min(dists, axis=1)
+        least_constrained_idx = np.argmax(min_dists)
+        
+        # Calculate base expansion factor based on current sum and potential density
+        current_total = np.sum(radii)
+        target_growth = 0.005  # 0.5% of total sum per optimization pass
+        expansion_factor_base = target_growth / (n - 1) * (current_total / np.sum(radii))
+        
+        # Add directional expansion with spatial hashing bias
+        directional_hash = np.random.rand(n, 2) * 0.05
+        new_radii = radii.copy()
+        new_radii[least_constrained_idx] += expansion_factor_base * 1.5  # Over-expansion
+        for i in range(n):
+            if i != least_constrained_idx:
+                # Apply directional expansion with hash influence
+                bias = np.sign(directional_hash[i, 0] - 0.5) * (1 + directional_hash[i, 0] * 0.4)
+                new_radii[i] += expansion_factor_base * (1.0 + bias * 0.4)
+        
+        # Apply expansion with constraint validation and adaptive reduction
+        while True:
+            expanded_v = v.copy()
+            expanded_v[2::3] = new_radii
+            expanded_centers = np.column_stack([expanded_v[0::3], expanded_v[1::3]])
+            
+            # Validate expanded configuration
+            valid = True
+            for i in range(n):
+                for j in range(i + 1, n):
+                    dx_expanded = expanded_centers[i, 0] - expanded_centers[j, 0]
+                    dy_expanded = expanded_centers[i, 1] - expanded_centers[j, 1]
+                    dist = np.sqrt(dx_expanded**2 + dy_expanded**2)
+                    if dist < new_radii[i] + new_radii[j] - 1e-12:
+                        valid = False
+                        break
+                if not valid:
+                    break
+            
+            if valid:
+                break
+            else:
+                # Reduce expansion factor slightly
+                scale = max(0.9, 0.98) if np.any(new_radii > 0.02) else 0.95
+                new_radii = radii + (new_radii - radii) * scale
+        
+        # Final optimization using expanded configuration
+        res = minimize(neg_sum_radii, expanded_v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 400, "ftol": 1e-11})
+    
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())

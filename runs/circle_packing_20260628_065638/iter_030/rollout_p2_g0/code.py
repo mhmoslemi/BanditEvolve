@@ -1,0 +1,321 @@
+import numpy as np
+
+def run_packing():
+    """
+    Optimized 26-circle unit square packing via structured stochastic reconfiguration
+    with advanced geometric hashing, gradient-aware constraint refinement, and
+    hierarchical constraint prioritization with adaptive spatial perturbation.
+    """
+    # Constants
+    n = 26
+    max_iter = 2500
+    ftol = 1e-12
+    eps = 1e-8
+    
+    # Initial grid setup with adaptive col/row partitioning
+    cols = int(np.ceil(np.sqrt(n)))
+    rows = (n + cols - 1) // cols
+    grid_pad_ratio = 0.25  # pad to allow better spatial distribution
+    grid_pad = np.sqrt(1 + grid_pad_ratio)
+    padded_grid = np.linspace(0, 1, cols + 1)  # +1 ensures proper padding
+    
+    # Base spatial hashing with adaptive row column weights
+    xs_base = []
+    ys_base = []
+    
+    for i in range(n):
+        base_row = i // cols
+        base_col = i % cols
+        # Normalize to grid space
+        base_x = padded_grid[base_col + 1] - padded_grid[base_col]
+        base_y = padded_grid[base_row + 1] - padded_grid[base_row]
+        # Assign to center of grid cell
+        x_center = padded_grid[base_col] + (base_x) / 2
+        y_center = padded_grid[base_row] + (base_y) / 2
+        
+        # Add stochastic variation with geometrically scaled perturbation
+        # Perturbation scales with inverse of distance from grid edges
+        row_dist = min(base_row, rows - base_row)
+        col_dist = min(base_col, cols - base_col)
+        pert_scale = 0.04 / (row_dist + col_dist)
+        
+        x = x_center + np.random.uniform(-pert_scale, pert_scale)
+        y = y_center + np.random.uniform(-pert_scale, pert_scale)
+        
+        # Offset alternate rows for staggered grid
+        if base_row % 2 == 1:
+            x += (base_x / 3)  # small stagger
+        
+        xs_base.append(x)
+        ys_base.append(y)
+    
+    # Dynamic radius initialization based on grid spacing and row/column distance
+    r0_base = 0.15 / (1.0 + np.sqrt(0.5 * np.mean(padded_grid[1:] - padded_grid[:-1]))) 
+    r0_base = np.clip(r0_base, 1e-5, 0.5) # ensure valid radius range
+    
+    # Initial vector (x, y, r) for all circles
+    v0 = np.zeros(3 * n)
+    v0[0::3] = np.array(xs_base)
+    v0[1::3] = np.array(ys_base)
+    v0[2::3] = np.full(n, r0_base)
+    
+    # Constraint boundaries that must be consistent with v
+    bounds = []
+    for _ in range(n):
+        bounds.append((0.0, 1.0))  # x
+        bounds.append((0.0, 1.0))  # y
+        bounds.append((1e-6, 0.5))  # radius
+    
+    # Define objective: maximize sum of radii, convert to minimizing negative sum
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+    
+    # Constraint definitions (inequalities)
+    cons = []
+    
+    # Boundary constraints
+    for i in range(n):
+        # Left + r <= 1
+        cons.append({"type": "ineq", 
+                     "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i + 2]})
+        
+        # Right - r >= 0
+        cons.append({"type": "ineq", 
+                     "fun": lambda v, i=i: v[3*i] - v[3*i + 2]})
+        
+        # Bottom + r <= 1
+        cons.append({"type": "ineq", 
+                     "fun": lambda v, i=i: 1.0 - v[3*i + 1] - v[3*i + 2]})
+        
+        # Top - r >= 0
+        cons.append({"type": "ineq", 
+                     "fun": lambda v, i=i: v[3*i + 1] - v[3*i + 2]})
+    
+    # Overlap constraints with efficient distance calculation and adaptive scaling
+    # Use of batch broadcasting and vectorizations to reduce computation
+    # Avoid pairwise distance loop (which is O(n²) in cost)
+    # Instead precompute all pairwise distances via matrix math for O(n²) precompute
+    
+    # To compute overlapping constraint: for each i < j, dx² + dy² >= (r_i + r_j)²
+    
+    # But in SLSQP, each constraint must be a function of the full vector
+    # Hence, we need to encode all pairwise constraints into our cons array
+    
+    # To avoid O(n²) constraints, we can use a spatial hashing with grid or kd-tree
+    # However, for n=26, this is still manageable and worth the performance.
+    # So, proceed with O(n²) pairwise constraints
+    
+    for i in range(n):
+        for j in range(i + 1, n):
+            # Create constraint for circle i and circle j
+            # Note: these are not static, but we are using lambda with bound i and j
+            # Use lambda with captured i and j
+            cons.append({
+                "type": "ineq",
+                "fun": lambda v, i=i, j=j: 
+                    (v[3*i] - v[3*j])**2 + (v[3*i+1] - v[3*j+1])**2 
+                    - (v[3*i+2] + v[3*j+2])**2
+            })
+    
+    # Optimization setup with adaptive constraints and gradient refinement
+    # Initial step
+    res = minimize(neg_sum_radii, v0, method="SLSQP", 
+                   bounds=bounds, 
+                   constraints=cons, 
+                   options={
+                       "maxiter": max_iter,
+                       "ftol": ftol,
+                       "gtol": 1e-11,
+                       "eps": eps,
+                       "disp": False,
+                       "xatol": 1e-9,
+                       "maxfun": 8000
+                   })
+    
+    # Post-optimization refinement with advanced techniques: 
+    # 1. Geometric dissection of most dynamically interacting circles with spatial reconfiguration
+    # 2. Radius expansion of isolated circle with constraint-aware perturbation
+    
+    if res.success:
+        v = res.x
+        centers = np.column_stack([v[0::3], v[1::3]])
+        radii = v[2::3]
+        radii = np.clip(radii, 1e-6, 0.5)
+        
+        # Compute pairwise distances for interaction graph analysis
+        dx = centers[np.newaxis, :, 0] - centers[:, np.newaxis, 0]
+        dy = centers[np.newaxis, :, 1] - centers[:, np.newaxis, 1]
+        dists = np.sqrt(dx*dx + dy*dy)  # size: n x n
+        
+        # Interaction strength: sum of reciprocal of distances (avoid zeros)
+        interaction = np.maximum(1e-10, 1 / np.sum(dists, axis=1))
+        top_idx = np.argsort(interaction)[-2:]
+        
+        # Perform forced geometric dissection: reconfigure top two interacting circles
+        # Generate constrained perturbation with spatial hashing
+        # Use geometric hashing with grid-based spatial partitioning to avoid local minima
+        grid_resolution = 0.08  # spatial hashing grid resolution
+        grid_size = int(np.ceil(1.0 / grid_resolution)) + 1
+        grid_x = np.arange(0, 1 + grid_resolution, grid_resolution)
+        grid_y = np.arange(0, 1 + grid_resolution, grid_resolution)
+        grid_centers = np.array(np.meshgrid(grid_x, grid_y)).T.reshape(-1, 2)
+        
+        # Reconfigure the top two interacting circles with constrained spatial hashing
+        # We use a two-step refinement:
+        # 1. Apply constrained spatial hashing to their positions
+        # 2. Use a controlled perturbation to maintain spacing and expand radius
+        
+        # First, apply spatial hashing constraints with gradient-aware perturbation
+        # Use spatial hashing to guide the reconfiguration
+        
+        v = res.x.copy()
+        for idx in top_idx:
+            # Compute current position
+            x = v[3*idx]
+            y = v[3*idx+1]
+            r = v[3*idx+2]
+            
+            # Find hash grid cell
+            grid_cell_x = int(np.floor(x / grid_resolution))
+            grid_cell_y = int(np.floor(y / grid_resolution))
+            
+            # Sample new position in grid cell
+            new_x = grid_x[grid_cell_x] + np.random.uniform(-grid_resolution/2, grid_resolution/2)
+            new_y = grid_y[grid_cell_y] + np.random.uniform(-grid_resolution/2, grid_resolution/2)
+            
+            # Ensure not too close to existing circles
+            # Only check against the other top interacting circle for constraint awareness
+            for o_idx in top_idx:
+                if o_idx == idx:
+                    continue
+                dx = new_x - v[3*o_idx]
+                dy = new_y - v[3*o_idx+1]
+                dist = np.sqrt(dx*dx + dy*dy)
+                if dist < r + v[3*o_idx+2] - 1e-8:
+                    # Need to move out of way
+                    # Random walk within cell until not overlapping
+                    while True:
+                        new_x = grid_x[grid_cell_x] + np.random.uniform(-grid_resolution/2, grid_resolution/2)
+                        new_y = grid_y[grid_cell_y] + np.random.uniform(-grid_resolution/2, grid_resolution/2)
+                        dx = new_x - v[3*o_idx]
+                        dy = new_y - v[3*o_idx+1]
+                        dist = np.sqrt(dx*dx + dy*dy)
+                        if dist >= r + v[3*o_idx+2] - 1e-8:
+                            break
+            
+            # Apply the new spatial position
+            v[3*idx] = new_x
+            v[3*idx+1] = new_y
+        
+        # Second, apply a controlled radius expansion on the isolated circle
+        # First, identify the most isolated circle
+        isolation = np.sum(1 / np.maximum(1e-10, dists), axis=1)
+        iso_idx = np.argmin(isolation)
+        
+        # Create a new configuration with targeted expansion
+        # Use a soft expansion that maintains feasibility
+        # First calculate growth based on total radii and spatial constraints
+        current_radii = v[2::3]
+        current_total = np.sum(current_radii)
+        max_radius_growth = 0.01  # allow up to 1% total growth
+        
+        # Calculate new target total and distribution
+        # First try to expand, maintaining spacing and keeping other circles
+        # Use spatial hashing to limit spatial perturbation of other circles
+        
+        # Calculate base growth vector
+        new_radii = current_radii.copy()
+        # Use a soft expansion factor based on isolation score
+        isol_expander = np.clip(1.15 + (isolation[iso_idx] / np.max(isolation)), 1.1, 1.35)  # grow 10-35% more
+        iso_contribution = isol_expander * (1.0 - np.mean(current_radii) / current_radii[iso_idx])
+        
+        # But to ensure the expansion is feasible, apply a gradient-aware soft expansion
+        # We do this via a binary search: find smallest expansion that can be feasible
+        
+        # Use an adaptive grid search for expansion
+        # Start with small delta and escalate
+        expansion_delta = 0.001
+        max_tries = 100
+        success = False
+        best_v = v.copy()
+        
+        for _ in range(max_tries):
+            # Create trial expansion
+            trial_radii = np.copy(current_radii)
+            trial_radii[iso_idx] += expansion_delta
+            
+            # Apply spatial hashing to other circles' radii to ensure they don't conflict
+            # We'll apply a gradient to their positions as well to maintain spacing
+            
+            # For each non-isolated circle, apply a slight perturbation
+            # This is to preserve spacing while allowing radius growth
+            # Use spatial constraints: perturb to avoid overlap with the isolated circle
+            
+            trial_v = v.copy()
+            for other_idx in range(n):
+                if other_idx == iso_idx:
+                    continue
+                x = trial_v[3*other_idx]
+                y = trial_v[3*other_idx+1]
+                r = trial_v[3*other_idx+2]
+                
+                # For non-isolated circles, perturb positions slightly to preserve spacing
+                # Use small movement towards or away from the isolated circle
+                dx = x - trial_v[3*iso_idx]
+                dy = y - trial_v[3*iso_idx+1]
+                dist = np.sqrt(dx*dx + dy*dy)
+                if dist < r + trial_radii[iso_idx] - 1e-8:
+                    # Move other circle to prevent overlap with isolated circle
+                    # Scale movement by inverse of current distance to avoid overshooting
+                    move_scale = 0.05 * (1 - dist / (r + trial_radii[iso_idx]))
+                    new_x = x + dx * move_scale
+                    new_y = y + dy * move_scale
+                    trial_v[3*other_idx] = np.clip(new_x, 0.0, 1.0)
+                    trial_v[3*other_idx+1] = np.clip(new_y, 0.0, 1.0)
+            
+            # Recalculate constraints
+            valid = True
+            for i in range(n):
+                for j in range(i + 1, n):
+                    di = trial_v[3*i] - trial_v[3*j]
+                    dj = trial_v[3*i+1] - trial_v[3*j+1]
+                    dist = np.sqrt(di*di + dj*dj)
+                    if dist < trial_radii[i] + trial_radii[j] - 1e-6:
+                        valid = False
+                        break
+                if not valid:
+                    break
+            
+            if valid:
+                # This expansion works
+                # Apply the expansion
+                best_v = trial_v.copy()
+                expansion_delta *= 1.2
+                success = True
+                break
+            else:
+                # This expansion caused conflict, reduce delta
+                expansion_delta *= 0.9
+        
+        # Now, apply the successful expansion configuration
+        v = best_v.copy()
+    
+    # Final refinement to lock in geometric dissection and radial expansion
+    # Re-run optimizer with refined constraints
+    res = minimize(neg_sum_radii, v, method="SLSQP", 
+                   bounds=bounds, 
+                   constraints=cons, 
+                   options={
+                       "maxiter": max_iter,
+                       "ftol": ftol,
+                       "gtol": 1e-12,
+                       "eps": eps,
+                       "xatol": 1e-9,
+                       "disp": False,
+                       "maxfun": 9000
+                   })
+    
+    # Final result
+    centers = np.column_stack([res.x[0::3], res.x[1::3]])
+    radii = np.clip(res.x[2::3], 1e-6, 0.5)
+    return centers, radii, float(radii.sum())

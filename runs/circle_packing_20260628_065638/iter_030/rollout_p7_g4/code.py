@@ -1,0 +1,192 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    
+    # Step 1: Precise initialization with adaptive density and spatial distribution
+    # Use a 5x6 grid to allow 26 positions, with spatially adaptive cluster initialization
+    cols = 5
+    rows = (n + cols - 1) // cols
+    grid_indices = np.array([ (i // cols % cols, i % cols) for i in range(n) ])
+    grid_indices += 0.5  # Mid-point shift for grid
+    
+    # Define an energy-based initialization grid
+    grid_width = 0.8  # Leave a 0.1 margin to prevent boundary issues
+    grid = np.zeros((rows, cols, 2))
+    grid[:, :, 0] = np.linspace(0.1, 0.9, cols)
+    grid[:, :, 1] = np.linspace(0.1, 0.9, rows)
+    
+    # Use energy-based positioning: place points in denser regions
+    # We'll compute a 3D 'energy grid' with density scaling
+    # Create an energy map that emphasizes corners and edges
+    energy_grid = np.zeros((rows, cols))
+    energy_grid[0, :] = 1.0 + 0.5 * np.sin(np.linspace(0, np.pi, cols))
+    energy_grid[-1, :] = 1.0 + 0.5 * np.sin(np.linspace(0, np.pi, cols))
+    energy_grid[:, 0] = 1.0 + 0.5 * np.sin(np.linspace(0, np.pi, rows))
+    energy_grid[:, -1] = 1.0 + 0.5 * np.sin(np.linspace(0, np.pi, rows))
+    energy_grid[0, 0] = 2.0
+    energy_grid[0, -1] = 2.0
+    energy_grid[-1, 0] = 2.0
+    energy_grid[-1, -1] = 2.0
+    
+    # Use inverse of energy grid for density distribution (high energy = low density)
+    energy_weights = 1.0 / (1.0 + np.abs(energy_grid))
+    
+    # Normalize energy weights to a probability distribution
+    energy_weights /= np.sum(energy_weights)
+    
+    # Create probabilistic spatial assignments for initialization
+    spatial_idx = np.random.choice(np.arange(rows * cols), size=n, p=energy_weights.flatten())
+    grid_map = np.column_stack([spatial_idx // cols, spatial_idx % cols])
+    xs = grid_map[:, 0] * grid_width + 0.1
+    ys = grid_map[:, 1] * grid_width + 0.1
+    
+    # Add controlled randomized perturbations for spatial dispersion
+    # Use smaller jitter to keep positions near intended region
+    x_rand = np.random.uniform(-0.04, 0.04, size=n)
+    y_rand = np.random.uniform(-0.04, 0.04, size=n)
+    
+    xs += x_rand
+    ys += y_rand
+    
+    # Apply staggered grid shift to alternate rows for non-uniform distribution
+    # Row-wise offset based on row number and spacing between rows
+    for i in range(rows):
+        row_offset = (i % 2) * (grid_width / (rows + 1)) 
+        idxs_in_row = np.where(grid_map[:, 1] == i)[0]
+        xs[idxs_in_row] += row_offset
+    
+    # Initialize radii with adaptive density scaling
+    # Larger circles in center, smaller in corners
+    radius_base = (grid_width / 2.0) / np.sqrt(n)  # Base size based on bounding area
+    radius_var = 0.3 * radius_base
+    radii = radius_base + radius_var * np.random.uniform(-0.8, 1.0, size=n)
+    
+    # Ensure a minimum radius size for stability
+    radii = np.clip(radii, 1e-4, 0.8)
+    
+    # Now construct the decision vector
+    v0 = np.empty(3 * n)
+    v0[0::3] = xs
+    v0[1::3] = ys
+    v0[2::3] = radii
+    
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.8)]   # length 3*n, matches v
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+    
+    # Generate constraints with type checking and binding closure safety
+    cons = []
+    for i in range(n):
+        # Create closure with proper binding
+        def constraint_1(i=i, v=v):
+            return (v[3*i] - v[3*i+2])
+        def constraint_2(i=i, v=v):
+            return (1.0 - v[3*i] - v[3*i+2])
+        def constraint_3(i=i, v=v):
+            return (v[3*i+1] - v[3*i+2])
+        def constraint_4(i=i, v=v):
+            return (1.0 - v[3*i+1] - v[3*i+2])
+        cons.append({"type": "ineq", "fun": constraint_1})
+        cons.append({"type": "ineq", "fun": constraint_2})
+        cons.append({"type": "ineq", "fun": constraint_3})
+        cons.append({"type": "ineq", "fun": constraint_4})
+    
+    # Generate constraints for circle-circle overlaps using proper binding with i,j
+    for i in range(n):
+        for j in range(i + 1, n):
+            # Build closure with i,j
+            def constraint_overlap(i=i, j=j, v=v):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                r_sum = v[3*i+2] + v[3*j+2]
+                return dx*dx + dy*dy - r_sum*r_sum
+            cons.append({"type": "ineq", "fun": constraint_overlap})
+
+    # Initial optimization with improved convergence and solver parameters
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 2000, "ftol": 1e-12, "eps": 1e-10})
+    
+    # Adaptive refinement step: multiple reconfiguration passes with spatial hashing and 
+    # radius-based expansion targeting
+    # First, run with adaptive perturbation based on radius values
+    if res.success:
+        v = res.x
+        v_radii = v[2::3]
+        # Compute density map for spatial awareness
+        dists = np.zeros((n, n))
+        for i in range(n):
+            for j in range(n):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                dists[i, j] = np.sqrt(dx*dx + dy*dy)
+        min_dists = np.min(dists, axis=1)
+        
+        # Find the "anchor" point: circle with the least constraint to others
+        anchor_idx = np.argmin(min_dists)
+        
+        # Generate a small adaptive reconfiguration using spatial hashing in radius-proportional scale
+        # Reconfigure anchor first to unlock other circles
+        spatial_hash = np.random.rand(n, 2) * 0.08
+        for i in range(n):
+            x = v[3*i]
+            y = v[3*i+1]
+            # Perturb based on anchor point and radius
+            if i == anchor_idx:
+                scale = 1.2 * v_radii[i]
+            else:
+                scale = v_radii[i] / np.max(v_radii)
+            v[3*i] += spatial_hash[i, 0] * scale
+            v[3*i+1] += spatial_hash[i, 1] * scale
+        
+        # Re-evaluate with adapted position
+        res = minimize(neg_sum_radii, v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 500, "ftol": 1e-12, "eps": 1e-10})
+    
+    # Now perform a "critical growth" step: expand the most under-constrained circle
+    # Calculate constraint tightness for each circle
+    if res.success:
+        v = res.x
+        # Recalculate distance matrix
+        dists = np.zeros((n, n))
+        for i in range(n):
+            for j in range(n):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                dists[i, j] = np.sqrt(dx*dx + dy*dy)
+        min_dists = np.min(dists, axis=1)
+        
+        # Compute "constraint tightness" as distance to nearest neighbor minus radius
+        constraint_tightness = min_dists - v[2::3]
+        
+        # Find circle with smallest constraint tightness (most under-constrained)
+        smallest_tight = np.argmin(constraint_tightness)
+        
+        # Apply controlled radius expansion with spatial-aware growth
+        # Expand smallest in tightness, but also allow some growth to neighbors
+        expansion_factor = 0.002 * (2.0 + np.random.rand())  # Stochastic expansion
+        
+        # Apply expansion with radius-based scaling
+        new_radii = v[2::3].copy()
+        radius_growths = expansion_factor * (new_radii / np.max(new_radii))
+        new_radii[smallest_tight] += radius_growths[smallest_tight] * 1.3  # Over-expand anchor
+        for i in range(n):
+            if i != smallest_tight:
+                new_radii[i] += radius_growths[i] * 0.8  # Slight expansion to surrounding
+        
+        # Apply new radii and perform final optimization
+        v_new = v.copy()
+        v_new[2::3] = new_radii
+        
+        # Run with tighter convergence and final re-optimization
+        res = minimize(neg_sum_radii, v_new, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 600, "ftol": 1e-12, "eps": 1e-10})
+    
+    # Final cleanup and return
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())

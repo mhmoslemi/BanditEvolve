@@ -1,0 +1,247 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    
+    # --- Initial Strategy Configuration --- #
+    # Use improved spatial hashing and adaptive constraints for better convergence
+    # Use dynamic grid with adaptive col/row and more robust initializer
+    cols = 5
+    cols = int(np.ceil(np.sqrt(n)))  # For dense configurations ensure good grid balance
+    
+    # Adaptive row and col calculation ensuring even distribution
+    rows = (n + cols - 1) // cols
+    col_step = 1.0 / cols
+    row_step = 1.0 / rows
+    
+    # Create spatial grid for initial positions
+    grid_centers = []
+    for row_idx in range(rows):
+        for col_idx in range(cols):
+            # Use non-uniform spacing for better adaptability
+            x_center = col_idx * col_step + (col_step * 0.5)
+            # Row spacing for staggered grid
+            row_center = (row_idx * row_step) + (row_step * 0.5)
+            grid_centers.append((x_center, row_center))
+            
+            # Introduce controlled non-uniformity for better spread
+            if row_idx % 3 == 0:
+                x_center += 0.1 * np.random.rand() - 0.05
+                y_center = row_center + 0.1 * np.random.rand() - 0.05
+            else:
+                y_center = row_center + 0.1 * np.random.rand() - 0.05
+            grid_centers[-1] = (x_center, y_center)
+    
+    # Adaptive radius seed based on col density
+    r0 = 0.3 / cols - 1e-3  # Lower initial radii for denser packing
+    
+    # Use numpy array for deterministic vector operations
+    v0 = np.empty(3 * n, dtype='float64')
+    v0[0::3] = np.array([p[0] for p in grid_centers], dtype='float64')
+    v0[1::3] = np.array([p[1] for p in grid_centers], dtype='float64')
+    v0[2::3] = np.full(n, r0, dtype='float64')
+    
+    # Ensure consistent bounds for the 3n-length state vector
+    bounds = []
+    # For each of n circles, we have (x, y, r) so 3 per circle
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]  # All in [0,1]x[0,1] with min radius
+    
+    # Define negative objective to maximize radius sum
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+    
+    # Construct constraints with vectorization and proper closure capturing
+    cons = []
+    
+    # Boundary constraints with closure capture for each i
+    for i in range(n):
+        # Left bound constraint: x - r >= 0
+        def left_bound(v, i=i):
+            return v[3*i] - v[3*i + 2]  # x_i - r_i >= 0
+        cons.append({"type": "ineq", "fun": left_bound})
+            
+        # Right bound constraint: x + r <= 1
+        def right_bound(v, i=i):
+            return 1.0 - v[3*i] - v[3*i + 2]  # 1 - (x_i + r_i) >= 0
+        cons.append({"type": "ineq", "fun": right_bound})
+        
+        # Bottom bound constraint: y - r >= 0
+        def bottom_bound(v, i=i):
+            return v[3*i + 1] - v[3*i + 2]
+        cons.append({"type": "ineq", "fun": bottom_bound})
+        
+        # Top bound constraint: y + r <= 1
+        def top_bound(v, i=i):
+            return 1.0 - v[3*i + 1] - v[3*i + 2]
+        cons.append({"type": "ineq", "fun": top_bound})
+    
+    # Overlap constraints with closure capture
+    for i in range(n):
+        for j in range(i+1, n):
+            def dist_constraint(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i + 1] - v[3*j + 1]
+                dist_sq = dx**2 + dy**2 - (v[3*i + 2] + v[3*j + 2])**2
+                return dist_sq  # >= 0 => sqrt >= sum radius => non-overlap
+            cons.append({"type": "ineq", "fun": dist_constraint})
+    
+    # Start the solver with high max iterations and tight convergence
+    # Adaptive tolerance based on problem size: 1e-11 for more precise
+    # Use SLSQP with advanced options for better constraint handling
+    res = minimize(
+        neg_sum_radii, 
+        v0,
+        method="SLSQP",
+        bounds=bounds,
+        constraints=cons,
+        options={  
+            "maxiter": 2000, 
+            "ftol": 1e-11,         # Tighter tolerance for high precision
+            "gtol": 1e-8,          # Tighter gradient tolerance for refinement
+            "eps": 1e-10,          # Small step for finite differences
+            "disp": False,         # Silent output
+            "feasibility_tol": 1e-10  # For better constraint satisfaction
+        }
+    )
+    
+    # Asymmetric reconfiguration with dynamic perturbation based on current state
+    if res.success:
+        v = res.x
+        radii_curr = v[2::3]
+        centers_curr = np.column_stack([v[0::3], v[1::3]])
+        
+        # Compute current average radius to determine scaling factor
+        avg_radius = np.mean(radii_curr)
+        
+        # Use adaptive spatial hash with variable scaling based on radii distribution
+        # Add perturbation scaled by radius for localized motion
+        spatial_hash = np.random.rand(n) * 0.05 * (radii_curr / avg_radius)
+        
+        # Apply spatial perturbation to centers with adaptive scaling
+        perturbed_v = v.copy()
+        for i in range(n):
+            perturbed_v[3*i] += spatial_hash[i] * np.cos(np.random.uniform(np.pi/4, 3*np.pi/4))
+            perturbed_v[3*i+1] += spatial_hash[i] * np.sin(np.random.uniform(np.pi/4, 3*np.pi/4))
+        
+        # Reoptimize with new spatial state
+        res = minimize(
+            neg_sum_radii, 
+            perturbed_v,
+            method="SLSQP",
+            bounds=bounds,
+            constraints=cons,
+            options={
+                "maxiter": 300,
+                "ftol": 1e-11,
+                "gtol": 1e-8,
+                "eps": 1e-9,
+                "disp": False,
+                "feasibility_tol": 1e-10
+            }
+        )
+    
+    # Post-optimization refinement with smart constraint-based expansion
+    if res.success:
+        v = res.x
+        centers_curr = np.column_stack([v[0::3], v[1::3]])
+        radii_curr = v[2::3]
+        
+        # Compute pairwise distances again in vectorized manner
+        dx = centers_curr[:, np.newaxis, 0] - centers_curr[np.newaxis, :, 0]
+        dy = centers_curr[:, np.newaxis, 1] - centers_curr[np.newaxis, 1, :]
+        dists = np.sqrt(dx**2 + dy**2)
+        
+        # Find the most unconstrained circle based on min distance to others
+        min_dists = np.min(dists, axis=1)
+        unstrained_idx = np.argmax(min_dists)  # most unconstrained
+                
+        # Calculate current radius sum to determine expansion target
+        current_total = np.sum(radii_curr)
+        max_possible_growth = 0.006  # based on historical SOTA and problem scale
+        expansion_target = current_total + max_possible_growth
+        
+        # We will expand the unstrained circle first and others secondarily
+        
+        # Calculate expansion vector by prioritizing unstrained circle
+        # Apply exponential scaling to prioritize growth in most free space
+        expansion = np.zeros(n)
+        for i in range(n):
+            if i == unstrained_idx:
+                expansion[i] = (expansion_target - current_total) * 1.2  # boost expansion
+            else:
+                # Add controlled expansion to others to increase diversity
+                # This is a gradient-based approach, trying to maintain feasibility
+                # Use proportional growth based on distance to the unconstrained one
+                # This gives more control over expansion direction
+                expansion[i] = (expansion_target - current_total) * 0.8 / (n-1)
+        
+        # Apply expansion to generate candidate
+        expanded_radii = radii_curr + expansion
+        
+        # Check if the configuration remains valid
+        # Use a fast and accurate validation with vectorization and epsilon
+        
+        # Validate the expanded_radii configuration
+        valid = True
+        
+        # Validate that the expansion does not cause overlaps
+        for i in range(n):
+            for j in range(i+1, n):
+                dx = centers_curr[i, 0] - centers_curr[j, 0]
+                dy = centers_curr[i, 1] - centers_curr[j, 1]
+                dist = np.sqrt(dx**2 + dy**2)
+                if dist < (expanded_radii[i] + expanded_radii[j]) - 1e-9:
+                    valid = False
+                    break
+            if not valid:
+                break
+        
+        if not valid:
+            # If configuration is not valid, scale down the expansion gradually
+            # Use a contraction strategy
+            scale_factor = 0.8
+            while True:
+                expanded_radii = radii_curr + (expansion * scale_factor)
+                valid = True
+                for i in range(n):
+                    for j in range(i+1, n):
+                        dx = centers_curr[i, 0] - centers_curr[j, 0]
+                        dy = centers_curr[i, 1] - centers_curr[j, 1]
+                        dist = np.sqrt(dx**2 + dy**2)
+                        if dist < (expanded_radii[i] + expanded_radii[j]) - 1e-9:
+                            valid = False
+                            break
+                    if not valid:
+                        break
+                if valid:
+                    break
+                scale_factor *= 0.9
+        
+        # Now set the new radii and reoptimize
+        v_new = v.copy()
+        v_new[2::3] = expanded_radii
+        
+        # Re-evaluate the refined configuration with optimized parameters
+        res = minimize(
+            neg_sum_radii, 
+            v_new,
+            method="SLSQP",
+            bounds=bounds,
+            constraints=cons,
+            options={
+                "maxiter": 300,
+                "ftol": 1e-11,
+                "gtol": 1e-8,
+                "eps": 1e-9,
+                "disp": False,
+                "feasibility_tol": 1e-10
+            }
+        )
+    
+    final_v = res.x if res.success else v0
+    final_centers = np.column_stack([final_v[0::3], final_v[1::3]])
+    final_radii = np.clip(final_v[2::3], 1e-6, 0.5)  # clip to min radius and max 0.5
+    
+    # Final radius sum check (for debugging and SOTA alignment)
+    return final_centers, final_radii, float(final_radii.sum())

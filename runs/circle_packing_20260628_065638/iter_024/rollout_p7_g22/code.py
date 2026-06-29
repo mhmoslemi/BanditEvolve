@@ -1,0 +1,122 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = 5
+    rows = (n + cols - 1) // cols
+
+    # Initialize with staggered grid with randomized offsets and perturbations
+    xs = []
+    ys = []
+    for i in range(n):
+        row = i // cols
+        col = i % cols
+        x_center = (col + 0.5) / cols
+        y_center = (row + 0.5) / rows
+        
+        # Base offsets for staggered grid
+        x = x_center + np.random.uniform(-0.035, 0.035)
+        y = y_center + np.random.uniform(-0.035, 0.035)
+        
+        # Alternate row stagger
+        if row % 2 == 1:
+            x += 0.25 / cols
+        
+        xs.append(x)
+        ys.append(y)
+
+    r0 = 0.35 / cols - 1e-3
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = np.full(n, r0)
+
+    # Define bounds for positions and radii
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    # Build constraints for boundaries
+    cons = []
+    for i in range(n):
+        # Left boundary
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        # Right boundary
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        # Bottom boundary
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        # Top boundary
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+
+    # Build overlap constraints with geometric hashing
+    # We'll apply a geometric hashing scheme that prioritizes spatial constraints
+    # for non-adjacent circles at the initial steps
+    overlap_constraints = []
+    for i in range(n):
+        for j in range(i + 1, n):
+            # Apply constraints with random perturbations to avoid local minima
+            # and use the smallest non-zero radius as a pivot for expansion
+            # We will apply this in a structured way with random geometric hashing
+            def constraint_func(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                return dx*dx + dy*dy - (v[3*i+2] + v[3*j+2])**2
+            overlap_constraints.append({"type": "ineq", "fun": constraint_func})
+
+    # First-phase optimization with geometric hashing
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons + overlap_constraints,
+                   options={"maxiter": 2000, "ftol": 1e-10})
+
+    # Apply geometric hashing to the least constrained circle with minimal radius
+    if res.success:
+        v = res.x
+        centers = np.column_stack([v[0::3], v[1::3]])
+        radii = v[2::3]
+        dists = np.zeros((n, n))
+        
+        # Efficient distance calculation with vectorization
+        for i in range(n):
+            dx = centers[i, 0] - centers
+            dy = centers[i, 1] - centers
+            dists[i] = np.sqrt(dx*dx + dy*dy)
+        
+        # Get min distances per circle
+        min_dists = np.min(dists, axis=1)
+        least_constrained_idx = np.argmax(min_dists)
+        
+        # Choose circle with smallest non-zero radius as pivot
+        smallest_radius_idx = np.argmin(np.maximum(radii, 1e-6))
+        
+        # Compute base expansion factor
+        expansion_factor = (0.015) / (n - 1)
+        
+        # Create adjusted radii vector with controlled expansion
+        new_radii = radii.copy()
+        new_radii[least_constrained_idx] += expansion_factor * 1.2
+        new_radii[smallest_radius_idx] += expansion_factor * 1.1
+        
+        for i in range(n):
+            if i != least_constrained_idx and i != smallest_radius_idx:
+                new_radii[i] += expansion_factor
+        
+        # Create perturbed vector with geometric hashing and perturbation
+        v_new = v.copy()
+        v_new[2::3] = new_radii
+        random_hash = np.random.rand(n, 2) * 0.06
+        for i in range(n):
+            v_new[3*i] += random_hash[i, 0]
+            v_new[3*i+1] += random_hash[i, 1]
+        
+        # Final optimization with hybrid geometric hashing and controlled expansion
+        res = minimize(neg_sum_radii, v_new, method="SLSQP", bounds=bounds,
+                       constraints=cons + overlap_constraints,
+                       options={"maxiter": 400, "ftol": 1e-11})
+
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())

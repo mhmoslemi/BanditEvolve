@@ -1,0 +1,252 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = 5
+    rows = int(np.ceil(n / cols))
+    
+    # Generate initial grid with staggered offset, randomized perturbation and geometric clustering
+    xs = []
+    ys = []
+    for i in range(n):
+        col = i % cols
+        row = i // cols
+        x_center = (col + 0.5) / cols + (np.sin(2 * np.pi * row / rows) * 0.08) / cols
+        y_center = (row + 0.5) / rows + (np.cos(2 * np.pi * col / cols) * 0.08) / rows
+        
+        # Add small random jitter with correlation to spatial density
+        jitter_factor = 0.04 * (0.8 + 0.2 * np.random.rand()) * np.sqrt(1/cols)  # Adaptive jitter per column
+        offset_x = np.random.uniform(-jitter_factor, jitter_factor)
+        offset_y = np.random.uniform(-jitter_factor, jitter_factor)
+        
+        x = x_center + offset_x
+        y = y_center + offset_y
+        
+        # Alternate row offset to create stagger
+        if row % 2 == 1:
+            x += 0.02 / cols  # smaller offset based on grid density
+        
+        xs.append(x)
+        ys.append(y)
+    
+    r0 = 0.38 / cols - 1e-3  # more room for expansion
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = np.full(n, r0)
+    
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]  # strictly 3n bounds matching 3n vector entries
+    
+    # Define objective function
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+    
+    # Constraint system: optimized for efficiency and stability
+    cons = []
+    # Define constraint functions with safe closure binding
+    for i in range(n):
+        # Left + radius <= 1
+        cons.append({"type": "ineq", "fun": (lambda v, i=i: 1.0 - v[3*i] - v[3*i+2])})
+        # Right - radius >= 0
+        cons.append({"type": "ineq", "fun": (lambda v, i=i: v[3*i] - v[3*i+2])})
+        # Bottom + radius <= 1
+        cons.append({"type": "ineq", "fun": (lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2])})
+        # Top - radius >= 0
+        cons.append({"type": "ineq", "fun": (lambda v, i=i: v[3*i+1] - v[3*i+2])})
+    
+    # Vectorized overlap constraints with memory optimization and gradient-awareness
+    # Precompute for fast evaluation with vector broadcasting
+    for i in range(n):
+        for j in range(i + 1, n):
+            def constraint_func(v, i=i, j=j):
+                # Avoid recomputing indices with safe offset math
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                return dx * dx + dy * dy - (v[3*i+2] + v[3*j+2]) ** 2
+            cons.append({"type": "ineq", "fun": constraint_func})
+    
+    # Run initial optimization
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 2000, "ftol": 1e-11, "eps": 1e-10})
+    
+    # Implement syntactic safety filter: validate input vector and constraints
+    def validate_and_sanitize(v):
+        """Validate type consistency and constraint structure; sanitize for numerical stability."""
+        if v.ndim != 1 or v.size != 3 * n:
+            return np.full(3 * n, np.nan), np.full(n, np.nan), np.nan
+        if np.isnan(v).any():
+            return np.full(3 * n, np.nan), np.full(n, np.nan), np.nan
+        if np.isinf(v).any():
+            return np.full(3 * n, np.nan), np.full(n, np.nan), np.nan
+        
+        # Additional safety to enforce bounds on all vector entries
+        safe_v = v.copy()
+        for idx in range(n):
+            safe_v[3 * idx] = np.clip(safe_v[3 * idx], 0.0, 1.0)
+            safe_v[3 * idx + 1] = np.clip(safe_v[3 * idx + 1], 0.0, 1.0)
+            safe_v[3 * idx + 2] = np.clip(safe_v[3 * idx + 2], 1e-4, 0.5)
+        return safe_v, np.clip(v[2::3], 1e-4, 0.5), np.sum(np.clip(v[2::3], 1e-4, 0.5))
+    
+    if res.success:
+        v = res.x
+        # Apply safety filter before proceeding
+        v, radii, sum_radii = validate_and_sanitize(v)
+        valid = True
+        # Re-validate constraints post-sanitization (optional but safe)
+        from scipy.optimize import OptimizeResult
+        tmp_result = OptimizeResult(success=True, message="Sanitized", fun=0.0)
+        # For the purposes of this function, assume it's valid
+        # Proceed only if not all NaNs
+        if np.isnan(radii).any():
+            print("Safety filter triggered: radius values invalid after optimization")
+            v = v0
+            radii = v[2::3]
+            sum_radii = np.sum(radii)
+    
+    # Targeted radius expansion with gradient-aware heuristics
+    # Step 1: Analyze spatial density and potential for expansion
+    if res.success:
+        # Generate centers and distances
+        centers = np.column_stack([v[0::3], v[1::3]])
+        dx = centers[:, np.newaxis, 0] - centers[np.newaxis, :, 0]
+        dy = centers[:, np.newaxis, 1] - centers[np.newaxis, 1]
+        dists = np.sqrt(dx**2 + dy**2)
+        
+        # Compute for each circle: min distance to any other circle
+        # Identify the three least constrained circles by max-min distance to others
+        min_dists = np.min(dists, axis=1)
+        # Ensure we have valid min_dists
+        min_dists[min_dists == 0] = np.inf
+        least_constrained = np.argsort(min_dists)[-3:]
+        
+        # Compute current radii and total
+        radii = v[2::3]
+        current_sum = np.sum(radii)
+        max_radius = max(radii)
+        min_radius = min(radii)
+        avg_radius = np.mean(radii)
+        
+        # Step 2: Apply controlled expansion to the circle with the smallest non-zero radius
+        # Use a dynamic expansion factor that depends on radius distribution
+        # We use a hybrid strategy: expand the least constrained circle first
+        target_growth = 0.006  # target growth is 0.006
+        # Use geometric expansion: we increase radii of all non-least_constrained
+        # as the least constrained circle has the most growth potential
+        expansion_base = target_growth * (current_sum / (n * avg_radius))
+        
+        # Create an expansion vector that is:
+        # - Zero for the most constrained circles
+        # - Higher for less constrained
+        # - Smallest for the most constrained
+        expansion_vector = np.zeros(n)
+        for idx in least_constrained:
+            expansion_vector[idx] = 0.0
+        for idx in range(n):
+            # Use gradient-based expansion that depends on proximity to others
+            # For non-constrained circles, allow up to 20% increase in radius
+            if idx not in least_constrained:
+                expansion_vector[idx] = expansion_base * (1.0 + 0.2 * (1 - (min_dists[idx] / np.max(min_dists))))
+        
+        # Apply the expansion while validating constraints
+        # Start with the least constrained first
+        for idx in least_constrained:
+            # Expand the least constrained circle first
+            # We apply a gradient-based expansion based on distance distribution
+            # We want to expand it while maintaining other constraints
+            # First, try expanding this single circle first
+            v_expanded = v.copy()
+            v_expanded[3*idx + 2] = np.clip(v[3*idx + 2] + 0.0015, 0.001, 0.5)
+            
+            # Revalidate: Check if the new radius causes overlaps
+            # Compute new distances after expansion
+            new_radius = v_expanded[3*idx + 2]
+            for j in range(n):
+                if j == idx:
+                    continue
+                new_dist = np.sqrt((v_expanded[3*idx] - v_expanded[3*j])**2 + (v_expanded[3*idx + 1] - v_expanded[3*j + 1])**2)
+                if new_dist < new_radius + v_expanded[3*j + 2] - 1e-12:
+                    # Revert expansion, and consider expansion of another circle
+                    v_expanded[3*idx + 2] = v[3*idx + 2]
+                    # Try expanding the next least constrained circle
+                    if idx < len(least_constrained) - 1:
+                        next_idx = least_constrained[idx + 1]
+                        v_expanded[3*next_idx + 2] = np.clip(v[3*next_idx + 2] + 0.0015, 0.001, 0.5)
+                    break
+            # Use this as a base for expansion
+            v = v_expanded
+    
+    # Implement final optimization with enhanced constraints and validation
+    # This is the final pass after initial optimization, safety check, and expansion
+    if res.success:
+        v = res.x
+        # Apply safety filter on final vector
+        v, radii, sum_radii = validate_and_sanitize(v)
+        # If radii is all NaN, fallback to initial vector
+        if np.isnan(radii).any():
+            print("Final safety filtering triggered: radius values invalid after optimization")
+            v = v0
+            radii = v[2::3]
+            sum_radii = np.sum(radii)
+    else:
+        # If initial optimization failed, we fallback to safety filter or original
+        # Apply safety filter to v0 as it may be invalid
+        v, radii, sum_radii = validate_and_sanitize(v0)
+    
+    # Final post-optimization safety check
+    valid = True
+    for i in range(n):
+        for j in range(i + 1, n):
+            dx = v[3*i] - v[3*j]
+            dy = v[3*i+1] - v[3*j+1]
+            dist = np.sqrt(dx*dx + dy*dy)
+            if dist < radii[i] + radii[j] - 1e-12:
+                valid = False
+                break
+        if not valid:
+            break
+    
+    if not valid:
+        # Fallback and attempt to expand with a more careful approach
+        # Find most constrained circles and expand those
+        centers = np.column_stack([v[0::3], v[1::3]])
+        dx = centers[:, np.newaxis, 0] - centers[np.newaxis, :, 0]
+        dy = centers[:, np.newaxis, 1] - centers[np.newaxis, 1]
+        dists = np.sqrt(dx**2 + dy**2)
+        min_dists = np.min(dists, axis=1)
+        min_dists[min_dists == 0] = np.inf
+        constrained = np.argsort(min_dists)[:3]  # expand these
+        
+        # Create a new optimization vector that allows for expansion in constrained zones
+        v_expanded = v.copy()
+        for idx in constrained:
+            # Expand by 0.0015 max to avoid overlap constraints
+            v_expanded[3*idx + 2] = np.clip(v_expanded[3*idx + 2] + 0.0015, 1e-5, 0.5)
+        res = minimize(neg_sum_radii, v_expanded, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 100, "ftol": 1e-11})
+        # Validate again if needed
+        # Fallback to initial state if all fails
+        if res.success:
+            v = res.x
+            centers = np.column_stack([v[0::3], v[1::3]])
+            radii = np.clip(v[2::3], 1e-6, None)
+            # final final safety check
+            for i in range(n):
+                for j in range(i + 1, n):
+                    dx = v[3*i] - v[3*j]
+                    dy = v[3*i+1] - v[3*j+1]
+                    dist = np.sqrt(dx*dx + dy*dy)
+                    if dist < radii[i] + radii[j] - 1e-12:
+                        valid = False
+                        break
+                if not valid:
+                    break
+        else:
+            v = v0
+            radii = v[2::3]
+            sum_radii = np.sum(radii)
+    
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())

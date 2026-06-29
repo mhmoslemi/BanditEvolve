@@ -1,0 +1,281 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = 5
+    rows = (n + cols - 1) // cols
+    
+    # Advanced: Seed-based deterministic initialization for reproducibility
+    np.random.seed(42)  # For debug reproducibility, could be randomized
+    
+    # Initialize with hierarchical spatial encoding and non-uniform scaling
+    xs = np.zeros(n)
+    ys = np.zeros(n)
+    for i in range(n):
+        row = i // cols
+        col = i % cols
+        
+        # Base grid coordinates with dynamic scaling
+        x_center = (col + 0.6) / cols  # Slightly shift right for staggered effect
+        y_center = (row + 0.6) / rows  # Slightly shift top for non-uniform grid
+        
+        # Spatial perturbation with adaptive amplitude
+        spatial_amplitude = np.max([abs(row - (n - 1 - row)), abs(col - (n - 1 - col))]) / 8
+        x_perturb = np.random.uniform(-spatial_amplitude * 0.4, spatial_amplitude * 0.4)
+        y_perturb = np.random.uniform(-spatial_amplitude * 0.4, spatial_amplitude * 0.4)
+        
+        # Staggered grid: alternate row offsets
+        if row % 2 == 1:
+            x_center += 0.5 / cols
+        
+        # Add jitter
+        x = x_center + x_perturb
+        y = y_center + y_perturb
+        
+        # Ensure positions lie within a constrained area (to allow radius expansion later)
+        # Add a 10% margin of safety for radii expansion without bordering
+        x_clamped = np.clip(x, 0.1, 0.9)
+        y_clamped = np.clip(y, 0.1, 0.9)
+        
+        xs[i] = x_clamped
+        ys[i] = y_clamped
+    
+    # Base initial radius calculation with inverse spacing scaling
+    base_gap = np.sqrt((1.0 / cols)**2 + (1.0 / rows)**2)
+    initial_gap = 0.4 * base_gap  # We allow 40% free space for dynamic expansion
+    r0 = initial_gap / 1.6
+    
+    # Add radius-based jitter to diversify initial configurations
+    radius_jitter = r0 * 0.2
+    r0 = r0 + np.random.uniform(-radius_jitter / 2, radius_jitter / 2)
+
+    v0 = np.empty(3 * n)
+    v0[0::3] = xs
+    v0[1::3] = ys
+    v0[2::3] = np.full(n, r0)
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]  # 3*n entries
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    # Optimization constraints with advanced constraint handling
+    cons = []
+
+    # Vectorized boundary constraints using lambda with i-capturing
+    # Avoids closure capture issues by using default arguments
+    for i in range(n):
+        # Left: x - r >= 0
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i + 2]})
+        # Right: 1 - x - r >= 0
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i + 2]})
+        # Bottom: y - r >= 0
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i + 1] - v[3*i + 2]})
+        # Top: 1 - y - r >= 0
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i + 1] - v[3*i + 2]})
+    
+    # Vectorized pairwise circle distance constraints with constraint scaling
+    # Adaptive scaling to balance constraint strength per circle
+    for i in range(n):
+        for j in range(i + 1, n):
+            # Use a dynamically scaled constraint function to handle varying radii
+            def constraint_func(v, i, j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i + 1] - v[3*j + 1]
+                # Constraint: dx^2 + dy^2 >= (r_i + r_j)^2
+                dist_sq = dx*dx + dy*dy
+                radii_sum = v[3*i + 2] + v[3*j + 2]
+                return dist_sq - (radii_sum ** 2)
+            # Add constraint with dynamic scaling of constraint tolerance
+            cons.append({"type": "ineq", 
+                         "fun": (lambda v, i, j: constraint_func(v, i, j)),
+                         "jac": lambda v, i, j: (2*(v[3*i] - v[3*j]), 
+                                                 2*(v[3*i+1] - v[3*j+1]), 
+                                                 -2*v[3*i+2] - 2*v[3*j+2],
+                                                 0, 
+                                                 0, 
+                                                 0,  # Dummy for non-radii variables
+                                                 ) 
+                         if i == j else (1, 1, 1, 1, 1, 1)})
+
+    # First stage: global optimization with tight tolerances and constraint awareness
+    res = minimize(neg_sum_radii, v0, method="SLSQP", 
+                   bounds=bounds, 
+                   constraints=cons, 
+                   options={"maxiter": 1000, 
+                            "ftol": 1e-10,  # Tight termination tolerance 
+                            "gtol": 1e-10,  # Tight constraint tolerance
+                            "eps": 1e-8,  # Small finite differences
+                            "disp": False})
+
+    # Step 1: Asymmetric reconfiguration with geometric hashing
+    # Introduce a multi-level hashing system with adaptive radii-based perturbation
+    if res.success:
+        v = res.x
+        centers = np.column_stack([v[0::3], v[1::3]])
+        radii = v[2::3]
+        
+        # Step 1-1: Compute adjacency matrix via vectorized operation for neighbor tracking
+        dx = centers[:, np.newaxis, 0] - centers[np.newaxis, :, 0]
+        dy = centers[:, np.newaxis, 1] - centers[np.newaxis, :, 1]
+        dists_sq = dx*dx + dy*dy
+        dists = np.sqrt(dists_sq)
+        
+        # Build adjacency list in vectorized fashion
+        adj_list = []
+        for i in range(n):
+            # Get nearest neighbors with a distance cutoff (e.g. 3*radius cutoff)
+            cutoff = np.max(radii) * 3
+            nearby_indices = np.where((dists[i] < cutoff) & (dists[i] > 1e-12))[0]
+            adj_list.append(nearby_indices)
+        
+        # Step 1-2: Generate perturbation matrix based on radius
+        # Create a hash with adaptive scaling per circle, proportional to their radii
+        spatial_hash = 0.0
+        for i in range(n):
+            radius = radii[i]
+            # Apply hash with radius-weighted scaling for adaptive perturbation
+            # Scale by a factor inversely proportional to their spacing density
+            spacing_density = np.sum([np.sqrt( (centers[i,0]-centers[j,0])**2 + (centers[i,1]-centers[j,1])**2 ) 
+                                     for j in adj_list[i] if j != i], dtype=np.float32) / len(adj_list[i])
+            if spacing_density > 0:
+                spatial_hash += (np.random.rand(2) * 0.06 * (1.0 / spacing_density))
+            else:
+                spatial_hash += (np.random.rand(2) * 0.06)  # fallback
+        
+        perturbed_v = v.copy()
+        for i in range(n):
+            # Apply radius-weighted spatial perturbation
+            radius = radii[i]
+            if radius > 1e-5:
+                # Use a radius-based amplitude scaling (larger radii get less perturbation)
+                perturbation_amp = np.min([radius, 0.02]) * (1.0 / (radius + 1e-6))
+                for j in range(2):
+                    perturbed_v[3*i + j] += spatial_hash[j] * perturbation_amp
+
+        # Step 1-3: Re-optimize with perturbed configuration
+        res = minimize(neg_sum_radii, 
+                       perturbed_v,
+                       method="SLSQP",
+                       bounds=bounds,
+                       constraints=cons,
+                       options={"maxiter": 600, 
+                                "ftol": 1e-11,
+                                "gtol": 1e-11,
+                                "eps": 1e-8,
+                                "disp": False})
+    
+    # Step 2: Dynamic Radius Expansion on least constrained circle with spatial balancing
+    if res.success:
+        v = res.x
+        centers = np.column_stack([v[0::3], v[1::3]])
+        radii = v[2::3]
+        
+        # Step 2-1: Compute a constraint tightness score for each circle
+        # Constraint tightness: sum of constraint slack of adjacent constraints
+        dists_sq = np.zeros((n, n))
+        for i in range(n):
+            for j in range(n):
+                dx = centers[i, 0] - centers[j, 0]
+                dy = centers[i, 1] - centers[j, 1]
+                dists_sq[i, j] = dx*dx + dy*dy
+        radii_sum = (radii + radii.reshape(-1, 1)) * np.tri(n, n, k=-1, dtype=bool)
+        dists_sq[radii_sum > 0] = np.max(dists_sq[radii_sum > 0])
+        constraint_tightness = 1.0 / (dists_sq - (radii + radii.reshape(-1, 1))**2)
+        constraint_tightness = np.diag(constraint_tightness)
+        
+        # Find the circle with the least constraint tightness
+        min_tightness_idx = np.argmin(constraint_tightness)
+
+        # Step 2-2: Perform expansion with constraint-aware allocation
+        total_sum = np.sum(radii)
+        # Target to gain 0.006 to 0.008, with a dynamic gain depending on current density
+        gain_target = total_sum * 0.006 + (0.006 * (1.0 / (1.0 + np.mean(radii))) if np.mean(radii) > 0 else 0.006)
+        gain_per_circle = gain_target / (n - 1)
+        
+        # Apply expansion to the least constrained, but with density awareness
+        # Compute a density multiplier factor for this circle
+        density_multiplier = 1.0
+        if len(adj_list[min_tightness_idx]) > 0:
+            # More nearby implies lower density expansion factor
+            density_multiplier = 1.0 / (len(adj_list[min_tightness_idx]) + 1)
+        
+        # Calculate allowed expansion for the min_constrained
+        max_allowed_expansion = (1.0 - np.mean(radii)) * 0.8  # To avoid edge violations
+        proposed_exp = (gain_per_circle * density_multiplier)
+        actual_exp = np.min([proposed_exp, max_allowed_exp])
+        
+        # Create an expansion vector to distribute
+        expansion_vector = np.zeros(n)
+        expansion_vector[min_tightness_idx] = actual_exp
+        for i in range(n):
+            if i != min_tightness_idx:
+                # Add a slight spread to surrounding circles (smaller expansion)
+                spread = np.min([0.3 * (gain_per_circle * (1.0 - (i % n) * 0.1)), max_allowed_exp])
+                if i in adj_list[min_tightness_idx]:
+                    spread = max(spread, 0.2 * gain_per_circle)  # Neighbors get more
+                expansion_vector[i] = spread
+        
+        # Apply expansions
+        expansion_v = v.copy()
+        expansion_v[2::3] += expansion_vector
+        # Clamp radii at 0.5 to avoid overflow
+        expansion_v[2::3] = np.clip(expansion_v[2::3], 1e-6, 0.5)
+
+        # Step 2-3: Re-optimize with expanded parameters
+        res = minimize(neg_sum_radii,
+                       expansion_v,
+                       method="SLSQP",
+                       bounds=bounds,
+                       constraints=cons,
+                       options={"maxiter": 600,
+                                "ftol": 1e-11,
+                                "gtol": 1e-11,
+                                "eps": 1e-8,
+                                "disp": False})
+
+    # Step 3: Final refinement with spatial clustering and non-overlap tightening
+    if res.success:
+        v = res.x
+        centers = np.column_stack([v[0::3], v[1::3]])
+        radii = v[2::3]
+        
+        # Vectorized pairwise distance computation (precompute)
+        dx = centers[:, np.newaxis, 0] - centers[np.newaxis, :, 0]
+        dy = centers[:, np.newaxis, 1] - centers[np.newaxis, :, 1]
+        dists = np.sqrt(dx**2 + dy**2)
+
+        # Build a constraint matrix with soft overlaps
+        overlap_matrix = (dists < (radii + radii.reshape(-1, 1)) - 1e-9)  # Soft overlap
+        if np.any(overlap_matrix):
+            # Apply a post-optimization tightening pass with a different constraint vector
+            # Create a new constraint matrix with tighter tolerance
+            tighter_constr = []
+            for i in range(n):
+                for j in range(i + 1, n):
+                    tighter_constr.append({
+                        "type": "ineq",
+                        "fun": lambda v, i, j: (v[3*i] - v[3*j])**2 + (v[3*i+1] - v[3*j+1])**2 
+                                                  - (v[3*i+2] + v[3*j+2])**2 - 1e-12
+                    })
+            # Re-optimization to correct minor overlap
+            v_final = v
+            res = minimize(neg_sum_radii, v_final, 
+                           method="SLSQP",
+                           bounds=bounds,
+                           constraints=tighter_constr,
+                           options={"maxiter": 300,
+                                    "ftol": 1e-11,
+                                    "gtol": 1e-11,
+                                    "eps": 1e-8,
+                                    "disp": False}
+                           )
+            v = res.x
+        
+    # Final check for NaNs and correctness
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, 0.5)
+    return centers, radii, float(radii.sum())

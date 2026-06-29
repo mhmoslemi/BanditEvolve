@@ -1,0 +1,232 @@
+```python
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = 5
+    rows = (n + cols - 1) // cols
+    
+    # Initialize with refined lattice with optimized random seed and adaptive bias
+    xs = []
+    ys = []
+    # Use higher entropy for random seeding
+    np.random.seed(42)
+    for i in range(n):
+        row_idx = i // cols
+        col_idx = i % cols
+        x_center = (col_idx + 0.5) / cols
+        row_weight = 0.95 + 0.05 * np.sin((row_idx) * np.pi / 4)  # Add row-dependent row weight
+        y_center = (row_idx + 0.5) / rows * row_weight  # Adjusted row spacing
+        # Add randomized offsets with adaptive variance based on row and column location
+        x_offset = np.random.uniform(-0.06, 0.06)
+        y_offset = np.random.uniform(-0.05, 0.05)
+        # Shift alternate rows with row-dependent offset magnitude
+        if row_idx % 2 == 1:
+            x_offset += 0.05 * (row_idx + 1) / (rows + 1)
+        x = x_center + x_offset
+        y = y_center + y_offset
+        xs.append(x)
+        ys.append(y)
+    
+    # Dynamic radius initialization that considers column constraints
+    col_radii_capacity = [(0.4 * cols**(-0.5)) for _ in range(cols)]  # More capacity for outer columns
+    row_radii_capacity = [(0.3 * rows**(-0.5)) for _ in range(rows)]  # Less row capacity for vertical alignment constraint
+    # Use column/row radii capacity and weighted average to get an adaptive r0
+    r0 = 0.35 * (1 / (max(cols, rows) ** 0.5))
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = np.full(n, r0)
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]  # ensure 3n-sized bounds
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    # Constraints with lambda that captures i with a closure wrapper to avoid lambda capture issues
+    def bound_constraint(i):
+        def _func(v):
+            x = v[3*i]
+            r = v[3*i + 2]
+            return x - r
+        return _func
+    def bound_right(i):
+        def _func(v):
+            x = v[3*i]
+            r = v[3*i + 2]
+            return 1.0 - x - r
+        return _func
+    def bound_bottom(i):
+        def _func(v):
+            y = v[3*i + 1]
+            r = v[3*i + 2]
+            return y - r
+        return _func
+    def bound_top(i):
+        def _func(v):
+            y = v[3*i + 1]
+            r = v[3*i + 2]
+            return 1.0 - y - r
+        return _func
+
+    # Predefine constraint functions for optimization
+    cons = []
+    for i in range(n):
+        cons.append({"type": "ineq", "fun": bound_constraint(i)})
+        cons.append({"type": "ineq", "fun": bound_right(i)})
+        cons.append({"type": "ineq", "fun": bound_bottom(i)})
+        cons.append({"type": "ineq", "fun": bound_top(i)})
+    
+    # Overlap constraints with vectorized distance calculation using broadcasting
+    # Use a lambda closure that captures i, j, and allows fast access
+    def circle_overlap(i):
+        def _func(v):
+            x1 = v[3*i]
+            y1 = v[3*i + 1]
+            r1 = v[3*i + 2]
+            x2 = v[3*i + 3] if i < n-1 else v[3*i] + 1.0  # dummy to prevent invalid loops
+            y2 = v[3*i + 4] if i < n-1 else v[3*i + 1] + 1.0
+            r2 = v[3*i + 5] if i < n-1 else r1 + 1.0
+            return (x1 - x2)**2 + (y1 - y2)**2 - (r1 + r2)**2
+        return _func
+    
+    for i in range(n):
+        for j in range(i + 1, n):
+            cons.append({
+                "type": "ineq",
+                "fun": (lambda i, j: lambda v: (v[3*i] - v[3*j])**2 + (v[3*i+1] - v[3*j+1])**2 - (v[3*i+2] + v[3*j+2])**2)(i, j)
+            })
+
+    # Apply the optimization process with enhanced strategies
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 3000, "ftol": 1e-12, "eps": 1e-12})
+    
+    # If not successful, try with slightly different seed or perturbation
+    if not res.success:
+        # Apply seed-driven perturbation and reattempt
+        np.random.seed(44)
+        # Use more complex spatial hash for asymmetric reordering
+        spatial_hash = np.random.rand(n, 4) * 0.1  # 4D space for higher precision
+        perturbed_v = v0.copy()
+        for i in range(n):
+            # Spatial hash-based perturbation based on radius size
+            perturbed_v[3*i] += spatial_hash[i, 0] * (1.0 + 0.3 * (p0[0::3][i] - 0.2))
+            perturbed_v[3*i+1] += spatial_hash[i, 1] * (1.0 + 0.3 * (p0[1::3][i] - 0.2))
+            perturbed_v[3*i+2] += spatial_hash[i, 2] * (0.01 * (p0[2::3][i] - 0.2 + 0.1))
+        res = minimize(neg_sum_radii, perturbed_v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 2000, "ftol": 1e-12, "eps": 1e-12})
+    
+    # If still not successful, apply targeted reconfig with more aggressive radius growth mechanism
+    if res.success:
+        v = res.x
+        # Extract refined state
+        radii = v[2::3]
+        centers = np.column_stack([v[0::3], v[1::3]])
+        # Calculate distances using optimized vectorized broadcasting
+        dx = centers[:, np.newaxis, 0] - centers[np.newaxis, :, 0]
+        dy = centers[:, np.newaxis, 1] - centers[np.newaxis, 1]
+        dists = np.sqrt(dx**2 + dy**2)
+
+        # Calculate constrained metrics and determine critical points
+        min_dists = np.min(dists, axis=1)
+        # Use both radius-dependent and distance-based ordering criteria
+        # For better expansion decision: prioritize circles with lowest normalized min distance
+        # Normalize to 0-1 to avoid bias
+        # Also, include proximity to boundary as a secondary metric
+        boundary_proximity = np.minimum(
+            np.maximum(centers[:, 0] - radii, 0.0),
+            np.maximum(1.0 - centers[:, 0] - radii, 0.0)
+        ) + np.minimum(
+            np.maximum(centers[:, 1] - radii, 0.0),
+            np.maximum(1.0 - centers[:, 1] - radii, 0.0)
+        )
+        boundary_proximity_normalized = boundary_proximity / (np.max(boundary_proximity) + 1e-12) if np.max(boundary_proximity) > 1e-6 else 0.0
+
+        # Compute weighted scores combining distance-based and boundary proximity criteria
+        weight_distance = 0.75
+        weight_boundary = 0.25
+        scores = weight_distance * min_dists + weight_boundary * boundary_proximity_normalized
+        # Find most constrained circle (least score) to target
+        most_constrained_idx = np.argmin(scores)
+        # Find second-least constrained circle for potential reconfiguration
+        second_most_constrained_idx = np.argsort(scores)[1]
+
+        # Calculate how much we can grow the most constrained circle considering neighbors
+        # Calculate possible "growable" space based on average spacing and constraints
+        avg_distance = np.mean(min_dists)
+        avg_radius = np.mean(radii)
+
+        # Estimate max additional growth based on spacing
+        # Max possible radius growth per circle: (avg_distance - 0.5 * avg_radius) * 0.7
+        # but with more aggressive growth toward constraint boundaries
+        # Use radius-dependent growth factor - smaller circles grow more
+        growth_factor = (1.0 / radii) if np.any(radii > 0.0) else 1.0
+        # Apply adaptive expansion that favors most constrained and boundary-proximate
+        expansion_factor = (avg_distance - 0.7 * avg_radius) * growth_factor * 0.85
+        if expansion_factor < 2e-5:
+            # If too little space, skip
+            pass
+        else:
+            # Create expansion vector
+            new_radii = radii.copy()
+            # Overgrow the most constrained one
+            new_radii[most_constrained_idx] += expansion_factor * 1.4  # more aggressive
+            # Allow secondary expansion for reconfiguration
+            new_radii[second_most_constrained_idx] += expansion_factor * (1.0 + 0.2)  # more for reordering
+            for i in range(n):
+                if i not in [most_constrained_idx, second_most_constrained_idx]:
+                    # Minor expansion for other circles
+                    if np.random.rand() < 0.3:  # probabilistic expansion
+                        new_radii[i] += expansion_factor * 0.2
+            # Apply the expansion and re-optimize with new configuration
+            v_new = v.copy()
+            v_new[2::3] = new_radii
+            res = minimize(neg_sum_radii, v_new, method="SLSQP", bounds=bounds,
+                           constraints=cons, options={"maxiter": 800, "ftol": 1e-12, "eps": 1e-12})
+
+    # Post-check with stricter validation, and attempt repair if any errors
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    
+    # Final check in case any optimization path left invalid states
+    # Ensure all circles are inside the unit square and no overlaps
+    # This is both a safeguard and performance optimization to skip unnecessary reoptimizations
+    for i in range(n):
+        x, y = centers[i]
+        r = radii[i]
+        if (x - r < -1e-12 or x + r > 1 + 1e-12 or 
+            y - r < -1e-12 or y + r > 1 + 1e-12):
+            # If a circle is out of bounds, reset small radii to reconfigure
+            radii[i] = 0.03
+            centers[i, 0] = 0.3
+            centers[i, 1] = 0.3
+    # Final validation pass and re-evaluation with tighter constraints
+    try:
+        from scipy.optimize import Bounds
+        # Use a tighter epsilon to ensure precise boundaries
+        # Final bounds are already enforced by the constraints but additional check
+        final_bounds = [(0.0, 1.0), (0.0, 1.0), (1e-6, 0.45)] * n
+        # Final optimization pass to stabilize layout with tighter boundaries
+        res = minimize(neg_sum_radii, v, method="SLSQP", bounds=final_bounds,
+                       constraints=cons, options={"maxiter": 300, "ftol": 1e-13, "eps": 1e-13})
+        v = res.x
+    except:
+        pass
+
+    # Final centers and radii
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, 0.45)
+    # Final check and validation
+    # Ensure all circles are fully inside (with tight epsilon)
+    for i in range(n):
+        x, y = centers[i]
+        r = radii[i]
+        if not (x - r >= -1e-8 and x + r <= 1.0 + 1e-8 and y - r >= -1e-8 and y + r <= 1.0 + 1e-8):
+            # If out of bounds, reset with a safe default
+            centers[i] = np.array([0.5, 0.5])
+            radii[i] = 0.05
+    return centers, radii, float(radii.sum())
+```

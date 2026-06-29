@@ -1,0 +1,295 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = 5
+    rows = 6
+    # Initialize centers with hexagonal grid with staggered rows and randomized spatial offsets
+    xs = []
+    ys = []
+    for i in range(n):
+        row = i // cols
+        col = i % cols
+        # Grid center
+        x_center = (col + 0.5) / cols
+        y_center = (row + 0.5) / rows
+        # Random perturbation to break symmetry, use different range for x and y
+        x = x_center + np.random.uniform(-0.09, 0.09)
+        y = y_center + np.random.uniform(-0.06, 0.06)
+        # Alternate rows staggered
+        if row % 2 == 1:
+            x += 0.5 / cols  # Adjusted by row to create hexagonal tiling
+        xs.append(x)
+        ys.append(y)
+    
+    # Calculate initial radius estimate based on hexagonal packing efficiency
+    # Radius = spacing_between_centers / 2 (for hexagonal packing with sqrt(3)/2 spacing)
+    # spacing = 1 / cols * np.sqrt(3) / 2
+    # initial_r = spacing / 2 * 0.95
+    r0 = 0.34 / cols  # Slightly larger to allow expansion
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = np.full(n, r0)
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]  # 3n bounds for 3n variables
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])  # Maximize sums by minimizing negative
+
+    # Vectorized constraint construction with lambda i capture to avoid capture ambiguity
+    cons = []
+    for i in range(n):
+        # Left side: x - r >= 0
+        cons.append({"type": "ineq", "fun": (lambda v, i=i: v[3*i] - v[3*i+2])})
+        # Right side: 1 - x - r >= 0
+        cons.append({"type": "ineq", "fun": (lambda v, i=i: 1.0 - v[3*i] - v[3*i+2])})
+        # Bottom side: y - r >= 0
+        cons.append({"type": "ineq", "fun": (lambda v, i=i: v[3*i+1] - v[3*i+2])})
+        # Top side: 1 - y - r >= 0
+        cons.append({"type": "ineq", "fun": (lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2])})
+
+    # Vectorized overlap constraints with careful lambda and closure capture
+    # For all pairs, add constraint on distance^2 - (r1 + r2)^2 >= 0
+    for i in range(n):
+        for j in range(i + 1, n):
+            # Use lambda with captured i, j to compute the pairwise constraint
+            cons.append({"type": "ineq",
+                         "fun": (lambda v, i=i, j=j: 
+                                 (v[3*i] - v[3*j])**2 + (v[3*i+1] - v[3*j+1])**2 
+                                 - (v[3*i+2] + v[3*j+2])**2)})
+
+    # First phase: basic optimization with tight constraints
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 1500, "ftol": 1e-10,
+                                             "eps": 1e-9, "disp": False})
+    
+    # Handle first optimization success
+    if res.success:
+        v = res.x
+        radii = v[2::3]
+        centers = np.column_stack([v[0::3], v[1::3]])
+        
+        # Spatial hashing to enable asymmetric rearrangement
+        spatial_hash = np.random.rand(n, 2) * 0.05  # Smaller range for more controlled perturb
+        # Create adjacency-based expansion bias and directional hashing
+        adjacency_hash = np.random.rand(n, 2) * 0.07
+
+        # Apply directional spatial perturbation for reconfiguration
+        perturbed_v = v.copy()
+        for i in range(n):
+            # Apply spatial randomness with radii-dependent scaling
+            perturbed_v[3*i] += spatial_hash[i, 0] * (radii[i] / np.mean(radii)) * 0.8
+            perturbed_v[3*i+1] += spatial_hash[i, 1] * (radii[i] / np.mean(radii)) * 0.8
+            # Apply directional adjacency-based expansion bias
+            if i < n - 2:
+                perturbed_v[3*i+2] += adjacency_hash[i, 0] * 0.004
+                # Minor offset for better adjacency alignment
+                perturbed_v[3*i+1] += adjacency_hash[i, 1] * 0.003
+
+        # Second phase: asymmetric reconfiguration with expanded perturbation
+        res = minimize(neg_sum_radii, perturbed_v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 400, "ftol": 1e-10,
+                                                 "eps": 1e-9, "disp": False})
+        
+        # Handle second optimization success
+        if res.success:
+            v = res.x
+            radii = v[2::3]
+            centers = np.column_stack([v[0::3], v[1::3]])
+            dx = centers[:, np.newaxis, 0] - centers[np.newaxis, :, 0]
+            dy = centers[:, np.newaxis, 1] - centers[np.newaxis, 1]
+            dists = np.sqrt(dx**2 + dy**2)
+            min_dists = np.min(dists, axis=1)
+            least_constrained_idx = np.argmax(min_dists)
+
+            # Identify top 3 most constrained circles from the top
+            # We use top 3 to ensure we're reconfiguring the most dynamically interacting circles
+            top_constrained = np.argsort(min_dists)[-3:]
+            top_constrained_indices = set(top_constrained)
+            
+            # Select two circles from those for forced geometric dissection
+            circle_1_idx = top_constrained[0]
+            circle_2_idx = top_constrained[1]
+            
+            # Extract centers of the dynamically interacting pair
+            c1 = centers[circle_1_idx]
+            c2 = centers[circle_2_idx]
+            
+            # Define directional vectors for their centers
+            vec1 = c1.copy()
+            vec2 = c2.copy()
+            
+            # Normalize to unit vector
+            if np.linalg.norm(vec1) > 1e-12:
+                vec1 /= np.linalg.norm(vec1)
+            if np.linalg.norm(vec2) > 1e-12:
+                vec2 /= np.linalg.norm(vec2)
+            
+            # Define new directional vectors (slightly different to disrupt current configuration)
+            # vec1_new is perpendicular to vec1
+            # vec2_new is perpendicular to vec2
+            vec1_new = np.array([-vec1[1], vec1[0]])
+            vec2_new = np.array([-vec2[1], vec2[0]])
+            
+            # We will use these directional vectors for constrained reconfiguration
+            # Add new constraints that enforce these directional vectors for circles 1 and 2
+            
+            # Compute the current distance and radii of dynamically interacting pair
+            current_distance = np.linalg.norm(centers[circle_1_idx] - centers[circle_2_idx])
+            r1 = radii[circle_1_idx]
+            r2 = radii[circle_2_idx]
+            
+            # Compute minimal expansion vector to allow them to move apart
+            # If the distance < r1 + r2, current configuration is invalid
+            # But we already passed validation
+            # To allow expansion, we compute a displacement vector that increases the separation
+            max_allowed_distance = r1 + r2 + 1e-8
+            displacement_needed = max_allowed_distance - current_distance
+            
+            # Compute a normalized vector in the direction we want to move apart the circles
+            direction = c2 - c1  # vector from circle 1 to circle 2
+            if np.linalg.norm(direction) > 1e-12:
+                direction /= np.linalg.norm(direction)
+            
+            # Apply displacement to these two circles in opposite directions
+            displacement = displacement_needed * 0.6  # 60% of the needed separation
+            
+            # Displace the first circle to the direction opposite to the displacement
+            new_c1 = c1 - direction * displacement
+            # Displace the second circle in the displacement direction
+            new_c2 = c2 + direction * displacement
+            
+            # We will force the centers to move to these new positions with soft constraints
+            
+            # We will create soft constraints that pull the centers toward the new positions
+            # Add constraint on circle 1 to move towards new_c1
+            cons.append({"type": "ineq",
+                         "fun": (lambda v, c1=c1, c2=c2, i=circle_1_idx:
+                                 v[3*i] - c1[0] + v[3*i+1] - c1[1] + 0.1 * (v[3*i] - c1[0])**2 
+                                 + 0.1 * (v[3*i+1] - c1[1])**2 - 1e-5)})  # Soft constraint
+            # Add constraint on circle 2 to move towards new_c2
+            cons.append({"type": "ineq",
+                         "fun": (lambda v, c1=c1, c2=c2, i=circle_2_idx:
+                                 v[3*i] - c2[0] + v[3*i+1] - c2[1] + 0.1 * (v[3*i] - c2[0])**2 
+                                 + 0.1 * (v[3*i+1] - c2[1])**2 - 1e-5)})  # Soft constraint
+            
+            # Add additional soft constraints for directional vectors and expansion
+            # These will influence the solver to move the circles in the new directions
+            
+            # Create adjacency hash for enhanced directional expansion bias
+            adjacency_hash_expanded = np.random.rand(n, 2) * 0.06
+
+            # Apply directional expansion bias for the dynamically interacting pair
+            # Add directional expansion constraints to both circles as soft constraints
+            for i in range(n):
+                if i == circle_1_idx:
+                    # Add directional expansion for circle 1
+                    # Direction: vec1_new
+                    dx = vec1_new[0]
+                    dy = vec1_new[1]
+                    # Constraint: 10 * (v[3*i] - (x_initial + dx * radius_factor)) + 0.1*(x - (x_initial + dx * radius_factor))^2
+                    # Initial x for circle 1
+                    x_initial = centers[i, 0]
+                    y_initial = centers[i, 1]
+                    radius_i = radii[i]
+                    # Apply soft constraints that gently pull towards the new direction
+                    cons.append({"type": "ineq",
+                                 "fun": (lambda v, i=i, dx=dx, dy=dy, x_initial=x_initial, 
+                                         y_initial=y_initial, radius_i=radius_i: 
+                                         (v[3*i] - (x_initial + dx * radius_i * 0.5)) 
+                                         + (v[3*i+1] - (y_initial + dy * radius_i * 0.5)) 
+                                         + 0.1 * (v[3*i] - (x_initial + dx * radius_i * 0.5))**2 
+                                         + 0.1 * (v[3*i+1] - (y_initial + dy * radius_i * 0.5))**2 
+                                         - 1e-5)})
+                elif i == circle_2_idx:
+                    # Add directional expansion for circle 2
+                    dx = vec2_new[0]
+                    dy = vec2_new[1]
+                    # Initial x for circle 2
+                    x_initial = centers[i, 0]
+                    y_initial = centers[i, 1]
+                    radius_i = radii[i]
+                    cons.append({"type": "ineq",
+                                 "fun": (lambda v, i=i, dx=dx, dy=dy, x_initial=x_initial, 
+                                         y_initial=y_initial, radius_i=radius_i: 
+                                         (v[3*i] - (x_initial + dx * radius_i * 0.5)) 
+                                         + (v[3*i+1] - (y_initial + dy * radius_i * 0.5)) 
+                                         + 0.1 * (v[3*i] - (x_initial + dx * radius_i * 0.5))**2 
+                                         + 0.1 * (v[3*i+1] - (y_initial + dy * radius_i * 0.5))**2 
+                                         - 1e-5)})
+            
+            # Apply expansion with targeted radius increase to least constrained circle
+            # Now, instead of a naive expansion, we apply directional expansion based on adjacency
+            # Calculate current_total and use expansion factor
+            current_total = np.sum(radii)
+            target_growth = 0.0075
+            expansion_factor = target_growth / (n - 1) * (current_total / np.mean(radii))
+            new_radii = radii.copy()
+            new_radii[least_constrained_idx] += expansion_factor * 1.2
+            
+            # Apply expansion to adjacent circles with directional bias
+            for i in range(n):
+                if i != least_constrained_idx:
+                    # Use adjacency hash and directional expansion bias for adjacency
+                    adj_weight = np.linalg.norm(centers[least_constrained_idx] - centers[i])
+                    expansion = expansion_factor * (1.0 + 0.3 * adjacency_hash_expanded[i, 0])
+                    if adj_weight < 0.1:
+                        expansion *= 1.4  # Boost for circles very close
+                    elif adj_weight < 0.2:
+                        expansion *= 1.2
+                    new_radii[i] += expansion
+            
+            # Now, we will apply expansion with constraint validation and soft reordering
+            while True:
+                expanded_v = v.copy()
+                expanded_v[2::3] = new_radii
+                expanded_centers = np.column_stack([expanded_v[0::3], expanded_v[1::3]])
+                
+                # Validate expanded configuration with tighter tolerance for early break
+                valid = True
+                for i in range(n):
+                    for j in range(i + 1, n):
+                        dx_exp = expanded_centers[i, 0] - expanded_centers[j, 0]
+                        dy_exp = expanded_centers[i, 1] - expanded_centers[j, 1]
+                        dist = np.sqrt(dx_exp**2 + dy_exp**2)
+                        # Use tighter validation threshold
+                        if dist < new_radii[i] + new_radii[j] - 1e-12:
+                            valid = False
+                            break
+                    if not valid:
+                        break
+                
+                if valid:
+                    break
+                else:
+                    # Gradually decrease expansion if invalid
+                    new_radii = radii + (new_radii - radii) * 0.98
+                    
+            # Update decision vector with reconfigured positions and radii
+            v_new = v.copy()
+            v_new[2::3] = new_radii
+            
+            # Final phase: refine with updated radii and new directional constraints
+            # Use the updated variables and constraints
+            res = minimize(neg_sum_radii, v_new, method="SLSQP", bounds=bounds,
+                           constraints=cons, options={"maxiter": 400, "ftol": 1e-10,
+                                                     "eps": 1e-9, "disp": False})
+    
+    # Final fallback to the initial attempt if all phases fail
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    
+    # Apply final validation and ensure no numerical issues
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        valid, reason = validate_packing(centers, radii)
+    
+    if not valid:
+        # If final validation fails, return the best possible configuration
+        centers, radii, _ = run_packing()
+        
+    return centers, radii, float(radii.sum())

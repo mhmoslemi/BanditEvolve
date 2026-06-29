@@ -1,0 +1,145 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = 5
+    rows = (n + cols - 1) // cols
+    
+    # Initialize with geometric hashing and refined spatial perturbation
+    xs = []
+    ys = []
+    for i in range(n):
+        row = i // cols
+        col = i % cols
+        x_center = (col + 0.5) / cols
+        y_center = (row + 0.5) / rows
+        
+        # Spatial hash for asymmetric stochastic placement
+        spatial_hash = np.random.rand(2) * 0.12
+        x = x_center + spatial_hash[0] * (1.0 / rows) * (1 + 0.5 * np.sin(2 * np.pi * row / rows)) * (1 - np.random.rand())
+        y = y_center + spatial_hash[1] * (1.0 / cols) * (1 + 0.5 * np.cos(2 * np.pi * col / cols)) * (1 - np.random.rand())
+        
+        # Alternate stagger
+        if row % 2 == 1:
+            x += 0.5 / cols
+        
+        # Ensure edge constraint awareness
+        x = np.clip(x, 1e-6, 1.0 - 1e-6)
+        y = np.clip(y, 1e-6, 1.0 - 1e-6)
+        xs.append(x)
+        ys.append(y)
+    
+    base_radius = 0.39 / cols - 1e-3
+    r0 = base_radius * np.ones(n)
+    
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = r0
+    
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]  # 3*n entries
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    # Vectorized boundary constraints with strict boundary checks
+    cons = []
+    for i in range(n):
+        cons.append({"type": "ineq", "fun": (lambda v, i=i: 1.0 - v[3*i] - v[3*i+2])})
+        cons.append({"type": "ineq", "fun": (lambda v, i=i: v[3*i] - v[3*i+2])})
+        cons.append({"type": "ineq", "fun": (lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2])})
+        cons.append({"type": "ineq", "fun": (lambda v, i=i: v[3*i+1] - v[3*i+2])})
+    
+    # Vectorized overlap constraints with efficient formulation
+    for i in range(n):
+        for j in range(i + 1, n):
+            cons.append({"type": "ineq", 
+                         "fun": (lambda v, i=i, j=j: 
+                                 (v[3*i] - v[3*j])**2 + (v[3*i+1] - v[3*j+1])**2 
+                                 - (v[3*i+2] + v[3*j+2])**2)})
+
+    # Initial optimization with tighter tolerances and increased iterations
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 2000, "ftol": 1e-11, "eps": 1e-9})
+    
+    if res.success:
+        v = res.x
+        radii = v[2::3]
+        centers = np.column_stack([v[0::3], v[1::3]])
+        
+        # Asymmetrical spatial hashing and constraint-based reconfiguration
+        spatial_hashes = np.random.rand(n, 2) * 0.06
+        perturbed_v = v.copy()
+        for i in range(n):
+            # Apply asymmetric spatial displacement based on radius ratio and harmonic weighting
+            radius_ratio = radii[i] / (np.max(radii) + 1e-6)
+            displacement = spatial_hashes[i] * (radius_ratio ** 1.5) * (1 - np.random.rand() / 3)
+            perturbed_v[3*i] += displacement[0] * (1 + 0.6 * np.sin(2 * np.pi * i / 6))
+            perturbed_v[3*i+1] += displacement[1] * (1 + 0.6 * np.cos(2 * np.pi * i / 6))
+        
+        # Re-evaluate with new spatial configuration after perturbation
+        res = minimize(neg_sum_radii, perturbed_v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 400, "ftol": 1e-11, "eps": 1e-9})
+    
+    if res.success:
+        v = res.x
+        radii = v[2::3]
+        centers = np.column_stack([v[0::3], v[1::3]])
+        
+        # Vectorized minimal distances matrix for constraint validation
+        dx = centers[:, np.newaxis, 0] - centers[np.newaxis, :, 0]
+        dy = centers[:, np.newaxis, 1] - centers[np.newaxis, :, 1]
+        dists = np.sqrt(dx**2 + dy**2)
+        
+        # Compute weighted least constrained by max of min distances
+        min_dists = np.min(dists, axis=1)
+        least_constrained_idx = np.argmax(min_dists)
+        
+        # Calculate expansion target with adaptive growth heuristic
+        current_total = np.sum(radii)
+        target_growth = 0.0075
+        expansion_factor = target_growth / (n - 1) * (current_total / np.sum(radii))
+        
+        # Vectorized radii growth with adaptive stochastic perturbation
+        new_radii = radii.copy()
+        new_radii[least_constrained_idx] += expansion_factor * 1.2  # Slight amplification
+        for i in range(n):
+            if i != least_constrained_idx:
+                expansion_i = expansion_factor * (1.0 + 0.2 * (np.random.rand() ** 0.8))  # More stochastic expansion
+                new_radii[i] += expansion_i
+        
+        # Apply local expansion with constraint validation
+        iterations = 0
+        while iterations < 4:
+            expanded_v = v.copy()
+            expanded_v[2::3] = new_radii
+            expanded_centers = np.column_stack([expanded_v[0::3], expanded_v[1::3]])
+            
+            # Vectorized constraint validation for all pairs
+            valid = True
+            pair_indices = [(i, j) for i in range(n) for j in range(i + 1, n)]
+            for i, j in pair_indices:
+                dx_exp = expanded_centers[i, 0] - expanded_centers[j, 0]
+                dy_exp = expanded_centers[i, 1] - expanded_centers[j, 1]
+                dist_exp = np.sqrt(dx_exp**2 + dy_exp**2)
+                if dist_exp < new_radii[i] + new_radii[j] - 1e-12:
+                    valid = False
+                    break
+            if valid:
+                break
+            else:
+                new_radii = radii + (new_radii - radii) * 0.96
+                iterations += 1
+        
+        # Update and re-optimize with the new radius configuration
+        v_new = v.copy()
+        v_new[2::3] = new_radii
+        res = minimize(neg_sum_radii, v_new, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 300, "ftol": 1e-11, "eps": 1e-9})
+    
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())

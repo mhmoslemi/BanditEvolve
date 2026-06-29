@@ -1,0 +1,106 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = 5
+    rows = (n + cols - 1) // cols
+    
+    # Initialize positions with randomized geometric clustering and staggered grid
+    xs = []
+    ys = []
+    for i in range(n):
+        row = i // cols
+        col = i % cols
+        x_center = (col + 0.5) / cols
+        y_center = (row + 0.5) / rows
+        # Randomized offset to break symmetry
+        x = x_center + np.random.uniform(-0.05, 0.05)
+        y = y_center + np.random.uniform(-0.05, 0.05)
+        # Shift alternate rows to create staggered grid
+        if row % 2 == 1:
+            x += 0.5 / cols
+        xs.append(x)
+        ys.append(y)
+    
+    r0 = 0.35 / cols - 1e-3
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = np.full(n, r0)
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    # Vectorized constraints for boundaries
+    cons = []
+    for i in range(n):
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+    
+    # Vectorized overlap constraints
+    for i in range(n):
+        for j in range(i + 1, n):
+            def constraint_func(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                return dx*dx + dy*dy - (v[3*i+2] + v[3*j+2])**2
+            cons.append({"type": "ineq", "fun": constraint_func})
+
+    # Initial optimization with increased max iterations and tighter tolerance
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 1500, "ftol": 1e-10})
+    
+    # Radical reconfiguration with geometric hashing and controlled radius expansion
+    if res.success:
+        v = res.x
+        # Create a random geometric hash map for new configuration
+        random_hash = np.random.rand(n, 2) * 0.05
+        perturbed_v = v.copy()
+        for i in range(n):
+            perturbed_v[3*i] += random_hash[i, 0]
+            perturbed_v[3*i+1] += random_hash[i, 1]
+        # Re-evaluate with perturbed parameters
+        res = minimize(neg_sum_radii, perturbed_v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 300, "ftol": 1e-10})
+
+    # Targeted radius expansion on the circle with the smallest non-zero radius
+    if res.success:
+        v = res.x
+        radii = v[2::3]
+        # Find the circle with the smallest non-zero radius
+        smallest_radius_idx = np.argmin(radii)
+        # Expand its radius and apply strict non-overlap constraints
+        # Add a hard constraint on total sum to force redistribution
+        max_total_radius = 2.66
+        current_total_radius = np.sum(radii)
+        # Calculate how much we can increase the smallest radius without exceeding the limit
+        max_possible_increase = max_total_radius - current_total_radius
+        expansion = max_possible_increase * 0.05
+        # Expand the smallest radius and adjust other circles' radii accordingly
+        v[3*smallest_radius_idx + 2] += expansion
+        # Distribute the expansion to other circles while ensuring non-overlap
+        for i in range(n):
+            if i != smallest_radius_idx:
+                # Calculate the overlap with the expanded circle and reduce others as needed
+                dx = v[3*i] - v[3*smallest_radius_idx]
+                dy = v[3*i+1] - v[3*smallest_radius_idx+1]
+                dist = np.sqrt(dx*dx + dy*dy)
+                overlap = (v[3*i+2] + v[3*smallest_radius_idx+2]) - dist
+                if overlap > 1e-8:
+                    # Reduce radius of other circle to avoid overlap
+                    reduction = overlap * 0.5
+                    v[3*i + 2] = max(v[3*i + 2] - reduction, 1e-4)
+        # Re-evaluate with adjusted parameters
+        res = minimize(neg_sum_radii, v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 300, "ftol": 1e-10})
+    
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())

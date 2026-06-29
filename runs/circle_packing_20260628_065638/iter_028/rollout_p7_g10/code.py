@@ -1,0 +1,174 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = 5  # Ensure consistent 5 columns for the staggered grid
+    rows = (n + cols - 1) // cols  # Compute rows from the grid
+
+    # --- Step 1: Dynamic initialization with adaptive spatial partitioning ---
+    # Use grid-based placement with randomized offset and staggered rows
+    xs = []
+    ys = []
+    for i in range(n):
+        row, col = i // cols, i % cols  # Determine grid row and column
+        x_center = (col + 0.5) / cols
+        y_center = (row + 0.5) / rows
+        
+        # Apply asymmetric randomization for spatial diversity
+        seed_offset = (i // 10) % 10  # Use seeding for repeatable spatial diversity
+        np.random.seed(seed_offset)
+        x = x_center + np.random.uniform(-0.12, 0.12)  # Larger range for diversity
+        y = y_center + np.random.uniform(-0.12, 0.12)
+        
+        # Stagger rows: alternate rows offset to simulate interlocking layout
+        if row % 2 == 1:
+            x += 0.5 / cols  # Shift alternate rows to prevent row-to-row clustering
+        
+        # Apply non-uniform spatial distortion to break symmetry further
+        x += (np.random.normal(0, 0.02) * np.cos(np.pi * row / rows)) 
+        y += (np.random.normal(0, 0.02) * np.sin(np.pi * col / cols))
+        
+        xs.append(x)
+        ys.append(y)
+    
+    # --- Step 2: Initialize radii with geometric-aware allocation ---
+    r0 = 0.35 / cols - 1e-3  # Base radii based on grid spacing
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = np.full(n, r0)
+
+    # --- Step 3: Construct bounds with strict validity constraints ---
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]  # Length exactly 3n
+
+    # --- Step 4: Define objective function with vectorization and gradient awareness ---
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+    
+    # --- Step 5: Construct constraint set with vectorized lambda with closure capturing ---
+    cons = []
+    
+    # Vectorized boundary constraints
+    for i in range(n):
+        # Left margin
+        cons.append({"type": "ineq", 
+                     "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        # Right margin
+        cons.append({"type": "ineq", 
+                     "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        # Bottom margin
+        cons.append({"type": "ineq", 
+                     "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        # Top margin
+        cons.append({"type": "ineq", 
+                     "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+    
+    # Vectorized non-overlap constraints with closure and closure capturing
+    for i in range(n):
+        for j in range(i + 1, n):
+            # Use lambda closure with i and j fixed for each constraint
+            cons.append({"type": "ineq",
+                         "fun": lambda v, i=i, j=j: 
+                             (v[3*i] - v[3*j])**2 + (v[3*i+1] - v[3*j+1])**2 
+                             - (v[3*i+2] + v[3*j+2])**2})
+
+    # --- Step 6: Primary optimization with advanced solvers and multi-phase strategy ---
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 1600, "ftol": 1e-12, "maxfun": 5000})
+    
+    # --- Step 7: Introduce geometric decomposition of most dynamically interacting pair ---
+    if res.success:
+        v = res.x
+        radii = v[2::3]
+        center_x = v[0::3]
+        center_y = v[1::3]
+        
+        # Compute full distance matrix using broadcasting for efficiency
+        dx = center_x[:, np.newaxis] - center_x[np.newaxis, :]
+        dy = center_y[:, np.newaxis] - center_y[np.newaxis, :]
+        dists = np.sqrt(dx**2 + dy**2)
+        
+        # Compute interaction weights based on distance and radius product
+        interaction_weights = np.sum(dists * (radii[:, np.newaxis] + radii[np.newaxis, :]), axis=1)
+        top_interaction_idx = np.argsort(interaction_weights)[-2:]  # Select top two interacting circles
+        
+        # Reinitialize these top two circles with adaptive perturbation
+        top_v = v.copy()
+        # Add perturbations with radius scaling to encourage reconfiguration
+        for i in top_interaction_idx:
+            # Add spatial perturbation scaled with radius and inverse grid size
+            perturbation_x = np.random.uniform(-0.1, 0.1) * (radii[i] / np.mean(radii)) * (cols / 3)
+            perturbation_y = np.random.uniform(-0.1, 0.1) * (radii[i] / np.mean(radii)) * (rows / 3)
+            
+            top_v[3*i] += perturbation_x
+            top_v[3*i+1] += perturbation_y
+            top_v[3*i+2] += (np.random.uniform(-0.003, 0.003)) * (radii[i] / np.mean(radii))  # Radius perturbation
+        
+        # Re-optimise with these new parameters
+        res = minimize(neg_sum_radii, top_v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 700, "ftol": 1e-11, "maxfun": 5000})
+    
+    # --- Step 8: Introduce novel constrained reconfiguration with dynamic radius expansion ---
+    if res.success:
+        v = res.x
+        radii = v[2::3]
+        centers = np.column_stack([v[0::3], v[1::3]])
+        
+        # Recalculate interaction weights
+        dx = centers[:, np.newaxis, 0] - centers[np.newaxis, :, 0]
+        dy = centers[:, np.newaxis, 1] - centers[np.newaxis, :, 1]
+        dists = np.sqrt(dx**2 + dy**2)
+        
+        # Find circle with highest distance to others (most isolated)
+        isolation = np.min(dists, axis=1)
+        most_isolated_idx = np.argmax(isolation)
+        
+        # Calculate possible expansion based on current total sum and isolation factor
+        current_total = np.sum(radii)
+        expansion_factor = np.sqrt(0.008) * (isolation[most_isolated_idx] / np.mean(isolation))
+        
+        # Create an expansion vector
+        new_radii = radii.copy()
+        new_radii[most_isolated_idx] = new_radii[most_isolated_idx] * (1 + expansion_factor * 1.2)  # Aggressive expansion
+        
+        # Apply soft constraint satisfaction with stochastic adjustment
+        while True:
+            # Check for overlap after expansion
+            expanded_centers = np.column_stack([v[0::3], v[1::3]])
+            expanded_radii = new_radii
+            
+            # Evaluate all pairs for non-overlap
+            overlap = False
+            for i in range(n):
+                for j in range(i+1, n):
+                    dx = expanded_centers[i, 0] - expanded_centers[j, 0]
+                    dy = expanded_centers[i, 1] - expanded_centers[j, 1]
+                    dist = np.sqrt(dx**2 + dy**2)
+                    if dist < expanded_radii[i] + expanded_radii[j] - 1e-12:
+                        overlap = True
+                        break
+                if overlap:
+                    break
+            
+            if not overlap:
+                break
+            else:
+                # Adjust radius growth if overlap is found
+                # Scale down expansion in a gradient way
+                new_radii = radii + (new_radii - radii) * 0.95
+        
+        # Apply the new radii vector
+        new_radius_v = v.copy()
+        new_radius_v[2::3] = new_radii
+        
+        # Re-optimise with new parameters for stability
+        res = minimize(neg_sum_radii, new_radius_v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 800, "ftol": 1e-11, "maxfun": 2000})
+    
+    # --- Final step: Validate and return result ---
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())

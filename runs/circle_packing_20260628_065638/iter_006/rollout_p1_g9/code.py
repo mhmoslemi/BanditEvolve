@@ -1,0 +1,95 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = 5
+    rows = (n + cols - 1) // cols
+    
+    # Initialize positions using a randomized geometric clustering algorithm
+    # Create clusters with random positions and sizes
+    cluster_centers = np.random.rand(n // 2, 2) * 0.8 + 0.1
+    cluster_radii = np.random.rand(n // 2) * 0.05 + 0.02
+    cluster_offsets = np.random.rand(n // 2, 2) * 0.1 - 0.05
+    
+    xs = []
+    ys = []
+    for i in range(n):
+        if i < n // 2:
+            # Assign to a cluster
+            cluster_idx = i
+            x = cluster_centers[cluster_idx, 0] + cluster_offsets[cluster_idx, 0]
+            y = cluster_centers[cluster_idx, 1] + cluster_offsets[cluster_idx, 1]
+        else:
+            # Place randomly in the remaining space
+            x = np.random.uniform(0.1, 0.9)
+            y = np.random.uniform(0.1, 0.9)
+        xs.append(x)
+        ys.append(y)
+    
+    r0 = 0.3 / cols - 1e-3
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = np.full(n, r0)
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    cons = []
+    for i in range(n):
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+    for i in range(n):
+        for j in range(i + 1, n):
+            def constraint_func(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                return dx*dx + dy*dy - (v[3*i+2] + v[3*j+2])**2
+            cons.append({"type": "ineq", "fun": constraint_func})
+
+    # Initial optimization with increased max iterations and tighter tolerance
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 1500, "ftol": 1e-10})
+    
+    # Identify the most isolated cluster and perform targeted expansion
+    if res.success:
+        v = res.x
+        centers = np.column_stack([v[0::3], v[1::3]])
+        radii = v[2::3]
+        # Compute isolation score for each cluster
+        isolation_scores = []
+        for i in range(n // 2):
+            cluster_mask = np.zeros(n, dtype=bool)
+            for j in range(n):
+                if j < n // 2:
+                    cluster_mask[j] = True
+            distances = np.linalg.norm(centers[cluster_mask] - centers[~cluster_mask], axis=1)
+            min_distance = np.min(distances)
+            isolation_score = min_distance - (radii[cluster_mask] + radii[~cluster_mask])
+            isolation_scores.append(isolation_score)
+        # Find the cluster with the highest isolation score
+        max_isolation_idx = np.argmax(isolation_scores)
+        # Apply targeted expansion to this cluster
+        perturbation = 0.05 * np.random.rand(3)
+        perturbed_v = v.copy()
+        for j in range(n // 2):
+            if j == max_isolation_idx:
+                perturbed_v[3*j] += perturbation[0]
+                perturbed_v[3*j+1] += perturbation[1]
+                perturbed_v[3*j+2] += perturbation[2]
+        # Clip radii to ensure they stay within bounds
+        perturbed_v[2::3] = np.clip(perturbed_v[2::3], 1e-4, 0.5)
+        # Re-evaluate with perturbed parameters
+        res = minimize(neg_sum_radii, perturbed_v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 300, "ftol": 1e-10})
+    
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())

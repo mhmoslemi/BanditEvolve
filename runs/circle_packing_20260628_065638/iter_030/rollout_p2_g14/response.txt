@@ -1,0 +1,225 @@
+```python
+import numpy as np
+
+def run_packing():
+    n = 26
+    # Step 1: Optimize grid design - adaptive hexagonal grid with non-uniform scaling
+    cols = min(6, int(np.ceil(np.sqrt(n))))  # Max 6 columns to prevent oversquashing
+    cols = max(4, cols)  # Minimum 4 columns to distribute circles
+    rows = (n + cols - 1) // cols  # Ceiling division for row count
+    grid_density = 0.88  # Tighten grid density to allow tighter cluster formation
+    # Step 2: Initialize with hexagonal grid with dynamic spatial hashing + stochastic perturbation
+    xs = []
+    ys = []
+    # Precompute grid center points with dynamic scaling for each row
+    for i in range(n):
+        row = i // cols
+        col = i % cols
+        base_x = (col + 0.5) / cols
+        base_y = (row + 0.5) / rows  # Base y position scaled by rows
+        # Add dynamic displacement for hexagonal grid - row shift and row height
+        if row % 2 == 1:  # Alternate row offset
+            base_x += 0.5 / cols
+        # Add perturbation based on grid density and row/column
+        pert_x = np.random.randn() * (0.05 * (1 - grid_density)) * (0.5 if col == 0 else 1)
+        pert_y = np.random.randn() * (0.05 * (1 - grid_density)) * (0.5 if row == 0 else 1)
+        # Add spatial hashing based on col/row index for divergence
+        spatial_hash = np.random.rand() * 0.04
+        # Combine base + perturbation + hash
+        x = base_x + pert_x + spatial_hash
+        y = base_y + pert_y + spatial_hash
+        # Clamp within [0, 1] tightly for tighter packing
+        x = np.clip(x, 1e-8, 1 - 1e-8)
+        y = np.clip(y, 1e-8, 1 - 1e-8)
+        xs.append(x)
+        ys.append(y)
+    
+    # Step 3: Radii initialization with adaptive radius formula
+    # Adjust based on grid density and spatial constraints
+    avg_cell_width = 1.0 / cols
+    avg_cell_height = 1.0 / rows
+    max_cell_diagonal = np.sqrt(avg_cell_width**2 + avg_cell_height**2)
+    # Initial base radius with dynamic scaling: 0.3 for dense, 0.4 for sparse
+    base_radius = 0.45 - 0.15 * (1 - grid_density) 
+    r0 = base_radius / np.sqrt(cols * rows)  # Scale by grid density for adaptive start
+    r0 = np.clip(r0, 1e-5, 0.4)  # Ensure minimal and max radius
+
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = np.full(n, r0)
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    # Step 4: Optimize constraints for better gradient handling and stability
+    cons = []
+    # Boundary constraints - all are inequality constraints (>=0) 
+    for i in range(n):
+        # Left bound + radius <= 1
+        cons.append({"type": "ineq", "fun": (lambda v, i=i: 1.0 - v[3*i] - v[3*i + 2])})
+        # Right bound - radius >= 0
+        cons.append({"type": "ineq", "fun": (lambda v, i=i: v[3*i] - v[3*i + 2])})
+        # Bottom bound + radius <= 1
+        cons.append({"type": "ineq", "fun": (lambda v, i=i: 1.0 - v[3*i + 1] - v[3*i + 2])})
+        # Top bound - radius >= 0
+        cons.append({"type": "ineq", "fun": (lambda v, i=i: v[3*i + 1] - v[3*i + 2])})
+    
+    # Step 5: Overlap constraints with optimized gradient handling and vectorization
+    # We will apply a sparse overlap constraint network - only connect nearest neighbors
+    # Using k-NN for efficiency with n=26, but we use k=1 to ensure all pairwise are handled
+
+    # Precompute sparse adjacency list with k nearest neighbors for overlap constraints
+    # This is a more efficient approach than full pairwise constraints
+    # We compute the distance matrix and build a sparse list for the most likely overlaps
+    # Using broadcasting for full pairwise distances
+    # But for this step, due to code structure limits, we will use full pairwise but optimize
+    # by precomputing once and using vectorized operations in constraints
+    # However, since the code must be a single pass, we will use full pairwise but
+    # use more efficient math in the constraint function
+
+    # Overlap constraints: distance^2 >= (r_i + r_j)^2
+    # We use a more stable form for gradient purposes
+    for i in range(n):
+        for j in range(i + 1, n):
+            # Create a constraint that forces distance^2 - (r_i + r_j)^2 >= 0
+            # This is more stable for gradients than direct distance comparison
+            cons.append({"type": "ineq", 
+                         "fun": (lambda v, i=i, j=j:
+                                 (v[3*i] - v[3*j])**2 + (v[3*i+1] - v[3*j+1])**2
+                                 - (v[3*i+2] + v[3*j+2])**2)})  # use squared distance
+    
+    # Step 6: Initial optimization with enhanced configuration
+    # Start with SLSQP with high tolerance and moderate iterations
+    # To avoid premature convergence, use a multi-step configuration strategy
+    # Initial optimization with tighter tolerance and higher max iterations
+    initial_res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                           constraints=cons, options={"maxiter": 600, "ftol": 1e-11})
+
+    if initial_res.success:
+        v = initial_res.x
+        # Apply perturbation with adaptive scaling to escape local optima
+        # Perturb based on relative position and radius
+        perturbation_scale = 0.03  # Small scale
+        perturbation = np.random.uniform(-perturbation_scale, perturbation_scale, 2*n)
+        # Apply perturbation based on spatial density: scale with radius for isolation
+        radii = v[2::3]
+        # Weight perturbation by inverse of radius (avoid perturbing small circles excessively)
+        perturbation *= np.sqrt(radii)  # Weight by square root of radius
+        # Apply to x and y separately
+        v[0::3] += perturbation[0::2]  # x positions
+        v[1::3] += perturbation[1::2]  # y positions
+        # Clamp to unit square
+        v[0::3] = np.clip(v[0::3], 1e-8, 1 - 1e-8)
+        v[1::3] = np.clip(v[1::3], 1e-8, 1 - 1e-8)
+        # Re-evaluate with perturbed configuration
+        perturbed_res = minimize(neg_sum_radii, v, method="SLSQP", bounds=bounds,
+                                 constraints=cons, options={"maxiter": 400, "ftol": 1e-11})
+        if perturbed_res.success:
+            v = perturbed_res.x
+            # Now apply advanced reconfiguration: targeted geometric dissection
+            # First, we identify the two most dynamically interacting (overlapping) circles
+            # To avoid recomputation, use vectorized approach
+
+            # Get initial positions and radii
+            centers = np.column_stack([v[0::3], v[1::3]])
+            radii = v[2::3]
+            # Compute mutual distances in vectorized form using broadcasting
+            dx = centers[:, np.newaxis, 0] - centers[np.newaxis, :, 0]
+            dy = centers[:, np.newaxis, 1] - centers[np.newaxis, 1]
+            dists = np.sqrt(dx**2 + dy**2)
+            # Compute mutual distance with radii
+            mutual_dists = dists - radii[:, np.newaxis] - radii[np.newaxis, :]
+            # Find pairwise indices with smallest distances (potential overlaps)
+            # Use a lower threshold for overlap to capture potential interactions
+            # We sort by sum of min distances (mutual) and select top 2 circles
+            mutual_distances = np.abs(mutual_dists)
+            sum_mutual = np.sum(mutual_distances, axis=1)
+            # Identify top 2 circles by max mutual distance (those that interact most)
+            top_idx = np.argsort(sum_mutual)[-2:]
+            # Apply forced geometric dissection to these two
+            # We will perform a controlled repositioning and radius update
+
+            # Extract their positions and radii
+            top_centers = centers[top_idx]
+            top_radii = radii[top_idx]
+            # Create perturbation vector
+            perturbation = np.random.rand(n, 2) * 0.03  # Small random spatial perturbation
+            # Apply perturbation scaled by radius to ensure larger circles get more space
+            # Perturbation vector is now scaled by radius
+            perturbation *= np.sqrt(radii)[:, np.newaxis]
+            # Apply the perturbation to top circles
+            v[3*top_idx[0]] += perturbation[top_idx[0], 0]
+            v[3*top_idx[0]+1] += perturbation[top_idx[0], 1]
+            v[3*top_idx[1]] += perturbation[top_idx[1], 0]
+            v[3*top_idx[1]+1] += perturbation[top_idx[1], 1]
+            # Clamp back to unit square
+            v[3*top_idx[0]] = np.clip(v[3*top_idx[0]], 1e-8, 1 - 1e-8)
+            v[3*top_idx[0]+1] = np.clip(v[3*top_idx[0]+1], 1e-8, 1 - 1e-8)
+            v[3*top_idx[1]] = np.clip(v[3*top_idx[1]], 1e-8, 1 - 1e-8)
+            v[3*top_idx[1]+1] = np.clip(v[3*top_idx[1]+1], 1e-8, 1 - 1e-8)
+            # Re-evaluate the updated configuration
+            dissection_res = minimize(neg_sum_radii, v, method="SLSQP", bounds=bounds,
+                                     constraints=cons, options={"maxiter": 400, "ftol": 1e-11})
+            if dissection_res.success:
+                v = dissection_res.x
+                # Apply controlled radius expansion to the least constrained circle
+                # First, compute min distances to other circles (less interaction)
+                # Use vectorized computation again
+                centers_revised = np.column_stack([v[0::3], v[1::3]])
+                d = np.zeros((n, n))
+                dx = centers_revised[:, np.newaxis, 0] - centers_revised[np.newaxis, :, 0]
+                dy = centers_revised[:, np.newaxis, 1] - centers_revised[np.newaxis, 1]
+                d = np.sqrt(dx**2 + dy**2)
+                # Compute total interaction for each circle
+                interactions = np.sum(d, axis=1)
+                # Find circle with least interaction (most isolated)
+                isolated_idx = np.argmin(interactions)
+                # Now calculate how much the isolated circle can grow while keeping others safe
+                current_total = np.sum(v[2::3])
+                # Calculate max possible radius expansion (target up to 0.015)
+                max_possible_expansion = 0.015 - (v[2::3].sum() / (n - 1))  # spread it evenly
+                expansion_factor = max(0.0, (current_total + max_possible_expansion) - current_total)
+                expansion_factor = min(expansion_factor, 0.006)
+                # Distribute this expansion as a soft expansion to all other circles
+                # But scale by inverse of distance to maintain stability
+                # Calculate inverse distance
+                inv_dists = 1.0 / (np.sqrt(dx**2 + dy**2) + 1e-9)  # avoid division by zero
+                inv_dists = inv_dists.diagonal()  # just for each element
+                # Avoid expanding isolation circle itself
+                expansion_weights = np.zeros(n)
+                expansion_weights[isolated_idx] = 0.0
+                # For other circles, compute weights inversely proportional to distance to isolated
+                # To ensure expansion is distributed safely
+                for i in range(n):
+                    if i != isolated_idx:
+                        # Scale expansion based on inverse distance and square of radius
+                        # (Inverse distance) is a measure of interaction
+                        # Square of radius helps protect larger circles
+                        weight = 1.0 / (np.max(d[i]) + 1e-9) * (1 + np.sqrt(v[3*i+2]))
+                        expansion_weights[i] = weight
+                # Normalize weights
+                expansion_weights /= np.sum(expansion_weights)
+                # Apply expansion to all other circles
+                for i in range(n):
+                    if i != isolated_idx:
+                        v[3*i+2] += expansion_weights[i] * expansion_factor
+                # Clamp to max radius
+                v[2::3] = np.clip(v[2::3], 1e-6, 0.45)  # set max to 0.45 for stability
+                # Re-evaluate configuration after expansion
+                final_res = minimize(neg_sum_radii, v, method="SLSQP", bounds=bounds,
+                                     constraints=cons, options={"maxiter": 500, "ftol": 1e-11})
+                if final_res.success:
+                    v = final_res.x
+    else:
+        v = v0
+    
+    # Post-process
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, 0.45)  # Clamp max again for safety
+    return centers, radii, float(radii.sum())
+```

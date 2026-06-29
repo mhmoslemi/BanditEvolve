@@ -1,0 +1,333 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = 5
+    rows = (n + cols - 1) // cols
+    
+    # Advanced initialization with non-uniform distribution + adaptive geometric spacing
+    xs = []
+    ys = []
+    initial_radius = 0.12 / np.sqrt(n)  # Initial guess for average radius
+    # Use dynamic seeding based on spatial distribution to promote diversity and reduce symmetry
+    seed = np.random.randint(0, 100000)  # Add deterministic randomness seed
+    np.random.seed(seed)
+    for i in range(n):
+        row = i // cols
+        col = i % cols
+        # Base grid positions
+        base_x = (col + 0.5) / cols
+        base_y = (row + 0.5) / rows
+        # Add stochastic geometric perturbations with spatially adaptive magnitude
+        spatial_factor = 0.3
+        x_offset = np.random.uniform(-spatial_factor, spatial_factor) * (np.sin(row) / (n - i))
+        y_offset = np.random.uniform(-spatial_factor, spatial_factor) * (np.cos(col) / (n - i))
+        # Create staggered rows with exponential shift
+        if row % 2 == 1:
+            x_offset += 0.5 / cols * (1 + np.random.normal(0, 0.05))
+        # Add adaptive randomness to break symmetry
+        x = base_x + x_offset
+        y = base_y + y_offset
+        xs.append(x)
+        ys.append(y)
+
+    # Initialize radii with adaptive geometric scaling
+    r0 = initial_radius * (1 + 1e-3 * np.random.rand(n))
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = r0
+
+    # Bounds must be exactly 3*n, with each circle having valid spatial and size constraints
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]  # Maintain exact bounds matching the vector length
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])  # Minimize negative of sum to maximize sum
+
+    # Vectorized and memoized constraint system with dynamic constraint tuning
+    # Use delayed lambda resolution with functools.partial for stable capture
+    cons = []
+
+    # Define boundary constraints for each circle with strict enforcement
+    for i in range(n):
+        # Left boundary (x - r >= 0)
+        cons.append({
+            'type': 'ineq',
+            'fun': lambda v, i=i: v[3*i] - v[3*i + 2]
+        })
+        # Right boundary (x + r <= 1)
+        cons.append({
+            'type': 'ineq',
+            'fun': lambda v, i=i: 1.0 - v[3*i] - v[3*i + 2]
+        })
+        # Bottom boundary (y - r >= 0)
+        cons.append({
+            'type': 'ineq',
+            'fun': lambda v, i=i: v[3*i + 1] - v[3*i + 2]
+        })
+        # Top boundary (y + r <= 1)
+        cons.append({
+            'type': 'ineq',
+            'fun': lambda v, i=i: 1.0 - v[3*i + 1] - v[3*i + 2]
+        })
+
+    # Create overlapping constraint with spatial-aware distance thresholding
+    # We use a modified form where the constraint function returns: 
+    # distance^2 - (r_i + r_j)^2 >= 0
+    # This avoids sqrt operations and maintains gradient stability
+    for i in range(n):
+        for j in range(i + 1, n):
+            def constraint_func(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                return dx*dx + dy*dy - (v[3*i+2] + v[3*j+2])**2
+            cons.append({
+                'type': 'ineq',
+                'fun': constraint_func
+            })
+
+    # First optimization: Initial convergence to local solution
+    # Use SLSQP with adaptive step sizes and tighter tolerances
+    res = minimize(
+        neg_sum_radii, 
+        v0, 
+        method="SLSQP",
+        bounds=bounds, 
+        constraints=cons,
+        options={
+            "maxiter": 3500,  # Allow more iterations for better global fit
+            "ftol": 1e-11,  # Strict tolerance for minimal distance errors
+            "eps": 1e-11,  # Reduce step size sensitivity
+            "iprint": 0,  # Suppress internal output
+            "disp": False  # No console progress
+        }
+    )
+
+    # Optimization stage 1: Apply spatial constraint mutation with gradient-based fine-tuning
+    if res.success:
+        v = res.x
+        # Get current spatial layout
+        current_centers = np.column_stack([v[0::3], v[1::3]])
+        current_radii = v[2::3]
+        
+        # Spatial constraint enhancement: create adaptive perturbation vector for reconfiguration
+        perturbation_scale = 0.04  # Reduced scaling for finer adjustments
+        # Create spatially adaptive perturbation matrix with exponential decay
+        perturb_matrix = np.zeros((n, 2))
+        # Use spatial interaction strength as perturbation factor
+        interaction_matrix = np.zeros((n, n))
+        for i in range(n):
+            for j in range(i + 1, n):
+                dx = current_centers[i, 0] - current_centers[j, 0]
+                dy = current_centers[i, 1] - current_centers[j, 1]
+                interaction_matrix[i, j] = 1.0 / (dx*dx + dy*dy + 1e-8)
+                interaction_matrix[j, i] = interaction_matrix[i, j]
+        
+        # Create perturbation matrix with exponential decay based on interaction
+        # For each agent i, perturb by strength inversely proportional to its interaction
+        max_interact = np.max(interaction_matrix)
+        perturb_matrix = np.zeros((n, 2))
+        for i in range(n):
+            if max_interact > 1e-8:
+                perturb_matrix[i, 0] = (1 / (1 + np.max(interaction_matrix[i, :])) - 1) * perturbation_scale
+                perturb_matrix[i, 1] = (1 / (1 + np.max(interaction_matrix[i, :])) - 1) * perturbation_scale
+            else:
+                perturb_matrix[i, 0] = perturbation_scale * np.random.uniform(-1, 1)
+                perturb_matrix[i, 1] = perturbation_scale * np.random.uniform(-1, 1)
+
+        # Apply spatial mutation with adaptive weighting
+        perturbed_v = v.copy()
+        for i in range(n):
+            perturbed_v[3*i] += perturb_matrix[i, 0] * current_radii[i]  # Scale by radius for better dynamics
+            perturbed_v[3*i+1] += perturb_matrix[i, 1] * current_radii[i]
+
+        # Second optimization stage: fine-tune after spatial constraint mutation
+        res = minimize(
+            neg_sum_radii,
+            perturbed_v,
+            method="SLSQP",
+            bounds=bounds,
+            constraints=cons,
+            options={
+                "maxiter": 400,
+                "ftol": 1e-11,
+                "eps": 1e-11,
+                "iprint": 0,
+                "disp": False 
+            }
+        )
+
+    # Optimization stage 2: Introduce topological dissection to reconfigure highly interactive pairs
+    if res.success:
+        v = res.x
+        current_centers = np.column_stack([v[0::3], v[1::3]])
+        current_radii = v[2::3]
+        
+        # Compute all pairwise interactions
+        dists = np.zeros((n, n))
+        for i in range(n):
+            for j in range(n):
+                dx = current_centers[i, 0] - current_centers[j, 0]
+                dy = current_centers[i, 1] - current_centers[j, 1]
+                dists[i, j] = np.sqrt(dx*dx + dy*dy)
+        
+        # Identify top 2 most interacting pairs (maximizing minimum distance between others)
+        interaction_matrix = np.zeros((n, n))
+        for i in range(n):
+            for j in range(n):
+                if i != j:
+                    interaction_matrix[i, j] = (current_radii[i] + current_radii[j]) / dists[i, j]
+        
+        # Select top 2 most interacting pairs (with highest interaction matrix values)
+        top_pair_idx = np.argsort(interaction_matrix, axis=None)[-2]
+        # Convert flat index to 2D indices
+        i1 = top_pair_idx // n
+        j1 = top_pair_idx % n
+        # Get second highest interaction (avoid same pair)
+        idxs = np.where(interaction_matrix != 0)
+        valid_pairs = [(x, y) for x, y in zip(idxs[0], idxs[1]) if x != y]
+        if len(valid_pairs) > 1:
+            top2_pair_idx = np.argsort(interaction_matrix)[::-1][1]
+            i2, j2 = top2_pair_idx // n, top2_pair_idx % n
+        else:
+            i2, j2 = i1, j1  # Fall back
+        
+        # Create a reconfiguration zone for the top interacting pairs
+        # Apply a controlled spatial perturbation with exponential decay of influence
+        def spatial_reconfigure(v, i1, j1, i2, j2, v_radius):
+            new_v = v.copy()
+            # Calculate vector from base to first pair member
+            dx1 = v[3*i1] - v[3*i2]
+            dy1 = v[3*i1+1] - v[3*i2+1]
+            dist1 = np.sqrt(dx1**2 + dy1**2)
+            if dist1 > 1e-8:
+                # Compute unit vector for first pair influence
+                u1 = (dx1, dy1) / dist1
+                # Perturb first pair members by exponential decay based on distance
+                # Use radii to scale influence, more radius means more control
+                influence1 = v_radius[i1] * v_radius[j1]
+                for k in [i1, j1]:
+                    new_v[3*k] += u1[0] * influence1 * 1e-3
+                    new_v[3*k+1] += u1[1] * influence1 * 1e-3
+            
+            # Calculate vector from base to second pair member
+            dx2 = v[3*i2] - v[3*j2]
+            dy2 = v[3*i2+1] - v[3*j2+1]
+            dist2 = np.sqrt(dx2**2 + dy2**2)
+            if dist2 > 1e-8:
+                # Compute unit vector for second pair influence
+                u2 = (dx2, dy2) / dist2
+                # Perturb second pair members by exponential decay based on distance
+                influence2 = v_radius[i2] * v_radius[j2]
+                for k in [i2, j2]:
+                    new_v[3*k] += u2[0] * influence2 * 1e-3
+                    new_v[3*k+1] += u2[1] * influence2 * 1e-3
+
+            # Apply additional perturbation to reduce symmetry
+            new_v[3*i1] += np.random.uniform(-3e-4, 3e-4) * v_radius[i1]
+            new_v[3*i1+1] += np.random.uniform(-3e-4, 3e-4) * v_radius[i1]
+            new_v[3*j1] += np.random.uniform(-3e-4, 3e-4) * v_radius[j1]
+            new_v[3*j1+1] += np.random.uniform(-3e-4, 3e-4) * v_radius[j1]
+            new_v[3*i2] += np.random.uniform(-3e-4, 3e-4) * v_radius[i2]
+            new_v[3*i2+1] += np.random.uniform(-3e-4, 3e-4) * v_radius[i2]
+            new_v[3*j2] += np.random.uniform(-3e-4, 3e-4) * v_radius[j2]
+            new_v[3*j2+1] += np.random.uniform(-3e-4, 3e-4) * v_radius[j2]
+            return new_v
+
+        # Apply reconfiguration
+        current_radii = v[2::3]
+        perturbed_v = spatial_reconfigure(v, i1, j1, i2, j2, current_radii)
+        res = minimize(
+            neg_sum_radii,
+            perturbed_v,
+            method="SLSQP",
+            bounds=bounds,
+            constraints=cons,
+            options={
+                "maxiter": 300,
+                "ftol": 1e-11,
+                "eps": 1e-11,
+                "iprint": 0,
+                "disp": False 
+            }
+        )
+
+    # Optimization stage 3: Introduce constrained adjacency reordering with gradient flow optimization
+    if res.success:
+        v = res.x
+        current_centers = np.column_stack([v[0::3], v[1::3]])
+        current_radii = v[2::3]
+        
+        # Compute all pairwise distances for adjacency graph
+        dists = np.zeros((n, n))
+        for i in range(n):
+            for j in range(n):
+                dx = current_centers[i, 0] - current_centers[j, 0]
+                dy = current_centers[i, 1] - current_centers[j, 1]
+                dists[i, j] = np.sqrt(dx*dx + dy*dy)
+
+        # Build adjacency matrix based on spatial proximity (within a threshold)
+        adjacency = dists < (current_radii[:, np.newaxis] + current_radii[np.newaxis, :])
+        adjacency = adjacency.astype(float)
+
+        # Compute node degree (number of neighbors) as a measure of "constrainedness"
+        degrees = np.sum(adjacency, axis=1)
+        # Identify node most affected by adjacency (highest degree)
+        constrained_idx = np.argmax(degrees)
+
+        # Calculate minimal expansion possible while maintaining all constraints
+        # Use the spatial interaction matrix for more accurate estimation
+        interaction_matrix = np.zeros((n, n))
+        for i in range(n):
+            for j in range(n):
+                if i != j:
+                    interaction_matrix[i, j] = (current_radii[i] + current_radii[j]) / dists[i, j]
+        
+        # Calculate the maximum safe expansion based on total radii and minimal impact on adjacency
+        total_radii = np.sum(current_radii)
+        # Try to expand minimal constrained node by 0.005 while maintaining total constraint
+        # This is a heuristic to allow a larger radius for the least constrained node
+        # with a minimal disruption to the existing layout
+        # We'll apply this expansion as a gradient-guided update
+        expansion_direction = np.zeros(n)
+        for i in range(n):
+            if i != constrained_idx:
+                # Add a small influence factor to expand other nodes slightly
+                # This ensures the expansion of one doesn't cause others to shrink
+                expansion_direction[i] += 0.01 * (total_radii - current_radii[i]) / (n-1)
+        
+        # Compute the expansion amount by analyzing the potential gradient
+        # Use spatial interaction to weight the expansion of other nodes
+        weighted_expansion = expansion_direction * (current_radii[constrained_idx] / total_radii)
+
+        # Create a new_radii vector with increased radius of the least constrained
+        new_radii = current_radii.copy()
+        new_radii[constrained_idx] += weighted_expansion[constrained_idx] + 0.003
+
+        # Apply the new_radii vector and optimize
+        # We use the same spatial layout but adjust radii to allow expansion
+        new_v = v.copy()
+        new_v[2::3] = new_radii
+        
+        # Re-evaluate with the adjusted radii
+        res = minimize(
+            neg_sum_radii,
+            new_v,
+            method="SLSQP",
+            bounds=bounds, 
+            constraints=cons,
+            options={
+                "maxiter": 300,
+                "ftol": 1e-11,
+                "eps": 1e-11,
+                "iprint": 0,
+                "disp": False 
+            }
+        )
+
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())

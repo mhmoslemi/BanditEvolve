@@ -1,0 +1,90 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = 5
+    rows = (n + cols - 1) // cols
+    
+    # Initialize positions using a randomized geometric clustering algorithm
+    centers = np.random.rand(n, 2)
+    radii = np.full(n, 0.05)
+    
+    # Cluster centers using k-means
+    from sklearn.cluster import KMeans
+    kmeans = KMeans(n_clusters=cols).fit(centers)
+    cluster_centers = kmeans.cluster_centers_
+    
+    # Assign each circle to a cluster
+    cluster_assignments = kmeans.labels_
+    
+    # Distribute circles within clusters to promote spacing
+    for i in range(cols):
+        cluster_centers_i = centers[cluster_assignments == i]
+        if len(cluster_centers_i) > 0:
+            # Add small random perturbation to cluster centers to break symmetry
+            perturbation = 0.02 * np.random.rand(len(cluster_centers_i), 2)
+            cluster_centers_i += perturbation
+            # Update positions
+            centers[cluster_assignments == i] = cluster_centers_i
+    
+    # Initialize radii based on cluster spacing
+    r0 = 0.25 / cols
+    radii = np.full(n, r0)
+    
+    v0 = np.empty(3 * n)
+    v0[0::3] = centers[:, 0]
+    v0[1::3] = centers[:, 1]
+    v0[2::3] = radii
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    cons = []
+    for i in range(n):
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+    for i in range(n):
+        for j in range(i + 1, n):
+            def constraint_func(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                return dx*dx + dy*dy - (v[3*i+2] + v[3*j+2])**2
+            cons.append({"type": "ineq", "fun": constraint_func})
+
+    # Initial optimization with tightened tolerances
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 1500, "ftol": 1e-10})
+    
+    # Post-optimization radius expansion for the most isolated cluster
+    if res.success:
+        v = res.x
+        centers = np.column_stack([v[0::3], v[1::3]])
+        radii = v[2::3]
+        
+        # Identify the most isolated cluster
+        from sklearn.cluster import KMeans
+        kmeans = KMeans(n_clusters=cols).fit(centers)
+        cluster_centers = kmeans.cluster_centers_
+        cluster_distances = np.array([np.mean(np.sum((centers - cluster_centers[i])**2, axis=1)) for i in range(cols)])
+        isolated_cluster = np.argmax(cluster_distances)
+        
+        # Expand radii of circles in the isolated cluster
+        isolated_indices = np.where(kmeans.labels_ == isolated_cluster)[0]
+        radii[isolated_indices] *= 1.2
+        radii[isolated_indices] = np.clip(radii[isolated_indices], 1e-4, 0.5)
+        
+        # Re-optimization with expanded radii
+        v[2::3] = radii
+        res = minimize(neg_sum_radii, v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 300, "ftol": 1e-10})
+    
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())

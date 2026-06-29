@@ -1,0 +1,268 @@
+```python
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = 5
+    rows = (n + cols - 1) // cols
+    
+    # Initialize with optimized randomized grid with adaptive perturbation and spatial bias
+    # This uses a layered random seed for increased diversity in early-stage exploration
+    np.random.seed(42 + int(np.pi * 1000)) # seed to avoid repeated patterns
+    
+    xs = []
+    ys = []
+    for i in range(n):
+        row = i // cols
+        col = i % cols
+        # Base grid position
+        base_x = (col + 0.2) / cols
+        base_y = (row + 0.2) / rows
+        
+        # Adaptive scaling based on row and column position with random perturbation
+        x = base_x + np.random.uniform(-0.02, 0.03) * (1 + 0.5 * (row % 2))
+        y = base_y + np.random.uniform(-0.04, 0.03) * (1 + 0.4 * (col % 3))
+        
+        # Introduce directional distortion for more complex spatial organization
+        if row % 3 == 1 and col % 2 == 0: 
+            x += 0.05 * (np.sin(np.pi * row) + 0.5 * np.cos(np.pi * col)) / (rows + 1)
+        xs.append(x)
+        ys.append(y)
+    
+    # Optimized initial radii: base radius + position-based growth for edge circles
+    # Edge circles (those on the border or near the perimeter of the initial grid)
+    # get an increased initial radius for better growth opportunities
+    r0 = 0.33 / cols - 1e-3
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    
+    # Compute edge detection for initial circles
+    edge_mask = np.zeros(n, dtype=bool)
+    for i in range(n):
+        x = xs[i]
+        y = ys[i]
+        # Check if circle is in top/bottom rows or first/last column in grid
+        if row <= rows//2 + 1 or row >= rows - rows//3 - 1 or col <= cols//3 + 1 or col >= cols - cols//4 - 1:
+            edge_mask[i] = True
+    
+    v0[2::3] = np.full(n, r0) + (edge_mask * 0.01)
+    
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.45)]  # slightly tightened max radius to avoid overflow
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    # Vectorized constraints for boundaries with fixed indexing
+    cons = []
+    for i in range(n):
+        # Left edge constraint: x - r >= 0
+        cons.append({"type": "ineq", "fun": (lambda v, i=i: v[3*i] - v[3*i+2])})
+        # Right edge constraint: x + r <= 1
+        cons.append({"type": "ineq", "fun": (lambda v, i=i: 1.0 - v[3*i] - v[3*i+2])})
+        # Bottom edge constraint: y - r >= 0
+        cons.append({"type": "ineq", "fun": (lambda v, i=i: v[3*i+1] - v[3*i+2])})
+        # Top edge constraint: y + r <= 1
+        cons.append({"type": "ineq", "fun": (lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2])})
+    
+    # Vectorized overlap constraints using lambda with captured i,j
+    for i in range(n):
+        for j in range(i + 1, n):
+            # Constraint: distance_squared >= (r_i + r_j)^2
+            cons.append({"type": "ineq", 
+                         "fun": (lambda v, i=i, j=j: 
+                                 (v[3*i] - v[3*j])**2 + (v[3*i+1] - v[3*j+1])**2 
+                                 - (v[3*i+2] + v[3*j+2])**2)})
+    
+    # Initial optimization with high precision
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 3000, "ftol": 1e-12})
+    
+    # Adaptive spatial perturbation
+    if res.success:
+        v = res.x
+        # Compute radius distribution and center positions
+        radii = v[2::3]
+        centers = np.column_stack([v[0::3], v[1::3]])
+        
+        # Compute spatial influence factors using distance-based weights
+        # This will help prioritize reconfiguration of circles under most spatial stress
+        dx = centers[:, np.newaxis, 0] - centers[np.newaxis, :, 0]
+        dy = centers[:, np.newaxis, 1] - centers[np.newaxis, :, 1]
+        dists = np.sqrt(dx**2 + dy**2)
+        
+        # Avoid division by zero by applying small epsilon
+        spatial_influence = 1 / (dists + 1e-8)
+        # Normalize influence by sum per circle to find highly-influenced circles
+        normalizer = np.sum(spatial_influence, axis=1, keepdims=True)
+        influence_norm = spatial_influence / (normalizer + 1e-8)
+        
+        # Find most spatially influenced circle and its neighbors
+        most_influenced_idx = np.argmax(np.sum(influence_norm, axis=1))
+        influenced_neighbors = np.argsort(np.sum(influence_norm[most_influenced_idx], axis=0))[-4:]
+        
+        # Add additional constraints for the most influenced circle
+        # Create a new set of constraints focusing on spatial integrity
+        # and allow for perturbation in its vicinity for better exploration
+        new_constraints = []
+        for i in range(n):
+            # Add tighter constraints for most influenced circle
+            if i == most_influenced_idx:
+                for dir in range(4):  # left, right, bottom, top
+                    if dir == 0:
+                        new_constraints.append({"type": "ineq", "fun": (lambda v, i=i: v[3*i] - v[3*i+2] - 1e-3)})
+                    elif dir == 1:
+                        new_constraints.append({"type": "ineq", "fun": (lambda v, i=i: 1.0 - v[3*i] - v[3*i+2] - 1e-3)})
+                    elif dir == 2:
+                        new_constraints.append({"type": "ineq", "fun": (lambda v, i=i: v[3*i+1] - v[3*i+2] - 1e-3)})
+                    else:
+                        new_constraints.append({"type": "ineq", "fun": (lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2] - 1e-3)})
+        # Add constraint for nearest neighbors too
+        for i in influenced_neighbors:
+            for dir in range(4):
+                if dir == 0:
+                    new_constraints.append({"type": "ineq", "fun": (lambda v, i=i: v[3*i] - v[3*i+2] - 1e-4)})
+                elif dir == 1:
+                    new_constraints.append({"type": "ineq", "fun": (lambda v, i=i: 1.0 - v[3*i] - v[3*i+2] - 1e-4)})
+                elif dir == 2:
+                    new_constraints.append({"type": "ineq", "fun": (lambda v, i=i: v[3*i+1] - v[3*i+2] - 1e-4)})
+                else:
+                    new_constraints.append({"type": "ineq", "fun": (lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2] - 1e-4)})
+        
+        # Update constraints to include these spatially significant ones
+        # Keep original constraints but give new ones higher priority for perturbation
+        cons = new_constraints + cons
+    
+    # First optimized solution
+    if res.success:
+        v = res.x
+        radii = v[2::3]
+        centers = np.column_stack([v[0::3], v[1::3]])
+        
+        # Add multi-staged perturbation for non-local spatial exploration
+        # 1. Adaptive spatial disturbance based on circle influence
+        # 2. Global radius expansion with targeted constraint checking
+        # 3. Hybrid approach of local and global optimization to explore novel configurations
+        
+        # Generate spatial noise vector with circle-based scaling
+        # Noise is amplified for circles that are currently under spatial stress
+        perturbation_mask = 1.0 + (np.sum(spatial_influence, axis=1) / np.max(spatial_influence, axis=1) ** 0.5) * 0.01
+        perturbation = np.random.randn(n, 2) * perturbation_mask
+        
+        # Apply perturbation with gradient-based adaptation to allow more flexible growth
+        # Ensure perturbation stays within valid bounds
+        modified_v = v.copy()
+        modified_v[0::3] += perturbation[:, 0]
+        modified_v[1::3] += perturbation[:, 1]
+        modified_v[0::3] = np.clip(modified_v[0::3], 0.0, 1.0)
+        modified_v[1::3] = np.clip(modified_v[1::3], 0.0, 1.0)
+        modified_v[2::3] = np.clip(modified_v[2::3], 1e-4, 0.45)
+        
+        # Second optimization phase with the perturbed configuration
+        # Add a small global radius expansion constraint to encourage growth
+        # but keep it under constraint checking
+        res = minimize(neg_sum_radii, modified_v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 800, "ftol": 1e-13})
+        
+        # If this optimization was successful, attempt aggressive radius extension
+        # with targeted spatial expansion
+        if res.success:
+            v = res.x
+            radii = v[2::3]
+            centers = np.column_stack([v[0::3], v[1::3]])
+            
+            # Calculate current total radius sum and potential for growth
+            current_total = np.sum(radii)
+            # Compute a maximum growth factor based on available spatial capacity
+            # We will try to increase by 0.006 (from the previous best) but with more strategic targeting
+            # This uses a more precise method based on remaining spatial capacity
+            max_growth = 0.006
+            
+            # We will first attempt aggressive expansion of the circle with the least spatial pressure
+            # Calculate influence-based growth targets instead of simple radius-based
+            dx = centers[:, np.newaxis, 0] - centers[np.newaxis, :, 0]
+            dy = centers[:, np.newaxis, 1] - centers[np.newaxis, :, 1]
+            dists = np.sqrt(dx**2 + dy**2)
+            
+            # Compute inverse distance map (more influence means less pressure)
+            inverse_dists = 1 / (dists + 1e-8)
+            sum_inverse_dists = np.sum(inverse_dists, axis=1)
+            normalized_inverse_dists = inverse_dists / (sum_inverse_dists[:, np.newaxis] + 1e-8)
+            least_constrained_idx = np.argmin(normalized_inverse_dists.min(axis=1))
+            
+            # Calculate growth based on current total sum and expansion potential
+            # With spatial pressure normalization
+            expansion_factor = max_growth / (n - 1) * (current_total / np.sum(radii) ** 0.7)
+            
+            # Apply growth to the least constrained circle and neighbors to propagate effect
+            target_radii = radii.copy()
+            target_radii[least_constrained_idx] = np.clip(radii[least_constrained_idx] + expansion_factor * 1.2, 1e-4, 0.45)
+            
+            # Propagate growth to neighbors, with exponential decay of expansion factor based on distance
+            neighbor_radius_growth = np.zeros(n)
+            # Use distance-dependent scaling for neighbors to simulate spatial influence
+            for i in range(n):
+                if i == least_constrained_idx:
+                    continue
+                # Calculate distance from the most constrained circle
+                dist = np.sqrt((centers[i, 0] - centers[least_constrained_idx, 0])**2 + (centers[i, 1] - centers[least_constrained_idx, 1])**2)
+                # Apply exponential decay scaling with a base factor of 0.8
+                scaling = np.exp(-dist / 0.2) * 0.8
+                # Apply a stochastic but controlled growth based on distance
+                growth = expansion_factor * scaling * (1.0 + np.random.uniform(-0.1, 0.1))
+                # Clip to avoid exceeding upper bound
+                neighbor_radius_growth[i] = np.clip(growth, -radii[i], 0.2)
+            
+            target_radii += neighbor_radius_growth
+            
+            # Apply this new radius vector and check constraints
+            while True:
+                updated_v = v.copy()
+                updated_v[2::3] = target_radii
+                updated_centers = np.column_stack([updated_v[0::3], updated_v[1::3]])
+                
+                # Validate new configuration with enhanced performance
+                valid = True
+                dist_matrix = np.sqrt((updated_centers[:, np.newaxis, 0] - updated_centers[np.newaxis, :, 0])**2
+                                     + (updated_centers[:, np.newaxis, 1] - updated_centers[np.newaxis, :, 1])**2)
+                for i in range(n):
+                    for j in range(i + 1, n):
+                        if dist_matrix[i, j] < target_radii[i] + target_radii[j] - 1e-12:
+                            valid = False
+                            break
+                    if not valid:
+                        break
+                if valid:
+                    break
+                else:
+                    # If invalid, decrease expansion slightly and retry
+                    # Use a more nuanced strategy than previous
+                    # Reduce the expansion factor by a smaller factor on each invalid iteration
+                    target_radii = radii + (target_radii - radii) * 0.98
+            
+            # Update the vector with the new radii
+            v = updated_v
+            
+            # Third optimization phase with updated configuration
+            # This time, use a hybrid strategy combining local and global exploration
+            # to maximize the growth potential
+            res = minimize(neg_sum_radii, v, method="SLSQP", bounds=bounds,
+                           constraints=cons, options={"maxiter": 1000, "ftol": 1e-14})
+        
+        # Final state after all optimization phases
+        v = res.x if res.success else v0
+        centers = np.column_stack([v[0::3], v[1::3]])
+        radii = np.clip(v[2::3], 1e-6, None)
+        sum_radii = float(radii.sum())
+    
+    # Final fallback if all optimization steps fail
+    else:
+        v = v0
+        centers = np.column_stack([v[0::3], v[1::3]])
+        radii = np.clip(v[2::3], 1e-6, None)
+        sum_radii = float(radii.sum())
+    
+    return centers, radii, sum_radii
+```

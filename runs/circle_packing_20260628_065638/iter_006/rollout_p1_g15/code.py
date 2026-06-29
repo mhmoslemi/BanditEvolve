@@ -1,0 +1,109 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = 5
+    rows = (n + cols - 1) // cols
+    
+    # Initialize positions using a randomized geometric clustering algorithm
+    xs = np.random.rand(n)
+    ys = np.random.rand(n)
+    # Cluster points into groups with controlled spacing
+    cluster_count = 4
+    cluster_size = n // cluster_count
+    cluster_radii = np.random.uniform(0.1, 0.2, cluster_count)
+    
+    # Assign points to clusters and perturb within cluster
+    xs = []
+    ys = []
+    for c in range(cluster_count):
+        for i in range(cluster_size):
+            angle = 2 * np.pi * np.random.rand()
+            radius = np.random.uniform(0.2, 0.4)
+            x = 0.5 + radius * np.cos(angle)
+            y = 0.5 + radius * np.sin(angle)
+            xs.append(x)
+            ys.append(y)
+    
+    # Ensure all points are within bounds
+    xs = np.clip(xs, 0.0, 1.0)
+    ys = np.clip(ys, 0.0, 1.0)
+    
+    r0 = 0.25
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = np.full(n, r0)
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    cons = []
+    for i in range(n):
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+    for i in range(n):
+        for j in range(i + 1, n):
+            def constraint_func(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                return dx*dx + dy*dy - (v[3*i+2] + v[3*j+2])**2
+            cons.append({"type": "ineq", "fun": constraint_func})
+
+    # Initial optimization with increased max iterations and tighter tolerance
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 1500, "ftol": 1e-10})
+    
+    # Non-local reconfiguration: expand the most isolated cluster
+    if res.success:
+        v = res.x
+        radii = v[2::3]
+        # Compute distances from each circle to all others
+        dists = np.zeros(n)
+        for i in range(n):
+            for j in range(n):
+                if i != j:
+                    dx = v[3*i] - v[3*j]
+                    dy = v[3*i+1] - v[3*j+1]
+                    dists[i] += dx*dx + dy*dy
+            dists[i] = np.sqrt(dists[i] / (n-1))
+        
+        # Find the cluster with the largest minimum distance
+        cluster_indices = np.arange(n)
+        cluster_assignments = np.zeros(n, dtype=int)
+        for c in range(4):
+            cluster_indices = np.random.choice(cluster_indices, size=int(n/4), replace=False)
+            cluster_assignments[cluster_indices] = c
+            cluster_indices = np.setdiff1d(cluster_indices, cluster_indices)
+        
+        # Compute the most isolated cluster
+        cluster_radii = np.zeros(4)
+        cluster_dists = np.zeros(4)
+        for c in range(4):
+            cluster_dists[c] = np.mean(dists[cluster_assignments == c])
+        
+        most_isolated = np.argmin(cluster_dists)
+        isolated_indices = np.where(cluster_assignments == most_isolated)[0]
+        
+        # Expand radii of isolated cluster
+        v[3*isolated_indices + 2] += 0.02
+        v[3*isolated_indices + 2] = np.clip(v[3*isolated_indices + 2], 1e-4, 0.5)
+        v[3*isolated_indices] += 0.01 * np.random.rand(len(isolated_indices))
+        v[3*isolated_indices + 1] += 0.01 * np.random.rand(len(isolated_indices))
+        v[3*isolated_indices] = np.clip(v[3*isolated_indices], 0.0, 1.0)
+        v[3*isolated_indices + 1] = np.clip(v[3*isolated_indices + 1], 0.0, 1.0)
+        
+        # Re-evaluate with new configuration
+        res = minimize(neg_sum_radii, v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 300, "ftol": 1e-10})
+    
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())

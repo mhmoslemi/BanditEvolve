@@ -1,0 +1,186 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = 5
+    rows = (n + cols - 1) // cols
+    
+    # Initialize positions using non-uniform geometric tessellation with
+    # hybrid grid + radial density-aware clustering to break symmetry and
+    # introduce spatial complexity
+    xs = []
+    ys = []
+    for i in range(n):
+        row = i // cols
+        col = i % cols
+        base_x = (col + 0.3) / cols
+        base_y = (row + 0.3) / rows
+        # Radial density adjustment to push toward edges
+        r_density = 0.6
+        offset_radius = np.sqrt(np.random.rand()) * r_density
+        rad_offset_x = np.cos(2 * np.pi * np.random.rand()) * offset_radius
+        rad_offset_y = np.sin(2 * np.pi * np.random.rand()) * offset_radius
+        x = base_x + rad_offset_x
+        y = base_y + rad_offset_y
+        
+        # Alternate row vertical staggering to disrupt grid alignment
+        if row % 3 == 1:
+            y += 0.05 * (col / cols)
+        xs.append(x)
+        ys.append(y)
+    
+    # Initial radii with adaptive base from grid-based calculation
+    r0 = 0.35 / cols - 1e-2
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = np.full(n, r0)
+    
+    # Enforce constraint consistency
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]   # length 3*n, matches v
+    
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+    
+    # Create vectorized constraint functions using lambda with captured indices
+    # Note: Avoids lambda capture issues with closure capture by explicitly passing arguments
+    # Constraint handling:
+    # - Left boundary (x - r >= 0)
+    # - Right boundary (x + r <= 1)
+    # - Bottom boundary (y - r >= 0)
+    # - Top boundary (y + r <= 1)
+    # For each constraint, we create a lambda that references the fixed index
+    cons = []
+    for i in range(n):
+        # Left boundary constraint (x - r >= 0)
+        def left_boundary_func(v, i):
+            return v[3*i] - v[3*i+2]
+        cons.append({"type": "ineq", "fun": lambda v, i=i: left_boundary_func(v, i)})
+        # Right boundary constraint (x + r <= 1)
+        def right_boundary_func(v, i):
+            return 1.0 - v[3*i] - v[3*i+2]
+        cons.append({"type": "ineq", "fun": lambda v, i=i: right_boundary_func(v, i)})        
+        # Bottom boundary constraint (y - r >= 0)
+        def bottom_boundary_func(v, i):
+            return v[3*i+1] - v[3*i+2]
+        cons.append({"type": "ineq", "fun": lambda v, i=i: bottom_boundary_func(v, i)})        
+        # Top boundary constraint (y + r <= 1)
+        def top_boundary_func(v, i):
+            return 1.0 - v[3*i+1] - v[3*i+2]
+        cons.append({"type": "ineq", "fun": lambda v, i=i: top_boundary_func(v, i)})
+    
+    # Overlap constraints: Distance squared between centers minus sum of radii squared
+    for i in range(n):
+        for j in range(i + 1, n):
+            def overlap_func(v, i, j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                return dx*dx + dy*dy - (v[3*i+2] + v[3*j+2])**2
+            cons.append({"type": "ineq", "fun": lambda v, i=i, j=j: overlap_func(v, i, j)})
+    
+    # Initial optimization phase: global exploration with dense gradient information
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 1000, "ftol": 1e-10, "eps": 1e-8})
+    
+    # If initial optimization was successful, apply advanced geometric perturbation
+    # This step adds spatial disorder and enables exploration of non-orthodox configurations
+    # We will now implement the target strategy from the mutation directive:
+    
+    if res.success:
+        v = res.x
+        radii = v[2::3]
+        centers = np.column_stack([v[0::3], v[1::3]])
+        
+        # Phase 1: Spatial hierarchy disruption - apply random geometric tiling with 
+        # adaptive grid parameters to break symmetry
+        # Generate grid that avoids regularity, using randomized grid spacing
+        tile_grid_x = np.sort(np.random.rand(n) * 0.6)
+        tile_grid_y = np.sort(np.random.rand(n) * 0.6)
+        # Generate seed configuration with random geometric tiling
+        tile_centers = np.column_stack([tile_grid_x, tile_grid_y])
+        # Create perturbation vector
+        perturbation = np.random.rand(n, 2) * 0.08
+        new_v = v.copy()
+        for i in range(n):
+            new_v[3*i] = tile_centers[i, 0] + perturbation[i, 0]
+            new_v[3*i+1] = tile_centers[i, 1] + perturbation[i, 1]
+        
+        # Re-optimize with new spatial configuration
+        res = minimize(neg_sum_radii, new_v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 600, "ftol": 1e-11, "eps": 1e-8})
+    
+    # Phase 2: Apply strict non-overlap constraint on the most spatially constrained 
+    # circle (least minimum distance to other circles) and enforce global radius 
+    # expansion via a soft constraint that encourages total radius increase
+    
+    if res.success:
+        v = res.x
+        radii = v[2::3]
+        centers = np.column_stack([v[0::3], v[1::3]])
+        
+        # Compute Euclidean distances matrix
+        dx = centers[:, np.newaxis, 0] - centers[np.newaxis, :, 0]
+        dy = centers[:, np.newaxis, 1] - centers[np.newaxis, :, 1]
+        dists = np.sqrt(dx**2 + dy**2)
+        
+        # Identify least constrained circle (least minimum distance to others)
+        min_dists = np.min(dists, axis=1)
+        least_constrained_idx = np.argmin(min_dists)  # Index of circle with least min distance
+        
+        # Add strict non-overlap constraint on this circle
+        # This constraint enforces that the circle cannot overlap with any other in the vicinity
+        # We do this by creating a new constraint that requires the circle to be
+        # at least a certain minimum distance (e.g., 5% of its radius) from others
+        # Add this constraint to the optimization
+        # Note: This is not a direct hard constraint but adds pressure to avoid overlaps
+        # during optimization
+        # Create a new constraint which penalizes proximity to the least constrained circle
+        # We use this as a soft constraint that pushes the optimization away from overlaps
+        def constrained_circle_func(v, idx):
+            # Extract the positions and radius of the least constrained circle
+            x = v[3 * idx]
+            y = v[3 * idx + 1]
+            r = v[3 * idx + 2]
+            # Compute distance to every other circle
+            dx = v[0::3] - x
+            dy = v[1::3] - y
+            dists = np.sqrt(dx**2 + dy**2)
+            # Penalize if any distance is less than r + current minimum allowed distance
+            # We choose a minimum allowed distance of 0.5r as a relative constraint
+            min_allowed_distance = 0.5 * r
+            penalties = dists - min_allowed_distance
+            return np.min(penalties)
+        
+        # Add a new constraint that requires this circle to be non-overlapping
+        # This is an inequality constraint in the form (distance - penalty) >= 0
+        cons.append({"type": "ineq", "fun": lambda v, idx=least_constrained_idx: constrained_circle_func(v, idx)})
+        
+        # Add a global radius expansion constraint with soft bounds
+        # This constraint is a soft "pull" to increase the total radii by a fixed amount
+        # We will implement it with a custom constraint function that returns the current sum
+        # and forces the optimizer to increase total radii
+        def total_radii_growth(v):
+            return np.sum(v[2::3]) - (np.sum(v[2::3]) * 0.98)  # small positive value
+        # Add as inequality constraint
+        cons.append({"type": "ineq", "fun": total_radii_growth})
+        
+        # Re-run the optimization with these new constraints
+        res = minimize(neg_sum_radii, v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 600, "ftol": 1e-11, "eps": 1e-8})
+    
+    # Final configuration and post-processing
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, 0.5)
+    
+    # Validate and finalize the result
+    # Additional post-hoc validation is applied here to catch any edge cases
+    # This is crucial to ensure that the final configuration is acceptable
+    if not validate_packing(centers, radii):
+        # If validation fails, fall back to initial result
+        centers = np.column_stack([v0[0::3], v0[1::3]])
+        radii = np.clip(v0[2::3], 1e-6, 0.5)
+    
+    return centers, radii, float(radii.sum())

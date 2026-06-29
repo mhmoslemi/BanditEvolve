@@ -1,0 +1,138 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = 5
+    rows = (n + cols - 1) // cols
+
+    # Generate randomized staggered grid with asymmetric offsets
+    xs = []
+    ys = []
+    for i in range(n):
+        row = i // cols
+        col = i % cols
+        x_center = (col + 0.5) / cols
+        y_center = (row + 0.5) / rows
+        # Asymmetric random offsets to break symmetry and avoid clustering
+        row_offset = np.random.uniform(-0.1, 0.1) if row % 3 == 1 else 0.0
+        col_offset = np.random.uniform(-0.05, 0.05)
+        x = x_center + col_offset + row_offset
+        y = y_center + np.random.uniform(-0.1, 0.1)
+        # Adjust for staggered rows
+        if row % 2 == 1:
+            x += 0.45 / cols
+        xs.append(x)
+        ys.append(y)
+
+    # Initial radius based on grid spacing with conservative safety margin
+    r0 = (0.45 / cols) - 1e-3
+    
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = np.full(n, r0)
+
+    # Ensure bounds list has 3*n entries for the decision vector
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    # Vectorized boundary constraints
+    cons = []
+    for i in range(n):
+        # Left: x - r >= 0
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        # Right: x + r <= 1
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        # Bottom: y - r >= 0
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        # Top: y + r <= 1
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+
+    # Vectorized overlap constraints
+    for i in range(n):
+        for j in range(i + 1, n):
+            def constraint_func(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                return dx*dx + dy*dy - (v[3*i+2] + v[3*j+2])**2
+            cons.append({"type": "ineq", "fun": constraint_func})
+
+    # Initial optimization with high tolerance and iteration count
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 1500, "ftol": 1e-11})
+
+    # First shake pass: perturb least constrained circles
+    if res.success:
+        v = res.x
+        centers = np.column_stack([v[0::3], v[1::3]])
+        radii = v[2::3]
+        
+        # Compute pairwise distances matrix
+        dists = np.zeros((n, n))
+        for i in range(n):
+            dx = centers[i, 0] - centers[:, 0]
+            dy = centers[i, 1] - centers[:, 1]
+            dists[i] = np.sqrt(dx**2 + dy**2)
+        
+        # Find circles with lowest minimum distance to others
+        min_dists = np.min(dists, axis=1)
+        least_constrained_idx = np.argmin(min_dists)
+        
+        # Generate random shake vector for asymmetric spatial perturbations
+        shake_map = np.random.rand(n, 2) * 0.04
+        shake_amount = np.sqrt(radii) / np.sqrt(np.mean(radii))
+        perturbed_v = v.copy()
+        
+        for i in range(n):
+            if i == least_constrained_idx:
+                # Larger perturbation on least constrained circle
+                perturbed_v[3*i] += shake_map[i, 0] * shake_amount[i]
+                perturbed_v[3*i+1] += shake_map[i, 1] * shake_amount[i]
+            else:
+                perturbed_v[3*i] += shake_map[i, 0] * shake_amount[i]
+                perturbed_v[3*i+1] += shake_map[i, 1] * shake_amount[i]
+        
+        # Re-evaluate with perturbed configuration
+        res = minimize(neg_sum_radii, perturbed_v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 400, "ftol": 1e-11})
+
+    # Second shake pass: perturb circles with small radii and low expansion potential
+    if res.success:
+        v = res.x
+        centers = np.column_stack([v[0::3], v[1::3]])
+        radii = v[2::3]
+        
+        # Compute pairwise distances
+        dx = centers[:, np.newaxis, 0] - centers[np.newaxis, :, 0]
+        dy = centers[:, np.newaxis, 1] - centers[np.newaxis, 1]
+        dists = np.sqrt(dx**2 + dy**2)
+        
+        # Find radius expansion potential
+        expansion_potential = np.zeros(n)
+        for i in range(n):
+            min_dist = np.min(dists[i, i+1:])
+            expansion_potential[i] = abs((np.sqrt(np.min(radii[i] + radii[j] for j in range(n) if j != i)) - radii[i]) / radii[i])
+        
+        # Generate second round of perturbed vector
+        shake_map = np.random.rand(n, 2) * 0.03
+        shake_amount = np.sqrt(np.clip(radii, 1e-6, 1.0)) / np.sqrt(np.mean(np.clip(radii, 1e-6, 1.0)))
+        perturbed_v = v.copy()
+        
+        for i in range(n):
+            if expansion_potential[i] < np.median(expansion_potential):  # target small radii circles
+                perturbed_v[3*i] += shake_map[i, 0] * shake_amount[i]
+                perturbed_v[3*i+1] += shake_map[i, 1] * shake_amount[i]
+        
+        # Re-evaluate with perturbed configuration
+        res = minimize(neg_sum_radii, perturbed_v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 300, "ftol": 1e-11})
+    
+    # Final check and return
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())

@@ -1,0 +1,13 @@
+{
+  "record": {
+    "kind": "mutate",
+    "band": "elite",
+    "arm_idx": 5,
+    "arm_source": "reflection",
+    "outcome": "invalid:unparseable",
+    "value": null,
+    "dmu": null,
+    "dsigma": null
+  },
+  "eval": null
+}

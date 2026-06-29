@@ -1,0 +1,221 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = 5
+    rows = (n + cols - 1) // cols
+    # Initialize spatial grid with advanced hexagonal staggering
+    xs = []
+    ys = []
+    for i in range(n):
+        col = i % cols
+        row = i // cols
+        # Calculate center of column, with slight row-based offset for staggered hex grid
+        x_center = (col + 1.0 / 3.0) / cols
+        y_center = (row + 0.5) / rows
+        # Shift alternate rows to create hexagonal alignment
+        if row % 2 == 1:
+            x_center += 0.5 / cols
+        # Introduce spatial randomness with decaying influence based on distance
+        rand_offset = np.random.uniform(-0.02, 0.02) * (0.85 ** (row + col))
+        x = x_center + rand_offset
+        y = y_center + np.random.uniform(-0.02, 0.02) * (0.85 ** (row + col))
+        xs.append(x)
+        ys.append(y)
+    
+    # Base radius estimation with tighter packing awareness
+    r0 = 0.35 / cols  # Base radius for hexagonal layout
+    # Increase initial radius to enhance exploration space
+    r0 += 0.002
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = np.full(n, r0)
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    # Constraints with optimized lambda capture and spatial awareness
+    # Boundary constraints (left, right, bottom, top)
+    cons = []
+    for i in range(n):
+        cons.append({"type": "ineq", "fun": (lambda v, i=i: v[3*i] - v[3*i+2])})
+        cons.append({"type": "ineq", "fun": (lambda v, i=i: 1.0 - v[3*i] - v[3*i+2])})
+        cons.append({"type": "ineq", "fun": (lambda v, i=i: v[3*i+1] - v[3*i+2])})
+        cons.append({"type": "ineq", "fun": (lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2])})
+    
+    # Overlap constraint with advanced spatial awareness and vectorized handling
+    for i in range(n):
+        for j in range(i + 1, n):
+            # Calculate the distance squared between circle centers
+            # - (sum of radii)^2 is our constraint to prevent overlap
+            # Use lambda capture with i and j
+            cons.append({"type": "ineq", 
+                         "fun": (lambda v, i=i, j=j: 
+                                 (v[3*i] - v[3*j])**2 + (v[3*i+1] - v[3*j+1])**2 
+                                 - (v[3*i+2] + v[3*j+2])**2)})
+
+    # First optimization phase with enhanced tolerance and adaptive strategy
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 1500, "ftol": 1e-12, 
+                                             "eps": 1e-10, "disp": False})
+    
+    # Post-opt reconfiguration with smart geometric dissection and adjacency-aware expansion
+    if res.success:
+        v = res.x
+        radii = v[2::3]
+        centers = np.column_stack([v[0::3], v[1::3]])
+
+        # Identify the two most dynamically interacting circles
+        # This is done by computing the pairwise interaction and selecting top 2
+        dx = centers[:, np.newaxis, 0] - centers[np.newaxis, :, 0]
+        dy = centers[:, np.newaxis, 1] - centers[np.newaxis, 1]
+        dists = np.sqrt(dx**2 + dy**2)
+        interaction_matrix = (dists**2 - (radii[:, np.newaxis] + radii[np.newaxis, :])**2)  # Negative for overlap
+        interaction_matrix[interaction_matrix > 0] = 0
+
+        # Find top 2 most interacting pairs (highest absolute interaction value)
+        max_interaction = np.abs(interaction_matrix).flatten()
+        indices = np.argsort(max_interaction)[::-1][:2]  # Top 2 most interacting interactions
+
+        # Extract the two interacting circles (unique indices)
+        unique_idx = np.unique(indices)
+        idx1, idx2 = unique_idx[0], unique_idx[1]
+        
+        # Isolate these two and apply controlled geometric dissection
+        # First, isolate these two, perturb their positions strategically
+        # We'll apply controlled spatial push away from each other
+
+        # Create spatial perturbation vectors for these two
+        # Perturbations are directional based on positions and radii
+        spatial_hash = np.random.rand(n, 2) * 0.03  # Small-scale directional perturbation
+        
+        # Perturb the two interacting circles
+        perturbed_v = v.copy()
+        # For each of the two interacting circles, apply directional push away from each other
+        for i in [idx1, idx2]:
+            dist_i = np.linalg.norm(centers[i] - centers[1 - i])  # distance to opposite
+            # Compute unit vector from one to the other
+            dx_dir = centers[1 - i][0] - centers[i][0]
+            dy_dir = centers[1 - i][1] - centers[i][1]
+            dist_dir = np.sqrt(dx_dir**2 + dy_dir**2)
+            if dist_dir > 1e-10:
+                dx_dir /= dist_dir
+                dy_dir /= dist_dir
+            
+            # Apply directional spatial perturbation in opposite direction of each other
+            push_factor = 0.005 * (radii[i] + radii[1 - i]) / np.mean(radii)
+            perturbed_v[3*i] += dx_dir * push_factor
+            perturbed_v[3*i+1] += dy_dir * push_factor
+            perturbed_v[3*(1 - i)] -= dx_dir * push_factor
+            perturbed_v[3*(1 - i)+1] -= dy_dir * push_factor
+        
+        # Reoptimize with spatial adjustment and increased tolerance
+        res = minimize(neg_sum_radii, perturbed_v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 400, "ftol": 1e-12, 
+                                                 "eps": 1e-10, "disp": False})
+    
+    # Second phase: targeted expansion of the circle with the biggest margin for expansion
+    if res.success:
+        v = res.x
+        radii = v[2::3]
+        centers = np.column_stack([v[0::3], v[1::3]])
+        
+        # Compute min distances to all others for all circles
+        dx = centers[:, np.newaxis, 0] - centers[np.newaxis, :, 0]
+        dy = centers[:, np.newaxis, 1] - centers[np.newaxis, 1]
+        dists = np.sqrt(dx**2 + dy**2)
+        min_distances = np.min(dists, axis=1)
+        
+        # Find the circle with the most available expansion space (minimum distance is maximal)
+        expansion_index = np.argmax(min_distances)
+        
+        # Identify adjacent circles to this circle for directional expansion
+        # Create a directional adjacency list
+        adjacents = []
+        for i in range(n):
+            if i != expansion_index:
+                dist = np.linalg.norm(centers[i] - centers[expansion_index])
+                adjacents.append((i, dist))
+        adjacents.sort(key=lambda x: x[1])  # nearest to farthest
+        
+        # Expand the expansion_index circle and nearby with controlled radii growth
+        # Apply a radius expansion vector with directional growth based on adjacency
+        expansion_radii_ratio = 0.007  # Small but strategic growth
+        base_radius_growth = expansion_radii_ratio * radii[expansion_index]
+        new_radii = radii.copy()
+        new_radii[expansion_index] += base_radius_growth
+        
+        # Apply directional expansion to adjacent circles
+        # Use adjacency_hash for directional bias (randomized for robustness) 
+        adjacency_hash = np.random.rand(n, 2) * 0.05
+        
+        for (i, dist) in adjacents:
+            if dist < 0.1:  # Closest adjacent circles get more expansion
+                expansion = base_radius_growth * 1.4 * (1 + 0.3 * adjacency_hash[i, 0])
+            else:
+                expansion = base_radius_growth * (1.0 + 0.2 * adjacency_hash[i, 0])
+            new_radii[i] += expansion
+        
+        # Apply expansion with constraint validation and adaptive soft scaling
+        while True:
+            expanded_v = v.copy()
+            expanded_v[2::3] = new_radii
+            expanded_centers = np.column_stack([expanded_v[0::3], expanded_v[1::3]])
+            
+            # Validate expanded configuration
+            valid = True
+            for i in range(n):
+                for j in range(i + 1, n):
+                    dx_exp = expanded_centers[i, 0] - expanded_centers[j, 0]
+                    dy_exp = expanded_centers[i, 1] - expanded_centers[j, 1]
+                    dist = np.sqrt(dx_exp**2 + dy_exp**2)
+                    if dist < new_radii[i] + new_radii[j] - 1e-12:
+                        valid = False
+                        break
+                if not valid:
+                    break
+            
+            if valid:
+                break
+            else:
+                # If invalid, decrease expansion slightly for all circles
+                new_radii = radii + (new_radii - radii) * 0.96
+        
+        # Update decision vector with new radii
+        v_new = v.copy()
+        v_new[2::3] = new_radii
+        
+        # Third optimization phase to refine the final configuration
+        res = minimize(neg_sum_radii, v_new, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 400, "ftol": 1e-11, 
+                                                 "eps": 1e-10, "disp": False})
+    
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    
+    # Final validation and edge-case handling
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        valid, reason = validate_packing(centers, radii)
+    
+    # If final validation fails, return the best possible configuration
+    if not valid:
+        # Fallback to the best of the optimization steps
+        fallback_centers = np.column_stack([v[0::3], v[1::3]])
+        fallback_radii = np.clip(v[2::3], 1e-6, None)
+        valid_fallback, _ = validate_packing(fallback_centers, fallback_radii)
+        if valid_fallback:
+            return fallback_centers, fallback_radii, float(fallback_radii.sum())
+        else:
+            # Fallback to the initial attempt
+            centers, radii, _ = run_packing()
+            return centers, radii, float(radii.sum())
+    
+    # Return the optimized centers, radii, and sum
+    return centers, radii, float(radii.sum())

@@ -1,0 +1,162 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = 5  # Fixed column count for structured geometry
+    rows = (n + cols - 1) // cols  # Calculate required rows
+    # Initialize positions with geometric hashing
+    xs = []
+    ys = []
+    for i in range(n):
+        row = i // cols
+        col = i % cols
+        x_center = (col + 0.5) / cols
+        y_center = (row + 0.5) / rows
+        # Introduce structured clustering with spatial hashing
+        x = x_center + 0.04 * np.sin(np.pi * i / 2.5) * np.cos(np.pi * i / 2.5)
+        y = y_center + 0.04 * np.sin(np.pi * i / 2.5)
+        # Alternate row staggering
+        if row % 2 == 1:
+            x += 0.25 / cols
+        xs.append(x)
+        ys.append(y)
+    
+    # Base radius scaling with structured spacing
+    r_base = 0.33 / cols - 1e-3
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = np.full(n, r_base)
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]  # Same length as v
+    # Vectorized radius minimization
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    # Constraint system with precise spatial hashing
+    cons = []
+    for i in range(n):
+        # Left edge constraint: x - r >= 0
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        # Right edge constraint: x + r <= 1
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        # Bottom edge constraint: y - r >= 0
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        # Top edge constraint: y + r <= 1
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+    
+    # Edge-case geometric hashing for constrained circle expansion
+    for i in range(n):
+        for j in range(i + 1, n):
+            def constraint_func(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                # Use squared Euclidean distance to avoid sqrt
+                return dx*dx + dy*dy - (v[3*i+2] + v[3*j+2])**2
+            cons.append({"type": "ineq", "fun": constraint_func})
+
+    # Initial optimization
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 500, "ftol": 1e-12})
+    
+    # Primary reconfiguration with geometric hashing
+    if res.success:
+        v = res.x
+        # Compute spatial hashing matrix
+        spatial_hash = np.random.rand(n, 2) * 0.05
+        # Generate perturbed positions
+        perturbed_v = v.copy()
+        for i in range(n):
+            perturbed_v[3*i] += spatial_hash[i, 0] * (1.0 + 0.5 * np.random.rand())
+            perturbed_v[3*i+1] += spatial_hash[i, 1] * (1.0 + 0.5 * np.random.rand())
+        # Re-evaluate configuration
+        res = minimize(neg_sum_radii, perturbed_v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 500, "ftol": 1e-12})
+    
+    # Edge-case radius expansion with constrained spatial hashing
+    if res.success:
+        v = res.x
+        radii = v[2::3]
+        centers = np.column_stack([v[0::3], v[1::3]])
+        dists = np.zeros((n, n))
+        
+        # Vectorized distance calculation using broadcasting
+        dx = centers[:, np.newaxis, 0] - centers[np.newaxis, :, 0]
+        dy = centers[:, np.newaxis, 1] - centers[np.newaxis, 1]
+        dists = np.sqrt(dx**2 + dy**2)
+        
+        # Find least constrained circle with minimal distance to others
+        min_dists = np.min(dists, axis=1)
+        least_constrained_idx = np.argmax(min_dists)
+        
+        # Calculate expansion with spatial hashing
+        target_total_sum = np.sum(radii) + 0.0065
+        expansion_factor = (target_total_sum - np.sum(radii)) / (n - 1)
+        
+        # Create expansion vector with soft constraint enforcement
+        new_radii = radii.copy()
+        # Expand least constrained circle more
+        new_radii[least_constrained_idx] += expansion_factor * 1.2
+        for i in range(n):
+            if i != least_constrained_idx:
+                # Stochastic expansion based on spatial hashing
+                expansion_i = expansion_factor * (1.0 + 0.1 * np.random.rand())
+                new_radii[i] += expansion_i
+        
+        # Validate expansion without full recalculation for efficiency
+        while True:
+            expanded_v = v.copy()
+            expanded_v[2::3] = new_radii
+            expanded_centers = np.column_stack([expanded_v[0::3], expanded_v[1::3]])
+            valid = True
+            # Quick validation using precomputed distances
+            for i in range(n):
+                for j in range(i + 1, n):
+                    if dists[i, j] < new_radii[i] + new_radii[j] - 1e-12:
+                        valid = False
+                        break
+                if not valid:
+                    break
+            if valid:
+                break
+            else:
+                # If invalid, decrease expansion slightly
+                new_radii = radii + (new_radii - radii) * 0.95
+        
+        # Update and re-evaluate
+        v_new = v.copy()
+        v_new[2::3] = new_radii
+        res = minimize(neg_sum_radii, v_new, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 500, "ftol": 1e-12})
+
+    # Final refinement with topological constraint enforcement
+    if res.success:
+        v = res.x
+        radii = v[2::3]
+        centers = np.column_stack([v[0::3], v[1::3]])
+        # Generate adjacency matrix and find connected components
+        dists = np.zeros((n, n))
+        dx = centers[:, np.newaxis, 0] - centers[np.newaxis, :, 0]
+        dy = centers[:, np.newaxis, 1] - centers[np.newaxis, 1]
+        dists = np.sqrt(dx**2 + dy**2)
+        adj = dists <= (radii + radii.reshape(-1, 1))
+        from scipy.sparse import csr_matrix, csgraph
+        graph = csr_matrix(adj)
+        components = csgraph.connected_components(graph)[1]
+        
+        # Apply topological hashing for reordering
+        component_hash = np.random.rand(n, 2) * 0.05
+        for i in range(n):
+            v[3*i] += component_hash[components[i], 0] * (1.0 + 0.5 * np.random.rand())
+            v[3*i+1] += component_hash[components[i], 1] * (1.0 + 0.5 * np.random.rand())
+        
+        # Re-evaluate with final configuration
+        res = minimize(neg_sum_radii, v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 500, "ftol": 1e-12})
+
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())

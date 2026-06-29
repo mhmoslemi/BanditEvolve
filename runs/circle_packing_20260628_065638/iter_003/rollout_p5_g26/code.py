@@ -1,0 +1,88 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    # Use Voronoi-based initialization for better distribution
+    # Generate initial points using a grid with random perturbations
+    cols = 6
+    rows = (n + cols - 1) // cols
+    xs = np.random.uniform(1 / cols, 1 - 1 / cols, n)
+    ys = np.random.uniform(1 / rows, 1 - 1 / rows, n)
+    
+    r0 = 0.5 / cols - 1e-3
+    v0 = np.empty(3 * n)
+    v0[0::3] = xs
+    v0[1::3] = ys
+    v0[2::3] = np.full(n, r0)
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    cons = []
+    for i in range(n):
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+    for i in range(n):
+        for j in range(i + 1, n):
+            def constraint_func(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                dist_sq = dx*dx + dy*dy
+                min_dist_sq = (v[3*i+2] + v[3*j+2])**2
+                return dist_sq - min_dist_sq
+            cons.append({"type": "ineq", "fun": constraint_func})
+
+    # Local optimization to polish the solution
+    def local_optimization(v):
+        def local_neg_sum_radii(v):
+            return -np.sum(v[2::3])
+        # Reduce bounds to avoid overly restrictive constraints
+        local_bounds = []
+        for _ in range(n):
+            local_bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+        # Reduce constraints for faster local search
+        local_cons = []
+        for i in range(n):
+            local_cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+            local_cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+            local_cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+            local_cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+        for i in range(n):
+            for j in range(i + 1, n):
+                def local_constraint_func(v, i=i, j=j):
+                    dx = v[3*i] - v[3*j]
+                    dy = v[3*i+1] - v[3*j+1]
+                    dist_sq = dx*dx + dy*dy
+                    min_dist_sq = (v[3*i+2] + v[3*j+2])**2
+                    return dist_sq - min_dist_sq
+                local_cons.append({"type": "ineq", "fun": local_constraint_func})
+        res_local = minimize(local_neg_sum_radii, v, method="SLSQP", bounds=local_bounds,
+                            constraints=local_cons, options={"maxiter": 200, "ftol": 1e-9})
+        return res_local.x if res_local.success else v
+
+    # Initial global optimization
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 1000, "ftol": 1e-9})
+    v = res.x if res.success else v0
+    v = local_optimization(v)
+    
+    # Additional refinement: expand the smallest circle and re-optimize
+    if res.success:
+        radii = v[2::3]
+        min_radius_index = np.argmin(radii)
+        v[3*min_radius_index + 2] += 0.001  # Small radius increment
+        v[3*min_radius_index + 0] += 0.005  # Move circle slightly
+        v[3*min_radius_index + 1] += 0.005
+        res = minimize(neg_sum_radii, v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 200, "ftol": 1e-9})
+
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())

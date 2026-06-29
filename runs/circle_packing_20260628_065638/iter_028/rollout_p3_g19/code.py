@@ -1,0 +1,138 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = 5
+    rows = (n + cols - 1) // cols
+    # Initial grid-based placement with adaptive staggered rows and spatial perturbation
+    xs = []
+    ys = []
+    for i in range(n):
+        row = i // cols
+        col = i % cols
+        x_center = ((col - 0.5) / cols) + np.random.uniform(-0.02, 0.02)
+        y_center = ((row - 0.5) / rows) + np.random.uniform(-0.03, 0.03)
+        # Create alternating row offsets to avoid vertical clustering and encourage better spacing
+        if row % 2 == 1:
+            x_center += np.random.uniform(-0.025, 0.025)
+        xs.append(x_center)
+        ys.append(y_center)
+    
+    # Base radius is calculated considering both grid resolution and initial spacing
+    base_radius = 0.33 / cols - 1e-3
+    r0 = base_radius + np.random.uniform(-0.01, 0.01) * base_radius
+    # Weights for radius initialization to promote edge expansion
+    r_weights = np.ones(n)
+    r_weights[0::3] += np.random.uniform(0.05, 0.10)
+    
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = r0 * r_weights
+    v0[2::3] = np.clip(v0[2::3], 1e-4, 0.5)
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    # Define constraints for unit boundaries with lambda closure and capture
+    cons = []
+    for i in range(n):
+        # Left boundary constraint
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        # Right boundary constraint
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        # Bottom boundary constraint
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+        # Top boundary constraint
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+
+    # Define pair-wise distance constraints with optimized lambda capturing
+    # Use tuple-arg lambda closure with explicit i and j capture
+    for i in range(n):
+        for j in range(i + 1, n):
+            # Avoid direct lambda closures for constraints by using parameterized functions
+            def overlap_constr(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                return dx*dx + dy*dy - (v[3*i+2] + v[3*j+2])**2
+            cons.append({"type": "ineq", "fun": overlap_constr})
+
+    # Initial optimization with high precision and extended iterations
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 1800, "ftol": 1e-10, "rtol": 1e-11})
+
+    # Apply asymmetric reconfiguration with enhanced spatial rehash
+    if res.success:
+        v = res.x
+        # Generate spatial hash based on current configuration for localized reconfiguration
+        # Perturb positions using radius-weighted random spatial jitter
+        radius_ratio = v[2::3] / np.mean(v[2::3])
+        spatial_perturbation = np.random.rand(n, 2) * 0.08 * radius_ratio[:, np.newaxis]
+        perturbed_v = v.copy()
+        perturbed_v[0::3] += spatial_perturbation[:, 0]
+        perturbed_v[1::3] += spatial_perturbation[:, 1]
+        
+        # Re-evaluation with perturbed configuration
+        res = minimize(neg_sum_radii, perturbed_v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 400, "ftol": 1e-11, "rtol": 1e-12})
+    
+    # Final refinement: find least constrained circle and apply directed expansion
+    if res.success:
+        v = res.x
+        centers = np.column_stack([v[0::3], v[1::3]])
+        radii = v[2::3]
+        # Efficient pairwise distance matrix using broadcasting for constraint evaluation
+        dx_matrix = centers[:, np.newaxis, 0] - centers[np.newaxis, :, 0]
+        dy_matrix = centers[:, np.newaxis, 1] - centers[np.newaxis, :, 1]
+        dist_matrix = np.sqrt(dx_matrix**2 + dy_matrix**2)
+        
+        # Calculate constraint strength: lower min distance means more constrained
+        min_distances = np.min(dist_matrix, axis=1)
+        least_constrained_idx = np.argmin(min_distances)
+        
+        # Expand the least constrained circle using gradient ascent-like perturbations
+        # Base expansion is 0.4% of current mean radius to ensure feasibility
+        expansion = 0.004 * np.mean(radii) * (np.pi ** 0.3)  # Adjusted with geometric scaling
+
+        # Apply expansion only to the least constrained circle
+        candidate_radii = radii.copy()
+        candidate_radii[least_constrained_idx] += expansion
+        
+        # Validate the expanded configuration
+        valid = True
+        for i in range(n):
+            for j in range(i + 1, n):
+                dx = centers[i, 0] - centers[j, 0]
+                dy = centers[i, 1] - centers[j, 1]
+                dist = np.sqrt(dx**2 + dy**2)
+                if dist < candidate_radii[i] + candidate_radii[j] - 1e-12:
+                    valid = False
+                    break
+            if not valid:
+                break
+        
+        if valid:
+            expanded_v = v.copy()
+            expanded_v[2::3] = candidate_radii
+            # Re-evaluate expanded configuration
+            res = minimize(neg_sum_radii, expanded_v, method="SLSQP", bounds=bounds,
+                           constraints=cons, options={"maxiter": 300, "ftol": 1e-10, "rtol": 1e-11})
+        # If expansion fails, apply smaller expansion and re-evaluate
+        else:
+            # Apply smaller expansion with backtracking
+            small_expansion = 0.002 * np.mean(radii)
+            candidate_radii = radii.copy()
+            candidate_radii[least_constrained_idx] += small_expansion
+            expanded_v = v.copy()
+            expanded_v[2::3] = candidate_radii
+            res = minimize(neg_sum_radii, expanded_v, method="SLSQP", bounds=bounds,
+                           constraints=cons, options={"maxiter": 300, "ftol": 1e-10, "rtol": 1e-11})
+
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())

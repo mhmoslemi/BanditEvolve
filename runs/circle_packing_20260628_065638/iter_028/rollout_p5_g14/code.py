@@ -1,0 +1,173 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = 5
+    rows = (n + cols - 1) // cols
+    
+    # Initialize with adaptive spatial perturbation for diversity and exploration
+    xs = []
+    ys = []
+    for i in range(n):
+        row = i // cols
+        col = i % cols
+        x_center = (col + 0.5) / cols
+        y_center = (row + 0.5) / rows
+        # Generate spatial noise with adaptive scale based on row/column spacing
+        noise_x = np.random.uniform(-0.06, 0.06) * (0.2 / cols)
+        noise_y = np.random.uniform(-0.06, 0.06) * (0.2 / rows)
+        # Staggered grid with adaptive shifts for row-dependent positioning
+        if row % 2 == 1:
+            x_center += 0.5 / cols * (0.4 + np.random.uniform(-0.1, 0.1))
+        
+        x = x_center + noise_x
+        y = y_center + noise_y
+        xs.append(x)
+        ys.append(y)
+    
+    r0_base = 0.35 / cols - 1e-3
+    r0 = r0_base + np.random.uniform(-0.001, 0.001) * (1 / (cols + rows))
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = np.full(n, r0)
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    # Optimized constraint formulation with vectorized lambda capture and reduced overhead
+    cons = []
+    for i in range(n):
+        # Use partial functions for clear constraint mapping and faster execution
+        lcon = lambda v, i=i: v[3*i] - v[3*i + 2]
+        rcon = lambda v, i=i: 1.0 - v[3*i] - v[3*i + 2]
+        tcon = lambda v, i=i: v[3*i + 1] - v[3*i + 2]
+        bcon = lambda v, i=i: 1.0 - v[3*i + 1] - v[3*i + 2]
+        cons.extend([
+            {"type": "ineq", "fun": lcon},
+            {"type": "ineq", "fun": rcon},
+            {"type": "ineq", "fun": tcon},
+            {"type": "ineq", "fun": bcon}
+        ])
+
+    # Enhanced overlap constraints with vectorized broadcasting and minimal function calls
+    def overlapping_constraint(v, i, j):
+        # Vectorized computation using direct indexing
+        dx = v[3*i] - v[3*j]
+        dy = v[3*i + 1] - v[3*j + 1]
+        r1 = v[3*i + 2]
+        r2 = v[3*j + 2]
+        return dx*dx + dy*dy - (r1 + r2)**2
+
+    for i in range(n):
+        for j in range(i + 1, n):
+            # Lambda with bound arguments for constraint storage
+            cons.append({"type": "ineq", "fun": lambda v, i=i, j=j: overlapping_constraint(v, i, j)})
+
+    # Initial optimization with adaptive step size control and tight tolerances
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 1800, "ftol": 1e-12, "eps": 1e-12})
+    
+    # Trigger asymmetric reconfiguration with spatial and radial constraints
+    if res.success:
+        v = res.x
+        # Analyze spatial constraints to find optimal reconfiguration candidates
+        radii = v[2::3]
+        centers = np.column_stack([v[0::3], v[1::3]])
+        
+        # Compute interaction map for spatial reconfiguration
+        dist_matrix = np.zeros((n, n))
+        for i in range(n):
+            for j in range(n):
+                dx = centers[i, 0] - centers[j, 0]
+                dy = centers[i, 1] - centers[j, 1]
+                dist_matrix[i, j] = np.sqrt(dx*dx + dy*dy)
+        
+        # Find circles with minimal interaction for reconfiguration
+        interaction = np.sum(1 / (dist_matrix + 1e-8), axis=1)
+        least_interacted_idx = np.argmin(interaction)
+        
+        # Create spatial perturbation with adaptive scaling based on circle position
+        spatial_hash = np.random.rand(n, 2) * 0.05
+        perturbed_v = v.copy()
+        for i in range(n):
+            perturbed_v[3*i] += spatial_hash[i, 0] * (1 - 0.1 * np.abs(centers[i, 0] - 0.5))
+            perturbed_v[3*i + 1] += spatial_hash[i, 1] * (1 - 0.1 * np.abs(centers[i, 1] - 0.5))
+        
+        # Re-evaluate with new spatial configuration
+        res = minimize(neg_sum_radii, perturbed_v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 400, "ftol": 1e-12, "eps": 1e-12})
+    
+    # Targeted radius expansion with constraint-aware growth
+    if res.success:
+        v = res.x
+        radii = v[2::3]
+        centers = np.column_stack([v[0::3], v[1::3]])
+        
+        # Compute radial expansion feasibility based on spatial constraints
+        dist_matrix = np.zeros((n, n))
+        for i in range(n):
+            for j in range(n):
+                dx = centers[i, 0] - centers[j, 0]
+                dy = centers[i, 1] - centers[j, 1]
+                dist_matrix[i, j] = np.sqrt(dx*dx + dy*dy)
+        
+        # Normalize distances for expansion feasibility
+        normalized_dist = dist_matrix / radii[:, None]
+        expansion_feasibility = np.min(normalized_dist, axis=1)
+        
+        # Target least constrained circle for maximized expansion
+        expansion_idx = np.argmin(expansion_feasibility)
+        
+        # Calculate controlled radial expansion to avoid overlap
+        baseline_total = np.sum(radii)
+        target_total = baseline_total + 0.008  # Target expansion
+        expansion_per_circle = (target_total - baseline_total) / (n - 1)
+        
+        # Apply controlled expansion with adaptive scaling
+        new_radii = radii.copy()
+        expansion = expansion_per_circle * (1.0 + 0.2 * np.random.rand())
+        new_radii[expansion_idx] += expansion * 1.1  # Slight over-expansion for exploration
+        for i in range(n):
+            if i != expansion_idx:
+                new_radii[i] += expansion * (1.0 + 0.1 * np.random.rand())
+        
+        # Validate expansion with iterative refinement
+        while True:
+            # Apply expanded radii
+            expanded_v = v.copy()
+            expanded_v[2::3] = new_radii
+            expanded_centers = np.column_stack([expanded_v[0::3], expanded_v[1::3]])
+            
+            # Check for overlaps
+            valid = True
+            for i in range(n):
+                for j in range(i+1, n):
+                    dx = expanded_centers[i, 0] - expanded_centers[j, 0]
+                    dy = expanded_centers[i, 1] - expanded_centers[j, 1]
+                    dist = np.sqrt(dx*dx + dy*dy)
+                    if dist < new_radii[i] + new_radii[j] - 1e-12:
+                        valid = False
+                        break
+                if not valid:
+                    break
+            if valid:
+                break
+            else:
+                # Reduce expansion if invalid
+                new_radii = radii + (new_radii - radii) * 0.98
+                
+        # Apply and optimize new radii configuration
+        v_new = v.copy()
+        v_new[2::3] = new_radii
+        res = minimize(neg_sum_radii, v_new, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 400, "ftol": 1e-12, "eps": 1e-12})
+    
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())

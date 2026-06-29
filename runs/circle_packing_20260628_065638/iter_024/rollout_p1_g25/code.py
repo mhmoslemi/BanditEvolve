@@ -1,0 +1,109 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = 5
+    rows = (n + cols - 1) // cols
+    
+    # Initialize positions with dynamic grid and geometric hashing
+    xs = np.zeros(n)
+    ys = np.zeros(n)
+    for i in range(n):
+        row = i // cols
+        col = i % cols
+        x_center = (col + 0.5) / cols + np.random.uniform(-0.03, 0.03)
+        y_center = (row + 0.5) / rows + np.random.uniform(-0.03, 0.03)
+        # Staggered rows for improved space utilization
+        if row % 2 == 1:
+            x_center += 0.5 / cols
+        xs[i] = x_center
+        ys[i] = y_center
+    
+    r0 = 0.35 / cols - 1e-3
+    v0 = np.empty(3 * n)
+    v0[0::3] = xs
+    v0[1::3] = ys
+    v0[2::3] = r0
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    # Vectorized boundary constraints with memoized lambda
+    cons = []
+    for i in range(n):
+        # X-coordinate constraints
+        cons.append({"type": "ineq", "fun": (lambda v, i=i: v[3*i] - v[3*i+2])})
+        cons.append({"type": "ineq", "fun": (lambda v, i=i: 1.0 - v[3*i] - v[3*i+2])})
+        # Y-coordinate constraints
+        cons.append({"type": "ineq", "fun": (lambda v, i=i: v[3*i+1] - v[3*i+2])})
+        cons.append({"type": "ineq", "fun": (lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2])})
+
+    # Vectorized overlap constraints with geometric hashing
+    for i in range(n):
+        for j in range(i + 1, n):
+            idx_i = 3*i
+            idx_j = 3*j
+            # Use memoized lambda to avoid closure capture issues
+            cons.append({"type": "ineq",
+                         "fun": lambda v, i=i, j=j: (v[idx_i] - v[idx_j])**2
+                                                   + (v[idx_i+1] - v[idx_j+1])**2
+                                                   - (v[idx_i+2] + v[idx_j+2])**2})
+
+    # Initial optimization with increased max iterations and tighter tolerances
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 1500, "ftol": 1e-10, "eps": 1e-12})
+    
+    # Asymmetric topological disruption: apply geometric hashing and targeted radius expansion
+    if res.success:
+        v = res.x
+        radii = v[2::3]
+        centers = np.column_stack([v[0::3], v[1::3]])
+        
+        # Calculate pairwise distances for adjacency constraints
+        dists = np.zeros((n, n), dtype=np.float64)
+        for i in range(n):
+            for j in range(n):
+                dx = centers[i, 0] - centers[j, 0]
+                dy = centers[i, 1] - centers[j, 1]
+                dists[i, j] = np.sqrt(dx*dx + dy*dy)
+        
+        # Compute constrainedness metric and identify most under-constrained circle
+        min_dists = np.min(dists, axis=1)
+        constrainedness = 1.0 / (min_dists + 1e-10)  # Avoid division by zero
+        least_constrained_idx = np.argmax(constrainedness)
+        
+        # Compute current total sum and determine expansion target
+        total_sum = np.sum(radii)
+        # Apply targeted expansion to unlock new configuration
+        expansion_target = total_sum + 0.012  # Incremental improvement target
+        expansion_factor = (expansion_target - total_sum) / (n - 1)
+        
+        # Create adjusted radii vector and perturb position for asymmetric topological disruption
+        new_radii = radii.copy()
+        # Expand least constrained circle more aggressively
+        new_radii[least_constrained_idx] += expansion_factor * 1.4
+        for i in range(n):
+            if i != least_constrained_idx:
+                new_radii[i] += expansion_factor
+        
+        # Apply controlled geometric hashing to disrupt current topology
+        # Generate random perturbation for position vector
+        hash_perturbation = np.random.rand(n, 2) * 0.03
+        perturbed_v = v.copy()
+        for i in range(n):
+            perturbed_v[3*i] += hash_perturbation[i, 0]
+            perturbed_v[3*i+1] += hash_perturbation[i, 1]
+        
+        # Re-evaluate with expanded radii and geometric hashing
+        res = minimize(neg_sum_radii, perturbed_v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 400, "ftol": 1e-11, "eps": 1e-12})
+    
+    # Final cleanup and return
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())

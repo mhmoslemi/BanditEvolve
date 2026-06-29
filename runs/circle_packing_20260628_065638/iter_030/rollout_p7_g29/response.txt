@@ -1,0 +1,359 @@
+```python
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = 5
+    rows = (n + cols - 1) // cols
+    # Ensure grid density allows expansion in staggered pattern without violating unit square
+    
+    # Precompute initial positions with dynamic staggering and enhanced edge-case handling
+    xs = []
+    ys = []
+    
+    # Define grid with 3D vectorization to allow spatial hashing and expansion potential
+    grid_row_indices = np.arange(rows)
+    grid_col_indices = np.arange(cols)
+    grid_positions = np.zeros((rows, cols, 2))
+    for r in range(rows):
+        for c in range(cols):
+            grid_positions[r, c, 0] = (c + 0.5) / cols
+            grid_positions[r, c, 1] = (r + 0.5) / rows
+    
+    # Apply randomized, adaptive jitter with gradient-aware scaling
+    jitter_strength = 0.075
+    # Create a spatial hashing function that increases jitter near edges
+    edge_jitter_func = lambda x: 2.0 * (x < 0.1) + (x >= 0.1) * (x < 0.9) * 0.75 + (x >= 0.9) * 1.0
+    # Generate jitter matrix with spatial awareness and edge amplification
+    jitter_matrix = np.random.random((rows, cols, 2)) * jitter_strength
+    jitter_matrix = np.where(edge_jitter_func(grid_positions[:, :, 0][:, :, None]) > 0.5, 
+                            jitter_matrix * 1.8, jitter_matrix)
+    jitter_matrix = np.where(edge_jitter_func(grid_positions[:, :, 1][:, :, None]) > 0.5, 
+                            jitter_matrix * 1.8, jitter_matrix)
+    
+    # Compute staggered positions with enhanced symmetry breaking and edge expansion capacity
+    staggered_positions = grid_positions.copy()
+    for r in range(rows):
+        for c in range(cols):
+            # Shift alternate rows with varying phase for asymmetric expansion potential
+            stagger_phase = np.sin(np.pi * (r)/(rows-1)) if rows > 1 else 0.0
+            staggered_positions[r, c, 0] += np.sin(np.linspace(0, np.pi, cols)) * np.cos(stagger_phase) * 0.01
+            staggered_positions[r, c, 1] += np.cos(np.linspace(0, np.pi, cols)) * np.cos(stagger_phase) * 0.01
+    
+    # Apply jitter and random seed for reproducibility without degradation
+    seed_offset = np.random.uniform(0, 10)  # Seed offset for variability
+    np.random.seed(seed_offset)
+    jittered_positions = (staggered_positions + np.tile(jitter_matrix, (1, 1, 2))).flatten()
+    
+    # Extract into x and y coordinates as initial guess
+    xs = jittered_positions[::2]
+    ys = jittered_positions[1::2]
+    
+    # Initial radii with optimized spacing based on Voronoi diagram of staggered positions
+    # Compute Voronoi diagram for initial point set to estimate maximum spacing
+    from scipy.spatial import Voronoi
+    initial_centers = np.column_stack([xs, ys])
+    initial_radii = np.zeros(n)
+    if n < 500:
+        vor = Voronoi(initial_centers)
+        # Estimate minimum enclosing circle radius to bound potential initial radii
+        min_enclosing_radius = 0.1
+        for r in range(rows):
+            for c in range(cols):
+                # Compute minimum distance to surrounding points in grid
+                distances = np.linalg.norm(initial_centers - initial_centers[r * cols + c, :], axis=1)
+                min_dist = np.min(distances[distances != 0])
+                initial_radii[r * cols + c] = min_dist / 2.0 - 0.02
+    else:
+        # Fallback to static distribution assuming grid spacing
+        initial_radii = np.full(n, 0.35 / cols - 1e-3)
+    
+    # Define more precise v0 with vectorized access
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = initial_radii
+    
+    # Define more efficient bounds by using array operations and structural checks
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+    
+    # Improve constraint expressions with explicit lambda captures and fixed binding
+    cons = []
+    for i in range(n):
+        # Left: x - r >= 0
+        cons.append({"type": "ineq", 
+                     "fun": lambda v, i=i: v[3*i] - v[3*i + 2]})
+        # Right: 1 - x - r >= 0
+        cons.append({"type": "ineq", 
+                     "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i + 2]})
+        # Bottom: y - r >= 0
+        cons.append({"type": "ineq", 
+                     "fun": lambda v, i=i: v[3*i + 1] - v[3*i + 2]})
+        # Top: 1 - y - r >= 0
+        cons.append({"type": "ineq", 
+                     "fun": lambda v, i=i: 1.0 - v[3*i + 1] - v[3*i + 2]})
+    
+    # Vectorize overlap constraints with a batched function and explicit closure binding
+    def vectorized_overlap(i, j):
+        def constraint_func(v):
+            dx = v[3*i] - v[3*j]
+            dy = v[3*i + 1] - v[3*j + 1]
+            return dx*dx + dy*dy - (v[3*i + 2] + v[3*j + 2])**2
+        return constraint_func
+    
+    for i in range(n):
+        for j in range(i + 1, n):
+            cons.append({
+                "type": "ineq",
+                "fun": vectorized_overlap(i, j)
+            })
+    
+    # Initial optimization phase with aggressive tolerances and adaptive iteration count
+    # Use a reduced initial warmup to escape local optima
+    res = minimize(
+        neg_sum_radii,
+        v0,
+        method="SLSQP",
+        bounds=bounds,
+        constraints=cons,
+        options={
+            "maxiter": 300, 
+            "ftol": 1e-12,
+            "gtol": 1e-10, 
+            "eps": 1e-9,
+            "disp": False
+        }
+    )
+    
+    if res.success:
+        # Post-validation step to ensure no numerical instability
+        v = res.x
+        # Check for NaNs or extreme values in initial state
+        if np.isnan(v).any() or np.isinf(v).any():
+            v = v0  # revert to initial guess if invalid state encountered
+        
+        # Phase 1: Spatial perturbation with edge-sensitive hash-based adjustment
+        # Apply spatial hashing with adaptive scaling to enhance reconfiguration
+        spatial_hash = np.random.rand(n, 2) * 0.06
+        perturbed_v = v.copy()
+        
+        # Compute current radii and centers for perturbation
+        current_radii = v[2::3]
+        current_centers = np.column_stack([v[0::3], v[1::3]])
+        
+        # Apply spatial hashing with relative scaling based on local edge condition
+        for i in range(n):
+            # Define spatial scaling based on current radius and proximity to grid wall
+            spatial_multiplier_x = (current_centers[i, 0] < 0.2) or (current_centers[i, 0] > 0.8)
+            spatial_multiplier_x = 1.0 if spatial_multiplier_x else 0.7
+            spatial_multiplier_y = (current_centers[i, 1] < 0.2) or (current_centers[i, 1] > 0.8)
+            spatial_multiplier_y = 1.0 if spatial_multiplier_y else 0.7
+            
+            perturbed_v[3*i] += spatial_hash[i, 0] * spatial_multiplier_x * 0.1
+            perturbed_v[3*i+1] += spatial_hash[i, 1] * spatial_multiplier_y * 0.1
+        
+        # Apply spatial correction ensuring constraint validity
+        # Re-evaluate with perturbed parameters
+        res = minimize(
+            neg_sum_radii,
+            perturbed_v,
+            method="SLSQP",
+            bounds=bounds,
+            constraints=cons,
+            options={
+                "maxiter": 500,
+                "ftol": 1e-12,
+                "gtol": 1e-11,
+                "eps": 1e-10,
+                "disp": False
+            }
+        )
+    
+    if res.success:
+        # Phase 2: Controlled growth of least constrained circle with dynamic adjustment
+        v = res.x
+        current_centers = np.column_stack([v[0::3], v[1::3]])
+        current_radii = v[2::3]
+        
+        # Compute distance matrix with optimized numpy vectorization and broadcasting
+        dx = current_centers[:, np.newaxis, 0] - current_centers[np.newaxis, :, 0]  # (n,n)
+        dy = current_centers[:, np.newaxis, 1] - current_centers[np.newaxis, :, 1]  # (n,n)
+        dists = np.sqrt(dx**2 + dy**2)  # (n,n)
+        
+        # Compute minimal distance for each circle with vectorized operation
+        min_dists = np.min(dists, axis=1)  # (n,)
+        # Identify the circle with the largest minimal distance
+        least_constrained_idx = np.argmax(min_dists)
+        # Compute current total sum
+        current_total_sum = current_radii.sum()
+        
+        # Compute a potential expansion based on the average growth in the SOTA solution
+        # Targeted expansion based on current total
+        target_total_growth = 0.0075
+        max_allowed_radii_per_circle = 0.45
+        max_total_radii = n * max_allowed_radii_per_circle
+        
+        # Dynamic growth factor based on current progress towards max_total_radii
+        if current_total_sum < max_total_radii:
+            # Calculate expansion factor dynamically based on current state
+            growth_factor = target_total_growth / max_total_radii * current_total_sum * 1.5
+            # Also limit expansion per circle to avoid overlapping
+            max_growth_per_circle = np.min([ 
+                (np.max(dists) - current_radii[i] - current_radii[j] for j in range(n)) for i in range(n)
+            ])  # rough estimate, may need refinement
+            if max_growth_per_circle is not None:
+                growth_factor = min(growth_factor, max_growth_per_circle / np.mean(current_radii)) 
+        else:
+            growth_factor = 0.0  # Don't allow expansion beyond max_total_radii
+        
+        # Create expansion vector with targeted expansion on the least constrained
+        # Use an enhanced expansion model with adaptive growth
+        new_radii = current_radii.copy()
+        # Over-expand least constrained circle for reconfiguration trigger
+        # Also allow for minor expansion on other circles to unlock new configurations
+        # Use a soft exponential to allow for more growth on least constrained
+        expansion_power = max(1.0, 1.5 + (growth_factor * 0.5))  # increase sensitivity
+        # Compute growth vector
+        expansion_vector = growth_factor * np.power(current_radii / np.mean(current_radii), -expansion_power)
+        # Apply expansion
+        new_radii += expansion_vector
+        
+        # Apply expansion vector with constraint protection and spatial awareness
+        # Validate before update to ensure no overlap, then apply
+        # Use vectorized validation to check all pairs
+        def validate_expansion(new_centers, new_radii):
+            for i in range(n):
+                for j in range(i + 1, n):
+                    dx = new_centers[i, 0] - new_centers[j, 0]
+                    dy = new_centers[i, 1] - new_centers[j, 1]
+                    dist = np.sqrt(dx*dx + dy*dy)
+                    if dist < new_radii[i] + new_radii[j] - 1e-12:
+                        # If any pair overlaps, shrink expansion
+                        return False
+            return True
+        
+        # Apply expansion with safety net
+        expanded_v = v.copy()
+        expanded_v[2::3] = new_radii
+        expanded_centers = np.column_stack([expanded_v[0::3], expanded_v[1::3]])
+        # Validate expansion
+        if validate_expansion(expanded_centers, new_radii):
+            v = expanded_v
+        else:
+            # If validation fails, reduce expansion amount with adaptive learning
+            # Compute the maximum allowable expansion
+            # This is simplified and could be more nuanced
+            safe_growth = 0.8 * growth_factor
+            safe_expansion_vector = safe_growth * np.power(current_radii / np.mean(current_radii), -expansion_power)
+            new_radii = current_radii + safe_expansion_vector
+            expanded_v[2::3] = new_radii
+            expanded_centers = np.column_stack([expanded_v[0::3], expanded_v[1::3]])
+        
+        # Re-evaluate with new configuration
+        res = minimize(
+            neg_sum_radii,
+            expanded_v,
+            method="SLSQP",
+            bounds=bounds,
+            constraints=cons,
+            options={
+                "maxiter": 300,
+                "ftol": 1e-12,
+                "gtol": 1e-11,
+                "eps": 1e-10,
+                "disp": False
+            }
+        )
+    
+    # Final validation before returning with enhanced robustness
+    if res.success:
+        v = res.x
+        # Re-validate full state
+        centers = np.column_stack([v[0::3], v[1::3]])
+        radii = v[2::3]
+        
+        # Perform final validation check for all pairs with numpy vectorization
+        dx = centers[:, np.newaxis, 0] - centers[np.newaxis, :, 0]  # (n,n)
+        dy = centers[:, np.newaxis, 1] - centers[np.newaxis, :, 1]  # (n,n)
+        dists = np.sqrt(dx**2 + dy**2)  # (n,n)
+        radii_sum = radii[:, np.newaxis] + radii[np.newaxis, :]
+        # Check for all overlapping pairs
+        overlap_mask = dists < radii_sum - 1e-12
+        if np.any(overlap_mask):
+            # Overlap detected, need to adjust
+            # Compute the minimal non-overlapping expansion in this area
+            overlapping_indices = np.where(overlap_mask)
+            # Take the most constrained pair to adjust 
+            i, j = overlapping_indices[0][0], overlapping_indices[1][0]
+            # Compute distance between them and required minimum
+            dist = dists[i, j]
+            required_distance = radii[i] + radii[j] 
+            # Compute the minimum allowed shift (we could use gradient descent, but for brevity use manual adjustment)
+            # Assume we can move circles in opposite direction
+            # Calculate direction and apply adjustment
+            dir_x = (centers[j, 0] - centers[i, 0]) / dist
+            dir_y = (centers[j, 1] - centers[i, 1]) / dist
+            # Apply small correction
+            centers[i, 0] += dir_x * 0.002
+            centers[i, 1] += dir_y * 0.002
+            centers[j, 0] -= dir_x * 0.002
+            centers[j, 1] -= dir_y * 0.002
+            # Update v
+            v[0::3] = centers[:, 0]
+            v[1::3] = centers[:, 1]
+            # Re-evaluate with adjustment
+            res = minimize(
+                neg_sum_radii,
+                v,
+                method="SLSQP",
+                bounds=bounds,
+                constraints=cons,
+                options={
+                    "maxiter": 80,
+                    "ftol": 1e-11,
+                    "gtol": 1e-10,
+                    "eps": 1e-9,
+                    "disp": False
+                }
+            )
+    
+    # Final cleanup with clipping and final validation pass
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, 0.45)  # Ensure radii do not exceed 0.45
+    final_centers = centers
+    final_radii = radii
+    
+    # Final final validation with enhanced precision
+    dx = final_centers[:, np.newaxis, 0] - final_centers[np.newaxis, :, 0]  # (n,n)
+    dy = final_centers[:, np.newaxis, 1] - final_centers[np.newaxis, :, 1]  # (n,n)
+    dists = np.sqrt(dx**2 + dy**2)  # (n,n)
+    radii_sum = radii[:, np.newaxis] + radii[np.newaxis, :]
+    # Check for overlaps with tighter tolerance
+    overlap_mask = dists < radii_sum - 1e-10
+    if np.any(overlap_mask):
+        # Edge case handling for unavoidable overlapping: prioritize minimal total radius
+        # As a fallback, this will reduce radii if overlaps are unavoidable
+        overlap_indices = np.where(overlap_mask)
+        i, j = overlap_indices[0][0], overlap_indices[1][0]
+        # Adjust radii of one circle to ensure non-overlapping
+        # Compute current distance and required minimum distance
+        required_dist = radii[i] + radii[j]
+        dist = dists[i, j]
+        delta = dist - required_dist
+        # Reduce both radii by delta/2 to maintain center position
+        new_radius_i = radii[i] - delta / 2
+        new_radius_j = radii[j] - delta / 2
+        # Ensure radii remain above minimum
+        new_radius_i = max(new_radius_i, 1e-6)
+        new_radius_j = max(new_radius_j, 1e-6)
+        # Apply adjustments
+        final_radii[i] = new_radius_i
+        final_radii[j] = new_radius_j
+        # Recalculate centers if needed
+        # This is a fall-back and should be rare, but necessary for final validation
+    
+    return centers, radii, float(radii.sum())
+```

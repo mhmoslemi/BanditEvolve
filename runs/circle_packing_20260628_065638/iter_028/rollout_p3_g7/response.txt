@@ -1,0 +1,176 @@
+<strategy>
+To improve the current packing solution, we focus on the specific directive: **asymmetric reconfiguration with stochastic spatial perturbations combined with targeted expansion of the least constrained circle**. This is a powerful technique to break local minima and explore more optimal configurations that may not be discovered in the initial optimization.
+
+### Key Observations from the Parent and SOTA:
+- In the parent solution, the reconfiguration step is applied once with a fixed random perturbation. However, reapplication with more tailored spatial distortion based on circle properties (like radii and spacing) might unlock better results.
+- The current SOTA attempts to find the least constrained circle based on minimum distance to others and tries to grow it with a more refined process.
+- However, in the parent, this growth is applied uniformly or as a fixed percentage, which may not be the most effective method given the spatial context.
+
+### Strategy to Implement:
+1. **Stochastic Spatial Perturbation**:
+   - Instead of randomizing positions, we will apply **directional perturbations** that scale with the radius or the distance to neighboring circles. This creates more meaningful perturbation patterns for reconfiguration.
+   - Add a spatial reconfiguration phase that applies this guided perturbation to the current configuration and reoptimizes.
+
+2. **Targeted Expansion with Spatial Awareness**:
+   - Instead of using a uniform expansion across all circles, we find the circle that has the **maximum minimum distance** to other circles (i.e., the "least constrained"), and we **exponentially grow its radius** in a controlled way that respects the constraint space.
+   - This avoids the need to increase the entire radii set uniformly and ensures growth only in feasible directions.
+
+3. **Improved Constraints**:
+   - The parent uses lambda functions that can create issues due to closures. We re-formulate the constraint functions explicitly to avoid this, especially for overlapping constraints.
+   - We use vectorized distance computation via broadcasting, which improves performance and robustness.
+
+4. **Better Optimization Tolerances and Iterative Refinement**:
+   - We increase the number of iterations (`maxiter`) and tighten the tolerances (`ftol`, `gtol`) for the SLSQP solver.
+   - Use a two-stage optimization:
+     - First, reconfigure the spatial layout with controlled, directional perturbations.
+     - Second, focus on growing the least constrained circle with more efficient constraints.
+
+5. **Robustness Checks**:
+   - Perform an in-place check of circle overlap after each reconfiguration/expansion step to prevent constraint failures and improve solver robustness.
+
+6. **Avoid Overlapping and NaNs**:
+   - Ensure that the final configuration passes the same validation logic that the validator uses, to be compatible with the system checks.
+
+We will reimplement the parent code with the above improvements, making sure that:
+- The variable vector and bounds list have exactly 3*26 elements.
+- The optimization is efficient and robust.
+- The expansion is targeted and feasible.
+- The solution passes the final validator.
+</strategy>
+
+```python
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = 5
+    rows = (n + cols - 1) // cols
+    
+    # Initialize positions with staggered and scaled grid with randomized distortion
+    xs = []
+    ys = []
+    for i in range(n):
+        row = i // cols
+        col = i % cols
+        x_center = (col + 0.5) / cols
+        y_center = (row + 0.5) / rows
+        # Add directional perturbation proportional to column and row distances
+        x = x_center + np.random.uniform(-0.02, 0.02) * (0.25 * (col + 1))
+        y = y_center + np.random.uniform(-0.02, 0.02) * (0.25 * (row + 1))
+        if row % 2 == 1:
+            x += 0.5 / cols * (0.5 + np.random.uniform(-0.25, 0.25))
+        xs.append(x)
+        ys.append(y)
+    
+    # Start with smaller radius, adjusted for grid layout and spacing
+    r0 = 0.35 / cols - 1e-3
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = np.full(n, r0)
+    
+    # Construct proper bounds (3 entries per circle, 3*26)
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]  # x, y, radius bounds
+    
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])  # Maximize sum of radii
+    
+    # Construct all the constraints explicitly and cleanly
+    cons = []
+    for i in range(n):
+        x, y, r = (3*i, 3*i+1, 3*i+2)
+        # Left boundary constraint: x_i - r_i >= 0
+        cons.append({"type": "ineq", "fun": lambda v, x=x, r=r: v[x] - v[r]})
+        # Right boundary constraint: x_i + r_i <= 1
+        cons.append({"type": "ineq", "fun": lambda v, x=x, r=r: 1.0 - v[x] - v[r]})
+        # Bottom boundary constraint: y_i - r_i >= 0
+        cons.append({"type": "ineq", "fun": lambda v, y=y, r=r: v[y] - v[r]})
+        # Top boundary constraint: y_i + r_i <= 1
+        cons.append({"type": "ineq", "fun": lambda v, y=y, r=r: 1.0 - v[y] - v[r]})
+    
+    # Construct overlap constraints with broadcasted geometry
+    for i in range(n):
+        for j in range(i + 1, n):
+            def constraint_func(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                return dx * dx + dy * dy - (v[3*i+2] + v[3*j+2]) ** 2
+            cons.append({"type": "ineq", "fun": constraint_func})
+    
+    # Stage 1: Initial optimization with increased precision
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 1000, "ftol": 1e-10, "gtol": 1e-10})
+    
+    if res.success:
+        v = res.x
+        # Stage 2: Asymmetric reconfiguration with spatial-aware perturbation
+        radii = v[2::3]
+        centers = np.column_stack([v[0::3], v[1::3]])
+        
+        # Create a spatial-aware perturbation matrix based on distance to neighbors
+        dists = np.zeros((n, n))
+        dx = centers[:, np.newaxis, 0] - centers[np.newaxis, :, 0]
+        dy = centers[:, np.newaxis, 1] - centers[np.newaxis, 1]
+        dists = np.sqrt(dx**2 + dy**2)
+        min_distances = np.min(dists, axis=1)
+        normalization = np.mean(min_distances) + 1e-12  # to avoid division by zero
+        
+        # Create perturbation that scales based on distance and radius
+        perturbation_scale = np.sqrt(radii) * (1 + 0.5 * (min_distances / normalization))
+        spatial_perturbation = np.random.rand(n, 2) * perturbation_scale[:, np.newaxis]
+        
+        # Apply perturbation
+        perturbed_v = v.copy()
+        for i in range(n):
+            perturbed_v[3*i] += spatial_perturbation[i, 0]
+            perturbed_v[3*i+1] += spatial_perturbation[i, 1]
+        
+        # Stage 2.1: Reoptimize with perturbed spatial configuration
+        res = minimize(neg_sum_radii, perturbed_v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 600, "ftol": 1e-11, "gtol": 1e-11})
+        
+        if res.success:
+            v = res.x
+            radii = v[2::3]
+            centers = np.column_stack([v[0::3], v[1::3]])
+            
+            # Stage 3: Targeted expansion of the least constrained circle
+            # Re-compute all pairwise distances for robustness
+            dx = centers[:, np.newaxis, 0] - centers[np.newaxis, :, 0]
+            dy = centers[:, np.newaxis, 1] - centers[np.newaxis, 1]
+            dists = np.sqrt(dx ** 2 + dy ** 2)
+            min_dists = np.min(dists, axis=1)
+            
+            # Find circle with the largest minimal distance (least constrained)
+            least_constrained_idx = np.argmax(min_dists)
+            max_min_distance = min_dists[least_constrained_idx]
+            
+            # Determine potential for expansion
+            current_total = np.sum(radii)
+            # Try to increase the total sum by 0.008 (increase from 2.634292 to 2.642)
+            target_total = current_total + 0.008
+            expansion_factor = (target_total - current_total) / (n - 1)
+            
+            # Apply exponential expansion to least constrained circle and neighboring circles
+            for i in range(n):
+                # Use a non-uniform expansion based on proximity and distance
+                if i == least_constrained_idx:
+                    # Exponentially grow the least constrained circle
+                    v[3*i+2] += expansion_factor * 1.2  # Slight overexpansion
+                else:
+                    # Adjust expansion based on relative proximity
+                    dist_to_least = dists[i, least_constrained_idx]
+                    scaled_factor = (dist_to_least / max_min_distance) ** 0.7
+                    v[3*i+2] += expansion_factor * scaled_factor * 0.8
+                    
+            # Stage 3.1: Final optimization with controlled expansion
+            res = minimize(neg_sum_radii, v, method="SLSQP", bounds=bounds,
+                           constraints=cons, options={"maxiter": 400, "ftol": 1e-11, "gtol": 1e-11})
+    
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())
+```

@@ -1,0 +1,272 @@
+```python
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = 6
+    rows = (n + cols - 1) // cols
+    
+    # Initialize with a dynamic hexagonal grid and perturbation
+    # We use staggered rows to create a more efficient layout
+    xs = []
+    ys = []
+    
+    # Create base hexagonal grid layout
+    max_row = rows - 1
+    for i in range(n):
+        col = i % cols
+        row = i // cols
+        row_offset = 0.5 / rows
+        row_center = (row + 0.5) / rows
+        x_center = (col + 0.5) / cols
+        # Shift alternate rows for staggered hexagonal grid
+        if row % 2 == 1:
+            x_center += 0.5 / cols
+            row_base = row_center - row_offset
+        else:
+            row_base = row_center
+        
+        # Add small random perturbation to break symmetry and avoid clustering
+        x = x_center + np.random.uniform(-0.06, 0.06)
+        y = row_base + np.random.uniform(-0.06, 0.06)
+        xs.append(x)
+        ys.append(y)
+    
+    # Base radius using hexagonal packing with tighter radii for optimization
+    # Radius of circle = (1 / (2*sqrt(3))) / cols * sqrt(3) = 1/(2*cols) per hexagonal grid
+    r0 = 0.45 / cols - 1e-3  # Higher than base to support local expansion
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = np.full(n, r0)
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]  # 3n bounds for 3n variables
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])  # Maximize by minimizing negative
+
+    # Vectorized boundary constraints with lambda closure fix (using i)
+    cons = []
+    for i in range(n):
+        # Left constraint: x_i - r_i >= 0
+        cons.append({"type": "ineq", "fun": (lambda v, i=i: v[3*i] - v[3*i+2])})
+        # Right constraint: 1.0 - x_i - r_i >= 0
+        cons.append({"type": "ineq", "fun": (lambda v, i=i: 1.0 - v[3*i] - v[3*i+2])})
+        # Bottom constraint: y_i - r_i >= 0
+        cons.append({"type": "ineq", "fun": (lambda v, i=i: v[3*i+1] - v[3*i+2])})
+        # Top constraint: 1.0 - y_i - r_i >= 0
+        cons.append({"type": "ineq", "fun": (lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2])})
+    
+    # Vectorized overlap constraints with lambda closure fix
+    # We vectorize all overlapping pairs for efficiency
+    for i in range(n):
+        for j in range(i+1, n):
+            cons.append({"type": "ineq",
+                         "fun": (lambda v, i=i, j=j: 
+                                 (v[3*i] - v[3*j])**2 + (v[3*i+1] - v[3*j+1])**2
+                                 - (v[3*i+2] + v[3*j+2])**2)})
+    
+    # First optimization: initial layout
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 1200, "ftol": 1e-12, "eps": 1e-10, "disp": False})
+    
+    if res.success:
+        # Post-optimization reconfiguration with more intelligent directional displacement
+        v = res.x
+        radii = v[2::3]
+        centers = np.column_stack([v[0::3], v[1::3]])
+        
+        # Compute pairwise distances matrix for least constrained analysis
+        dx = centers[:, np.newaxis, 0] - centers[np.newaxis, :, 0]
+        dy = centers[:, np.newaxis, 1] - centers[np.newaxis, :, 1]
+        dists = np.sqrt(dx**2 + dy**2)
+        
+        # Find least constrained and most interacting pairs to target
+        # Least constrained is circle with max min distance to all others
+        min_dists = np.min(dists, axis=1)
+        least_constrained_idx = np.argmax(min_dists)
+        
+        # Find most interacting pair for directional constraint application
+        # We consider all pairs with distance < 1.1 * average radius
+        # This captures tightly packed circles for focused adjustment
+        avg_radius = np.mean(radii)
+        interacting_pairs = []
+        for i in range(n):
+            for j in range(i+1, n):
+                if dists[i,j] < 1.1 * avg_radius:
+                    interacting_pairs.append((i,j))
+        
+        if interacting_pairs:
+            # Select two most interacting circles for targeted reconfiguration
+            # Use pairwise radii sum to determine interaction strength
+            interaction_strength = np.array([[np.linalg.norm(centers[i] - centers[j]) - (radii[i] + radii[j]) for j in range(n)] for i in range(n)]) 
+            interaction_strength = np.abs(interaction_strength)
+            
+            # Find the most interacting pair
+            interactions = np.triu(interaction_strength, 1)  # Only upper triangle
+            inter_index = np.argmax(interactions)
+            i, j = divmod(inter_index, n)
+            
+            # Select two unique circles for reconfiguration
+            circle_a, circle_b = i, j
+            if circle_a == circle_b:
+                circle_a, circle_b = least_constrained_idx, i
+            
+            # Generate directional constraint vectors for each circle in the interaction pair
+            # Use angular vectors for directional expansion to avoid symmetry issues
+            ax = centers[circle_a][0]
+            ay = centers[circle_a][1]
+            bx = centers[circle_b][0]
+            by = centers[circle_b][1]
+            x_dir = (bx - ax) / np.sqrt((bx - ax)**2 + (by - ay)**2)
+            y_dir = (by - ay) / np.sqrt((bx - ax)**2 + (by - ay)**2)
+            
+            # Generate directional constraint vectors for each circle
+            # Apply directional bias to both circles for constraint refinement
+            directional_hash = np.random.rand(2, 2) * 0.09
+            perturbation_factor = 0.0035  # Conservative bias to avoid over-exploration
+            
+            # Apply directional perturbations to circle_a and circle_b
+            perturbed_v = v.copy()
+            perturbed_v[3*circle_a] += x_dir * directional_hash[0, 0] * perturbation_factor
+            perturbed_v[3*circle_a+1] += y_dir * directional_hash[0, 1] * perturbation_factor
+            perturbed_v[3*circle_b] += x_dir * directional_hash[1, 0] * perturbation_factor
+            perturbed_v[3*circle_b+1] += y_dir * directional_hash[1, 1] * perturbation_factor
+            
+            # Re-evaluate with adjusted positions for directional constraints
+            res = minimize(neg_sum_radii, perturbed_v, method="SLSQP", bounds=bounds,
+                           constraints=cons, options={"maxiter": 100, "ftol": 1e-10, "eps": 1e-10, "disp": False})
+        
+        # Apply spatial reconfiguration with directional perturbation
+        if res.success:
+            v = res.x
+            radii = v[2::3]
+            centers = np.column_stack([v[0::3], v[1::3]])
+            
+            # Create more robust direction vector for perturbation
+            # Use the least constrained circle to derive direction
+            dx_dir = centers[least_constrained_idx, 0] - np.mean(centers[:, 0])
+            dy_dir = centers[least_constrained_idx, 1] - np.mean(centers[:, 1])
+            dir_len = np.sqrt(dx_dir**2 + dy_dir**2)
+            if dir_len < 1e-4:
+                dx_dir, dy_dir = 1.0, 0.0  # Default direction
+            
+            dir_unit = np.array([dx_dir, dy_dir]) / dir_len
+            spatial_hash = np.random.rand(n, 2) * 0.06
+            perturbed_v = v.copy()
+            
+            # Apply directional perturbation with bias toward least constrained circle
+            for i in range(n):
+                # Perturb centers based on directional hash and relative radius
+                perturbed_v[3*i] += spatial_hash[i, 0] * (radii[i] / np.mean(radii)) * dir_unit[0]
+                perturbed_v[3*i+1] += spatial_hash[i, 1] * (radii[i] / np.mean(radii)) * dir_unit[1]
+            
+            # Re-evaluate with directional perturbation
+            res = minimize(neg_sum_radii, perturbed_v, method="SLSQP", bounds=bounds,
+                           constraints=cons, options={"maxiter": 400, "ftol": 1e-12, "eps": 1e-10, "disp": False})
+        else:
+            res = minimizer fallback to previous result
+            
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+
+    # Targeted expansion strategy: expand least constrained with directional adjustment
+    # We compute the expansion vector based on the geometric configuration
+    # We first recompute the least constrained and most interacting pair to ensure correctness
+    dx = centers[:, np.newaxis, 0] - centers[np.newaxis, :, 0]
+    dy = centers[:, np.newaxis, 1] - centers[np.newaxis, :, 1]
+    dists = np.sqrt(dx**2 + dy**2)
+    
+    # Recompute least constrained and most interacting pair
+    min_dists = np.min(dists, axis=1)
+    least_constrained_idx = np.argmax(min_dists)
+    
+    # Recompute interacting pairs for directional bias
+    interacting_pairs = []
+    for i in range(n):
+        for j in range(i+1, n):
+            if dists[i,j] < 1.1 * np.mean(radii):
+                interacting_pairs.append((i,j))
+    
+    if interacting_pairs:
+        interactions = np.triu(np.abs(dists - (radii[:, None] + radii[None, :]))), 1
+        inter_index = np.argmax(interactions)
+        i, j = divmod(inter_index, n)
+        circle_a, circle_b = i, j
+        if circle_a == circle_b:
+            circle_a, circle_b = least_constrained_idx, i
+    else:
+        circle_a, circle_b = least_constrained_idx, 0
+    
+    # Generate directional vectors for expansion toward least constrained circle
+    ax = centers[circle_a][0]
+    ay = centers[circle_a][1]
+    bx = centers[circle_b][0]
+    by = centers[circle_b][1]
+    x_dir = (bx - ax) / np.sqrt((bx - ax)**2 + (by - ay)**2)
+    y_dir = (by - ay) / np.sqrt((bx - ax)**2 + (by - ay)**2)
+    
+    # Generate directional expansion vector
+    expansion_hash = np.random.rand(n, 2) * 0.05
+    new_radii = radii.copy()
+    
+    # Expand least constrained based on directional vector
+    new_radii[least_constrained_idx] += max(0.004, 0.02 * (1.1 - np.min(np.linalg.norm(centers - centers[least_constrained_idx], axis=1)))) * np.linalg.norm(x_dir)
+    # Expand circle_a and circle_b with directional bias
+    for i in range(n):
+        expansion_i = 0.0035 * expansion_hash[i, 0] if i == circle_a else 0.0035 * expansion_hash[i, 1]
+        new_radii[i] += expansion_i * 1.1  # Slight boost for directional expansion
+    
+    # Apply expansion with constraint validation
+    while True:
+        expanded_v = v.copy()
+        expanded_v[2::3] = np.clip(new_radii, 1e-6, 0.5)  # Clip to prevent overexpansion
+        
+        # Validate expanded configuration
+        valid = True
+        expanded_centers = np.column_stack([expanded_v[0::3], expanded_v[1::3]])
+        for i in range(n):
+            for j in range(i+1, n):
+                dx_exp = expanded_centers[i, 0] - expanded_centers[j, 0]
+                dy_exp = expanded_centers[i, 1] - expanded_centers[j, 1]
+                dist = np.sqrt(dx_exp**2 + dy_exp**2)
+                if dist < np.clip(new_radii[i], 1e-6, 0.5) + np.clip(new_radii[j], 1e-6, 0.5) - 1e-11:
+                    valid = False
+                    break
+            if not valid:
+                break
+        
+        if valid:
+            break
+        else:
+            # If invalid, reduce expansion by a factor (slightly more aggressive)
+            new_radii = radii + (new_radii - radii) * (0.97 + 0.02 * np.random.rand())  
+            # Add slight stochasticity in reduction for diverse configurations
+    
+    # Final optimization with new radii configuration
+    v_new = v.copy()
+    v_new[2::3] = new_radii
+    
+    # Final optimization to refocus positions based on new radii
+    res = minimize(neg_sum_radii, v_new, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 600, "ftol": 1e-12, "eps": 1e-10, "disp": False})
+    
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    
+    # Apply final validation (even with randomness, we'll handle it)
+    with warnings.catch_warnings():  # silence potential numpy warnings
+        warnings.simplefilter("ignore")
+        valid, reason = validate_packing(centers, radii)
+    
+    # If final validation fails, fallback to best configuration without reconfiguration
+    if not valid:
+        # Run a cleaner fallback to the first valid configuration
+        centers, radii, _ = run_packing()
+    
+    return centers, radii, float(radii.sum())
+```

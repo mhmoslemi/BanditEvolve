@@ -1,0 +1,130 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = int(np.ceil(np.sqrt(n)))
+    rows = int(np.ceil(n / cols))
+    
+    # Initialize spatial grid with enhanced geometric hierarchy
+    xs = []
+    ys = []
+    for i in range(n):
+        row_idx = i // cols
+        col_idx = i % cols
+        # Use more precise centering with fractional offset
+        x_center = (col_idx + 0.3) / cols * 1.2
+        y_center = (row_idx + 0.3) / rows * 1.2
+        
+        # Add adaptive randomized perturbation based on grid proximity
+        r_perturb = 0.1 / np.sqrt(cols + rows)
+        x = x_center + (np.random.rand() - 0.5) * 0.15 * (1 + 0.5 * (col_idx < cols // 2))
+        y = y_center + (np.random.rand() - 0.5) * 0.15 * (1 + 0.5 * (row_idx < rows // 2))
+        
+        # Stagger rows to create non-overlapping spatial distribution without cluster formation
+        if row_idx % 2 == 1:
+            x += 0.5 / cols / 1.2 * (1.0 + 0.2 * np.random.rand())
+        xs.append(x)
+        ys.append(y)
+    
+    # Initialize radii with adaptive size based on grid dimensions
+    grid_density = cols * rows
+    r_initial_base = 0.35 / cols - (1e-3) * (cols / grid_density)**0.3
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = np.full(n, r_initial_base)
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]  # length 3*n, matches v
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    # Enforce bounds constraints with efficient lambda capturing (using lambda captures without closure issues)
+    cons = []
+    for i in range(n):
+        # Left and right boundary constraints
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        # Bottom and top boundary constraints
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+    
+    # Enforce circle overlaps using vectorized computation with efficient lambda binding
+    overlap_constraints = []
+    for i in range(n):
+        for j in range(i + 1, n):
+            # Use lambda with captured i,j values for constraint function
+            overlap_constraints.append({"type": "ineq", 
+                                "fun": lambda v, i=i, j=j: 
+                                        (v[3*i] - v[3*j])**2 + 
+                                        (v[3*i+1] - v[3*j+1])**2 - 
+                                        (v[3*i+2] + v[3*j+2])**2})
+    cons.extend(overlap_constraints)
+
+    # Initialize optimization with increased accuracy and better convergence settings
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds, constraints=cons,
+                   options={"maxiter": 3000, "ftol": 1e-11, "gtol": 1e-11,
+                            "eps": 1e-4, "disp": False})
+    
+    # Adaptive perturbation to break local optima and explore higher energy states
+    if res.success:
+        v = res.x
+        radii = v[2::3]
+        centers = np.column_stack([v[0::3], v[1::3]])
+        
+        # Generate directional perturbation based on spatial hierarchy and grid positions
+        dir_perturbation = np.random.rand(n, 2) * 0.05
+        dir_perturbation[:, 0] *= 1.2 * (cols / n)**0.6
+        dir_perturbation[:, 1] *= 1.1 * (rows / n)**0.8
+        
+        # Apply asymmetric spatial perturbation proportional to radius
+        for i in range(n):
+            v[3*i] += dir_perturbation[i, 0] * (radii[i] / np.mean(radii))**0.7
+            v[3*i+1] += dir_perturbation[i, 1] * (radii[i] / np.mean(radii))**0.7
+        
+        # Re-evaluate with new configuration
+        res = minimize(neg_sum_radii, v, method="SLSQP", bounds=bounds, constraints=cons,
+                       options={"maxiter": 400, "ftol": 1e-11, "gtol": 1e-11})
+    
+    # Spatial constraint expansion strategy with influence map prioritization
+    if res.success:
+        v = res.x
+        radii = v[2::3]
+        centers = np.column_stack([v[0::3], v[1::3]])
+        
+        # Compute distance matrix efficiently
+        dx = centers[:, np.newaxis, 0] - centers[np.newaxis, :, 0]
+        dy = centers[:, np.newaxis, 1] - centers[np.newaxis, :, 1]
+        dists = np.sqrt(dx**2 + dy**2)
+        
+        # Compute influence map based on spatial density and radius contribution
+        radius_weight = np.sqrt(radii)
+        influences = 1.0 / (dists + 1e-5) * radius_weight
+        influence_sum = np.sum(influences, axis=1)
+        
+        # Normalize to create spatial constraint priority map
+        normalized_influences = influences / (influence_sum[:, np.newaxis] + 1e-5)
+        spatial_priority = np.sum(normalized_influences, axis=1)
+        
+        # Select spatially constrained circles for expansion
+        expansion_indices = np.argsort(spatial_priority)[::-1][:3]
+        
+        # Calculate radius expansion based on current energy and potential
+        current_total = np.sum(radii)
+        target_energy = current_total * 1.02
+        expansion_base = (target_energy - current_total) * 0.8
+        
+        # Distribute expansion to constrained circles with adaptive weights
+        for idx in expansion_indices:
+            v[3*idx + 2] = np.clip(v[3*idx + 2] * 1.05, 1e-4, 0.5)
+        
+        # Re-evaluate with expanded circles
+        res = minimize(neg_sum_radii, v, method="SLSQP", bounds=bounds, constraints=cons,
+                       options={"maxiter": 400, "ftol": 1e-11, "gtol": 1e-11})
+    
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())

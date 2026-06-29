@@ -1,0 +1,100 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    # Randomized geometric clustering initialization
+    cluster_centers = np.random.rand(n, 2)
+    cluster_centers = np.column_stack((cluster_centers, np.full(n, 1.0 / np.sqrt(n))))
+    cluster_centers = np.random.permutation(cluster_centers)
+    cluster_centers = cluster_centers[:n]
+    
+    # Create a grid layout with some randomness to break symmetry
+    grid_size = int(np.ceil(np.sqrt(n)))
+    xs = []
+    ys = []
+    for i in range(n):
+        row = i // grid_size
+        col = i % grid_size
+        x = (col + 0.5) / grid_size + np.random.uniform(-0.05, 0.05)
+        y = (row + 0.5) / grid_size + np.random.uniform(-0.05, 0.05)
+        if row % 2 == 1:
+            x += 0.5 / grid_size
+        xs.append(x)
+        ys.append(y)
+    
+    # Combine grid layout with cluster initialization for better diversification
+    xs = np.array(xs) * 0.7 + cluster_centers[:, 0] * 0.3
+    ys = np.array(ys) * 0.7 + cluster_centers[:, 1] * 0.3
+    
+    r0 = 0.3 / grid_size - 1e-3
+    v0 = np.empty(3 * n)
+    v0[0::3] = xs
+    v0[1::3] = ys
+    v0[2::3] = np.full(n, r0)
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    # Vectorized overlap constraints
+    def vectorized_overlap_constraints(v):
+        x = v[0::3]
+        y = v[1::3]
+        r = v[2::3]
+        dx = x[:, np.newaxis] - x[np.newaxis, :]
+        dy = y[:, np.newaxis] - y[np.newaxis, :]
+        dist_sq = dx ** 2 + dy ** 2
+        r_sum = r[:, np.newaxis] + r[np.newaxis, :]
+        return dist_sq - r_sum ** 2
+
+    # Convert to list of constraint functions for scipy.optimize
+    cons = []
+    for i in range(n):
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+    
+    # Convert vectorized constraints to individual constraint functions
+    for i in range(n):
+        for j in range(i + 1, n):
+            def constraint_func(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                return dx*dx + dy*dy - (v[3*i+2] + v[3*j+2])**2
+            cons.append({"type": "ineq", "fun": constraint_func})
+
+    # Initial optimization with increased max iterations and tighter tolerance
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 1500, "ftol": 1e-10})
+    
+    # Non-local reconfiguration: apply controlled radius expansion to the most isolated cluster
+    if res.success:
+        v = res.x
+        # Compute isolation metric: average distance to other circles
+        x = v[0::3]
+        y = v[1::3]
+        r = v[2::3]
+        isolation = np.zeros(n)
+        for i in range(n):
+            dist = np.sqrt((x - x[i])**2 + (y - y[i])**2)
+            isolation[i] = np.mean(dist[dist > 1e-6])
+        
+        # Select the most isolated cluster
+        isolated_index = np.argsort(isolation)[-1]
+        # Increase radius of the isolated cluster while maintaining constraints
+        perturbed_v = v.copy()
+        perturbed_v[3*isolated_index+2] += 0.01
+        perturbed_v[3*isolated_index+2] = np.clip(perturbed_v[3*isolated_index+2], 1e-4, 0.5)
+        
+        # Re-evaluate with perturbed parameters
+        res = minimize(neg_sum_radii, perturbed_v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 300, "ftol": 1e-10})
+    
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())

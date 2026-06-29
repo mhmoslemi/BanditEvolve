@@ -1,0 +1,460 @@
+```python
+import numpy as np
+
+def run_packing():
+    n = 26
+    # Step 1: Geometric hashing with adaptive grid and probabilistic spatial partitioning
+    
+    # Grid parameters based on advanced packing theory where grid rows/columns are non-uniform to allow for flexible cluster formation
+    # Using a dynamic allocation where column count is derived from spatial partitioning of unit square
+    cols = int(np.ceil((1.0 * np.sqrt(n) + 0.1) / 0.8))
+    rows = int(np.ceil(n / cols))
+    if rows * cols < n:
+        rows += 1
+    
+    # Spatial hashing grid with stochastic distribution for cluster formation using Poisson disk sampling in 2D
+    # Generate grid positions with hierarchical spatial hashing and stochastic perturbation using geometric hashing
+    xs = []
+    ys = []
+    
+    # Generate grid centers with adaptive spatial hashing and hierarchical perturbation
+    for i in range(n):
+        row = i // cols
+        col = i % cols
+        # Base center: non-uniform in grid to allow for better spacing
+        x_center = 0.5 * (col + 1) / (cols * 1.1)
+        y_center = 0.5 * (row + 1) / rows
+        
+        # Stochastic displacement in radial directions with adaptive scaling based on grid density
+        theta = np.random.uniform(0, 2 * np.pi)
+        r = np.random.uniform(0.03 * row, 0.05 * row)
+        
+        x = x_center + r * np.cos(theta)
+        y = y_center + r * np.sin(theta)
+        
+        # Spatial perturbation using a combination of geometric hashing and adaptive Poisson noise
+        # Applying a non-linear displacement to break symmetry in regular grid structures
+        if (row + col) % 2 == 1:
+            x += (np.random.normal(0, 0.015) if np.random.rand() < 0.1 else 0)
+            y += (np.random.normal(0, 0.015) if np.random.rand() < 0.1 else 0)
+        
+        # Additional grid-aware perturbation using grid position and grid density
+        grid_density = (cols * rows) / n
+        x += (np.random.normal(0, 0.02) if np.random.rand() < 0.05 * grid_density else 0)
+        y += (np.random.normal(0, 0.02) if np.random.rand() < 0.05 * grid_density else 0)
+        
+        # Ensure coordinates are within unit square
+        x = np.clip(x, 1e-12, 1 - 1e-12)
+        y = np.clip(y, 1e-12, 1 - 1e-12)
+        xs.append(x)
+        ys.append(y)
+    
+    # Initial radii with geometric hashing and density-aware scaling
+    initial_radius_scale = 0.35
+    radius_grid_factor = 1.05  # Increase to enhance initial potential
+    r0 = (initial_radius_scale / cols) * radius_grid_factor - 1e-3
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = np.full(n, r0)
+    
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]  # length must be 3*26
+    
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+    
+    # Create constraint structure with vectorized and non-capturing lambda functions to avoid closure issues
+    # Use numpy array-based constraints instead of loops for efficient evaluation on GPU/accelerated backends
+    cons = []
+    
+    # Vectorized boundary constraints with lambda expressions using per-element indexing (must use np to avoid closure captures)
+    # We use Numpy broadcasting to generate these constraints dynamically with per-circle evaluation
+    # This avoids Python function closure issues while maintaining per-circle constraints
+    
+    # Generate boundary constraint functions using broadcasting via np.frompyfunc
+    def make_boundary_constraints(n, v): 
+        # Create constraint structures for the optimization
+        # This version uses vectorized NumPy operations where applicable to enhance performance
+        # We define individual constraints in a numpy-style vectorized manner
+        
+        # For each circle i, the boundary constraints are:
+        # 1. Left: L <= x - r
+        # 2. Right: x + r <= 1
+        # 3. Bottom: B <= y - r
+        # 4. Top: y + r <= 1
+        
+        # Create per-circle boundary constraint functions using NumPy broadcasting
+        indices = np.arange(n)
+        
+        # Create boundary functions using broadcasting: for each circle i, we extract v[3*i], v[3*i+1], v[3*i+2]
+        # We can use this to construct the vectorized functions
+        # We will create a matrix where rows are circle indices, and columns are constraint types
+        # Constraint types: left, right, bottom, top = 0, 1, 2, 3
+        
+        # Precompute the indices for boundary constraints
+        x_idx = 3 * indices
+        y_idx = 3 * indices + 1
+        r_idx = 3 * indices + 2
+        
+        # Define constraint types in a numpy array: [left, right, bottom, top]
+        constraint_types = np.array([0, 1, 2, 3])  # 4 types
+        
+        # Function to generate per-circle constraint functions
+        def generate_constraints(v):
+            # v is a numpy array of shape (3*n,)
+            # x = v[0::3], y = v[1::3], r = v[2::3]
+            # We will create a 4n constraint function set for each circle
+            
+            constraints = []
+            
+            # For each constraint type (4 per circle), create appropriate constraint
+            for i in range(n):
+                x = v[x_idx[i]]
+                y = v[y_idx[i]]
+                r = v[r_idx[i]]
+                
+                # Left boundary constraint: x - r >= 0 -> x - r
+                constraints.append({"type": "ineq", "fun": lambda v, x, y, r: x - r})
+                
+                # Right boundary constraint: x + r <= 1 -> 1 - x - r
+                constraints.append({"type": "ineq", "fun": lambda v, x, y, r: 1.0 - x - r})
+                
+                # Bottom boundary constraint: y - r >= 0 -> y - r
+                constraints.append({"type": "ineq", "fun": lambda v, x, y, r: y - r})
+                
+                # Top boundary constraint: y + r <= 1 -> 1 - y - r
+                constraints.append({"type": "ineq", "fun": lambda v, x, y, r: 1.0 - y - r})
+            
+            return constraints
+        
+        # To optimize, we can use broadcasting instead of looping
+        # However, in practice, for clarity and maintainability, using a per-loop approach is preferred to avoid closures
+        # Note: we're not using the NumPy version for constraints due to the complexity and potential for closure capture in the function
+        
+        # So we proceed with the original per-circle loop-based constraint construction for clarity
+        # We loop over each circle i and create four constraints
+        
+        for i in range(n):
+            x = v[x_idx[i]]
+            y = v[y_idx[i]]
+            r = v[r_idx[i]]
+            
+            # Left boundary constraint: x - r >= 0 -> x - r
+            # Right boundary constraint: x + r <= 1 -> 1 - x - r
+            # Bottom boundary constraint: y - r >= 0 -> y - r
+            # Top boundary constraint: y + r <= 1 -> 1 - y - r
+            
+            # Apply to each of the four boundary constraints
+            cons.append({"type": "ineq", "fun": lambda v, x, y, r: x - r})
+            cons.append({"type": "ineq", "fun": lambda v, x, y, r: 1.0 - x - r})
+            cons.append({"type": "ineq", "fun": lambda v, x, y, r: y - r})
+            cons.append({"type": "ineq", "fun": lambda v, x, y, r: 1.0 - y - r})
+        
+        return cons
+    
+    # Create overlap constraints with geometric hashing and enhanced constraint representation
+    # We use a grid-hash approach where circles are categorized into spatial bins, and only circles in adjacent bins are checked
+    # This reduces computational complexity and enhances scalability
+    # We also use a hybrid of grid-based and vectorized distance constraints
+    
+    # To ensure that constraint functions are compatible with the scipy.optimize system, we define them explicitly
+    # The following generates all pairwise constraints using a vectorized approach
+    
+    # Generate constraints for pairwise circle overlaps
+    # Use a grid hashing approach that reduces the number of distance calculations by considering only nearby circles
+    
+    # Spatial hashing parameters
+    hash_cell_size = 0.05  # Adaptive based on packing density
+    min_cell_size = 0.02
+    cell_size = max(hash_cell_size, (1.0 / np.sqrt(n))))  # Ensure hash grid has at least a certain density
+    
+    # Grid hashing grid parameters based on spatial hashing theory
+    num_hash_cells_x = int(np.ceil(1.0 / cell_size))
+    num_hash_cells_y = int(np.ceil(1.0 / cell_size))
+    
+    # Initialize hash map from cell coordinates to list of indices in that cell
+    hash_map = { (i, j): [] for i in range(num_hash_cells_x) for j in range(num_hash_cells_y) }
+    
+    # Populate the hash map
+    for i in range(n):
+        x = xs[i]
+        y = ys[i]
+        cell_x = int(np.floor(x / cell_size))
+        cell_y = int(np.floor(y / cell_size))
+        hash_map[(cell_x, cell_y)].append(i)
+    
+    # Now, generate constraints using these hash cells
+    # Only circles in neighboring cells are considered for distance checks (including adjacent cells)
+    # This reduces constraint generation time while maintaining spatial fidelity
+    
+    # Generate all necessary constraints for overlap
+    overlap_cons = []
+    for i in range(n):
+        # For each circle, get its hash cell
+        x_i = xs[i]
+        y_i = ys[i]
+        cell_x = int(np.floor(x_i / cell_size))
+        cell_y = int(np.floor(y_i / cell_size))
+        
+        # Check neighboring cells in this hash map (including current cell)
+        neighbor_cells = [(cell_x + dx, cell_y + dy) for dx in [-1, 0, 1] for dy in [-1, 0, 1]]
+        
+        for cell in neighbor_cells:
+            if cell in hash_map:
+                for j in hash_map[cell]:
+                    if j <= i:
+                        # Only generate constraint between i and j once
+                        # To avoid redundancy, we skip when j <= i
+                        continue
+                    # Now, add constraint for circle i and circle j
+                    def constraint_func(v, i=i, j=j, x_i=x_i, y_i=y_i, x_j=xs[j], y_j=ys[j]):
+                        # Compute the distance between the two centers
+                        dx = v[3*i] - v[3*j]  # x_i is stored in xs[i] and xs[j]
+                        dy = v[3*i+1] - v[3*j+1]  # y_i is stored in ys[i] and ys[j]
+                        # Compute the sum of radii
+                        r_i = v[3*i+2]
+                        r_j = v[3*j+2]
+                        # Constraint: distance must be >= r_i + r_j
+                        return dx*dx + dy*dy - (r_i + r_j)**2  # Squared distance - (r1 + r2)^2
+    
+                    overlap_cons.append({"type": "ineq", "fun": constraint_func})
+    
+    # Now, add these to the constraint list
+    cons.extend(overlap_cons)
+    
+    # Now, initialize the optimization
+    # Note: We avoid using "ftol" in the first minimization as the constraint handling is too sensitive for tight tolerances
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 2500, "maxls": 100, "ftol": 1e-9})
+    
+    # Apply aggressive local search via spatial reconfiguration using geometric hashing
+    # Spatial optimization: perturge based on geometric hashing of current configuration
+    # We recompute the spatial hash and apply targeted spatial shifts
+    if res.success:
+        v = res.x
+        radii = v[2::3]
+        centers = np.column_stack([v[0::3], v[1::3]])
+        
+        # Rehash the current centers with optimized cell size based on packing density
+        cell_size_optimized = max(0.03, (1.0 / np.sqrt(n)))  # Ensure grid density isn't too coarse
+        num_hash_cells_x = int(np.ceil(1.0 / cell_size_optimized))
+        num_hash_cells_y = int(np.ceil(1.0 / cell_size_optimized))
+        
+        # Rebuild the hash map based on current centers
+        hash_map = { (i, j): [] for i in range(num_hash_cells_x) for j in range(num_hash_cells_y) }
+        for i in range(n):
+            x = centers[i, 0]
+            y = centers[i, 1]
+            cell_x = int(np.floor(x / cell_size_optimized))
+            cell_y = int(np.floor(y / cell_size_optimized))
+            hash_map[(cell_x, cell_y)].append(i)
+        
+        # Generate spatial constraints based on current positions
+        # This time, we use a vectorized broadcasting approach for constraints
+        # Generate all necessary constraints via current hash map
+        # Only check neighboring cells for efficiency
+        
+        # Create vectors with current positions
+        x_vec = centers[:, 0]
+        y_vec = centers[:, 1]
+        r_vec = radii
+        
+        dx = np.subtract.outer(x_vec, x_vec)  # (n, n)
+        dy = np.subtract.outer(y_vec, y_vec)
+        distance_squared = dx**2 + dy**2  # (n, n)
+        radius_sum_squared = (r_vec[:, np.newaxis] + r_vec[np.newaxis, :])**2  # (n, n)
+        
+        # Compute overlap mask by distance_squared < radius_sum_squared - 1e-12 (we use exact constraint)
+        overlap_mask = (distance_squared < (radius_sum_squared - 1e-12))
+        
+        # Now, only consider non-overlapping pairs for future constraints (to avoid constraint redundancy)
+        # Also, generate new constraints using a refined spatial hashing with neighbor cell analysis
+        # This ensures that we don't generate redundant or invalid constraints
+        
+        # Use the hash map to get nearby circle indices
+        # For each circle, generate constraints with neighboring cells
+        optimized_cons = []
+        
+        for i in range(n):
+            # Get cell of circle i
+            x = centers[i, 0]
+            y = centers[i, 1]
+            cell_x = int(np.floor(x / cell_size_optimized))
+            cell_y = int(np.floor(y / cell_size_optimized))
+            
+            # Explore neighboring cells
+            for dx_cell in [-1, 0, 1]:
+                for dy_cell in [-1, 0, 1]:
+                    neighbor_cell = (cell_x + dx_cell, cell_y + dy_cell)
+                    if neighbor_cell in hash_map:
+                        for j in hash_map[neighbor_cell]:
+                            if j > i:
+                                # Create constraint for i, j
+                                def constraint_func(v, i=i, j=j):
+                                    xi = v[3*i]
+                                    yi = v[3*i+1]
+                                    xj = v[3*j]
+                                    yj = v[3*j+1]
+                                    ri = v[3*i+2]
+                                    rj = v[3*j+2]
+                                    dx = xi - xj
+                                    dy = yi - yj
+                                    return dx*dx + dy*dy - (ri + rj)**2
+        
+                                optimized_cons.append({"type": "ineq", "fun": constraint_func})
+        
+        # Replace the overlap constraints
+        cons = optimized_cons
+    
+    # Add adaptive perturbation strategy for local minima avoidance
+    # We apply a hybrid of spatial and topological perturbation based on graph theory and Voronoi partitioning
+    if res.success:
+        v = res.x
+        radii = v[2::3]
+        centers = np.column_stack([v[0::3], v[1::3]])
+        
+        # Create Voronoi diagram to identify spatial relationships
+        from scipy.spatial import Voronoi
+        
+        try:
+            vor = Voronoi(centers)
+            regions = vor.regions
+        except:
+            # Handle potential issues like degenerate points
+            regions = []
+        
+        # Identify the largest Voronoi cell (most isolated circle) with potential for expansion
+        if regions:
+            cell_areas = []
+            for region in regions:
+                if -1 not in region:
+                    if len(region) > 0:
+                        coords = centers[region]
+                        area = 0.5 * np.abs(np.dot(coords[:, 0], coords[:, 1][::-1]) - np.dot(coords[:, 1], coords[:, 0][::-1]))
+                        cell_areas.append(area)
+                    else:
+                        cell_areas.append(0.0)
+                else:
+                    cell_areas.append(0.0)
+            most_isolated_idx = np.argmax(cell_areas)
+        else:
+            # Default: choose the one with the current largest minimum distance to others
+            dists = np.zeros((n, n))
+            for i in range(n):
+                for j in range(n):
+                    dx = centers[i, 0] - centers[j, 0]
+                    dy = centers[i, 1] - centers[j, 1]
+                    dists[i, j] = np.sqrt(dx*dx + dy*dy)
+            min_distances = np.min(dists, axis=1)
+            most_isolated_idx = np.argmax(min_distances)
+        
+        # Perturb the most isolated circle spatially with geometric hash-based perturbation
+        # Use a combination of adaptive spatial perturbation and radiometric adjustment
+        most_isolated_center = centers[most_isolated_idx]
+        most_isolated_radius = radii[most_isolated_idx]
+        
+        # Generate a new geometric hash-based perturbation
+        # Use Poisson noise with adaptive scaling to simulate spatial expansion
+        spatial_perturbation_factor = 0.04  # Adaptive based on spatial hashing
+        max_perturb = spatial_perturbation_factor * (1.0 - 0.05)
+        # Use a Poisson disk sampling to generate perturbation
+        poisson_noise = np.random.exponential(1.0) * 0.05  # Generate a Poisson distributed perturbation
+        
+        # Apply spatial reconfiguration
+        # Apply a small spatial perturbation to this circle
+        new_center_x = most_isolated_center[0] + np.random.uniform(-max_perturb, max_perturb)
+        new_center_y = most_isolated_center[1] + np.random.uniform(-max_perturb, max_perturb)
+        # Enforce unit square boundaries
+        new_center_x = np.clip(new_center_x, 1e-12, 1.0 - 1e-12)
+        new_center_y = np.clip(new_center_y, 1e-12, 1.0 - 1e-12)
+        
+        # Now, generate a new perturbed decision vector and re-run
+        perturbed_v = v.copy()
+        perturbed_v[3*most_isolated_idx] = new_center_x
+        perturbed_v[3*most_isolated_idx+1] = new_center_y
+        
+        # Re-run optimization with perturbed configuration, emphasizing reconfiguration
+        res = minimize(neg_sum_radii, perturbed_v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 400, "ftol": 1e-11})
+    
+    # Final phase: topological reconfiguration using graph theory for optimal cluster formation
+    # Reassign circle radii with a graph-based algorithm that optimizes cluster compactness
+    if res.success:
+        v = res.x
+        radii = v[2::3]
+        centers = np.column_stack([v[0::3], v[1::3]])
+        
+        # Create a graph based on current centers and radii
+        # Use a graph-based approach to reassign radii while maintaining non-overlap
+        # This phase is a hybrid of numerical optimization and topological reconfiguration
+        
+        from scipy.spatial import KDTree
+        
+        # Compute the distance matrix
+        tree = KDTree(centers)
+        distances = tree.query_pairs(0.95)  # Use a 95% threshold to find near-neighbor relationships
+        
+        # This is a simplified graph-based reassignment strategy where we allow topological re-assignment of radii
+        # We will generate a new radius vector with enhanced geometric hashing and cluster reassignment
+        
+        # Create new radii distribution using a hybrid of cluster-based and geometric hashing strategies
+        # Use a graph-based approach where we allow radii to expand based on topological relationships
+        
+        # Use a combination of graph-based expansion and geometric hashing
+        # Generate new radii with a graph-based expansion based on topological properties
+        
+        # Create new radii using geometric hashing and cluster expansion
+        # Use cluster expansion as a form of topological reconfiguration
+        new_radii = radii.copy()
+        
+        # Compute distances between all pairs of circles
+        dists = np.zeros((n, n))
+        for i in range(n):
+            for j in range(n):
+                dx = centers[i, 0] - centers[j, 0]
+                dy = centers[i, 1] - centers[j, 1]
+                dists[i, j] = np.sqrt(dx**2 + dy**2)
+        
+        # For each circle, compute the sum of reciprocal distances to neighbors (to determine importance)
+        sum_reciprocal = np.zeros(n)
+        for i in range(n):
+            # Avoid self-distance calculation
+            if i >= n:
+                continue
+            dists_filtered = [dists[i, j] for j in range(n) if j != i]
+            if dists_filtered:
+                sum_reciprocal[i] = np.sum(1.0 / np.array(dists_filtered))
+            else:
+                sum_reciprocal[i] = 0.0
+        
+        # Normalize the sum_reciprocal to create a weight for each circle for expansion
+        sum_reciprocal_norm = sum_reciprocal / np.max(sum_reciprocal) if np.max(sum_reciprocal) > 0 else np.zeros(n)
+        
+        # Calculate the total radius sum to determine expansion bounds
+        total_radius = np.sum(radii)
+        
+        # For the topological reconfiguration phase, we will allow expansion with a geometric hashing strategy that ensures
+        # the expansion is spatially feasible while keeping all circles non-overlapping and inside the unit square
+        
+        # Use the geometric hashing strategy with Poisson disk sampling to expand the most important circles
+        expansion_factor = 0.003  # Small expansion factor to avoid over-expansion
+        for i in range(n):
+            # Expand the circle based on its importance (sum_reciprocal)
+            if sum_reciprocal_norm[i] < 0.75:  # Only expand low-importance circles
+                new_radii[i] = np.min([radii[i] + expansion_factor * 1.2, 0.5])  # Ensure maximum radius is 0.5
+        
+        # Create new decision vector
+        v_new = v.copy()
+        v_new[2::3] = new_radii
+        
+        # Run a final optimization with the modified radii and spatial constraints
+        res = minimize(neg_sum_radii, v_new, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 400, "ftol": 1e-11})
+    
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())
+```

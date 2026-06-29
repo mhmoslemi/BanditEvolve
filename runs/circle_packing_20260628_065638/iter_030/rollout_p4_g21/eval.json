@@ -1,0 +1,21 @@
+{
+  "record": {
+    "kind": "mutate",
+    "band": "elite",
+    "arm_idx": 5,
+    "arm_source": "reflection",
+    "outcome": "invalid:eval",
+    "value": null,
+    "dmu": null,
+    "dsigma": null
+  },
+  "eval": {
+    "per_seed": {
+      "0": 0.0
+    },
+    "value": 0.0,
+    "valid": false,
+    "raw": null,
+    "msg": "run_failed:Expected 2D array, got 1D array instead:\narray=[0.07869122 0.08043865 0.0601318  0.10032812 0.09685984 0.10107572\n 0.08048552 0.06554383 0.07815249 0.10192103 0.1213152  0.10922532\n 0.11381552 0.07490025 0.10236335 0.07284653 0.09077003 0.11095834\n 0.12010383 0.12548826 0.12553883 0.11302034 0.13148669 0.0889084\n 0.05653546 0.10781388].\nReshape your data either using array.reshape(-1, 1) if your data has a single feature or array.reshape(1, -1) if it contains a single sample."
+  }
+}

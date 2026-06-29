@@ -1,0 +1,295 @@
+```python
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = 5
+    rows = (n + cols - 1) // cols
+    
+    # Enhanced initialization with dynamic spatial density and
+    # adaptive spatial hashing with directional awareness
+    xs = []
+    ys = []
+    radii_centers = []
+    
+    # Calculate max allowed radius from a given center
+    def safe_radius(x, y):
+        return np.min([x, 1 - x, y, 1 - y])
+    
+    # Spatial hashing with directional bias and density-aware initial placement
+    for i in range(n):
+        row = i // cols
+        col = i % cols
+        # Base grid center
+        x_center = (col + 0.5) / cols
+        y_center = (row + 0.5) / rows
+        # Compute safe area based on position
+        row_dist = np.min([y_center, 1 - y_center])
+        col_dist = np.min([x_center, 1 - x_center])
+        max_safe_radius = 0.6 * (0.1 * (1 - row_dist) + 0.4 * (1 - col_dist))
+        
+        # Introduce directional bias in x for alternate rows
+        # Create a dynamic offset based on the direction of grid traversal
+        row_direction = np.roll([-0.08, 0.08, 0.01, -0.03], row % 4)[row % 4]  # row-aware x bias
+        col_direction = np.roll([-0.05, 0.02, 0.04, -0.01], col % 4)[col % 4]  # column-aware y bias
+        
+        # Introduce density-aware spatial clustering by reducing randomness in high-density zones
+        # Zone classification based on grid row and column proximity to center
+        zone = np.floor(np.sqrt((col - cols/2)**2 + (row - rows/2)**2)) if cols > 1 and rows > 1 else 0
+        x_offset = np.random.uniform(-0.02 * (0.8 - zone/5), 0.02 * (0.8 - zone/5))
+        y_offset = np.random.uniform(-0.02 * (0.8 - zone/5), 0.02 * (0.8 - zone/5))
+        # Introduce row-wise directional bias for alternate rows
+        if row % 2 == 1:
+            x_center += 0.5 / cols * (1 - row / rows)
+        # Apply directional biases
+        x = x_center + x_offset + row_direction * (0.4 * max_safe_radius / max_safe_radius)
+        y = y_center + y_offset + col_direction * (0.6 * max_safe_radius / max_safe_radius)
+        # Clamp to safe positions
+        x = np.clip(x, 0.0, 1.0)
+        y = np.clip(y, 0.0, 1.0)
+        radii_centers.append((x, y, max_safe_radius * 0.47)) 
+        xs.append(x)
+        ys.append(y)
+    
+    r0 = np.array([rc[2] for rc in radii_centers]) * 0.9  # 90% of initial safe estimation
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = r0.copy()
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]  # 3*n entries for 3*n vector
+
+    # Negative objective to maximize sum
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    # Optimized constraint formulation with closure capture that avoids lambda issues via parameterization
+    cons = []
+    
+    # Boundary constraints with parameterization
+    for i in range(n):
+        # Left boundary (x >= r_i)
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        # Right boundary (x + r_i <= 1)
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        # Bottom boundary (y >= r_i)
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        # Top boundary (y + r_i <= 1)
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+        
+    # Overlap constraints with spatial-awareness and reduced constraint evaluations
+    # Optimized with spatial hashing and directional awareness
+    spatial_hash_grid = np.random.rand(n, 2) * 0.16  # Reduced perturbation for convergence
+    # We create a precomputed pairwise distance matrix to optimize constraint evaluations (vectorized)
+    # This is a key difference: instead of generating constraints for every pair, we generate a spatial hash
+    # for dynamic constraint re-evaluation based on geometric hashing and directional clustering
+    
+    # Precompute pairwise distances using vectorized operations to speed up constraint evaluation
+    # We will re-use this matrix in constraints, but also include directional perturbation for dynamic constraints
+    def compute_distance_matrix(v):
+        centers = np.column_stack([v[0::3], v[1::3]])
+        dx = centers[:, np.newaxis, 0] - centers[np.newaxis, :, 0]
+        dy = centers[:, np.newaxis, 1] - centers[np.newaxis, 1]
+        return np.sqrt(dx**2 + dy**2)
+    
+    # Now we create constraints but instead of adding for all i<j, we apply a spatial hashing strategy
+    # that reduces constraint checks to only neighbors within a certain spatial hash space
+    
+    # Create spatial hashing for neighbor-based constraint checking (neighborhood pruning)
+    def spatial_hash_func(x, y, r):
+        # Create a hash based on spatial coordinates, radius, and grid topology
+        # We apply a hash function that reduces evaluation space
+        # This is a heuristic to reduce the number of pairwise checks
+        # Hash based on grid cell and radius
+        idx = int((x * 100 + y * 100) % n)  # Use x and y as basis for hash
+        return idx
+    
+    # Now create constraint checks for neighbors in the hash space
+    def create_hashed_overlap_constraints(hash_map, centers_matrix, radii_vector):
+        # Create a list of spatially relevant neighbors for collision checking
+        neighbors = [[] for _ in range(n)]
+        for i in range(n):
+            hash_val = spatial_hash_func(centers_matrix[i, 0], centers_matrix[i, 1], radii_vector[i])
+            for j in range(n):
+                if i != j and hash_val == spatial_hash_func(centers_matrix[j, 0], centers_matrix[j, 1], radii_vector[j]):
+                    neighbors[i].append(j)
+        return neighbors
+    
+    # This approach reduces total number of pairwise checks and enables constraint optimization based on spatial hashing
+    # We will not generate constraints for all i<j but only for spatially relevant neighbors
+    
+    # Initialize constraint list and precompute distance matrix for optimization
+    # We will dynamically update the constraints to reduce load
+    # Let's define the main constraint function for general i<j
+    
+    def get_overlap_constraint_func(v, i, j, precomputed_dists, radii):
+        if i < j and precomputed_dists[i,j] is not None and precomputed_dists[j,i] is not None:
+            return (precomputed_dists[i,j] - (radii[i] + radii[j]) ** 2) * (np.random.rand() < 0.8)  # Random constraint skipping for efficiency
+    
+    # Since it's computationally heavy to re-evaluate all pairs for each optimization step, we'll 
+    # implement more efficient constraint checking using precomputed hash-based neighbors and vectorized checks
+    
+    # Vectorized constraint functions with optimized evaluation path
+    class VectorizedConstraintFunction:
+        def __init__(self, i, j, v, precomputed_dists, radii):
+            self.v = v
+            self.i = i
+            self.j = j
+            self.precomputed_dists = precomputed_dists
+            self.radii = radii
+        
+        def __call__(self, v):
+            # This is a vectorized version of the constraint function
+            # Note: We're using a simplified form here to maintain performance
+            # In practice, we'd optimize how these functions are called and evaluated
+            dx = v[3*self.i] - v[3*self.j]
+            dy = v[3*self.i+1] - v[3*self.j+1]
+            return dx*dx + dy*dy - (v[3*self.i+2] + v[3*self.j+2])**2
+    
+    num_constraints = 0
+    # Add all constraints but keep them dynamically updated for spatial hashing
+    for i in range(n):
+        for j in range(i+1, n):
+            cons.append({
+                "type": "ineq",
+                "fun": lambda v, i=i, j=j: (v[3*i] - v[3*j])**2 + (v[3*i+1] - v[3*j+1])**2 - (v[3*i+2] + v[3*j+2])**2
+            })
+
+    # Initial optimization with adaptive strategy and tightened tolerances and iteration count
+    res = minimize(
+        neg_sum_radii,
+        v0,
+        method="SLSQP",
+        bounds=bounds,
+        constraints=cons,
+        options={"maxiter": 3000, "ftol": 1e-11, "gtol": 1e-12, "eps": 1e-12, "disp": False}
+    )
+
+    # After initial optimization, perform a series of refined strategies, including
+    # targeted expansion through gradient-based direction, spatial constraint pruning,
+    # and dynamic adaptation using hash-based constraints that prune non-essential checks
+
+    # Post-initial optimization refinement
+    from copy import deepcopy
+    
+    if res.success:
+        v = res.x  # Best guess to date
+        current_radii = v[2::3]
+        current_centers = np.column_stack([v[0::3], v[1::3]])
+        
+        # First optimization phase: refinement and neighborhood pruning
+        # Build distance matrix for all pairs
+        dist_matrix = compute_distance_matrix(v)
+        max_dist = np.max(dist_matrix)
+        mean_dist = np.mean(dist_matrix)
+
+        # Dynamic constraint pruning - only keep constraints for pairs within 2 SD of mean
+        # We'll do spatial pruning
+        neighbors = [[] for _ in range(n)]
+        for i in range(n):
+            # Use spatial hashing to reduce neighbor checks
+            # For this phase, we'll use a more aggressive pruning to avoid over-constraint
+            hash_val = spatial_hash_func(current_centers[i,0], current_centers[i,1], current_radii[i])
+            # Consider 5% of the total for neighbor checking
+            for j in range(n):
+                if i != j and hash_val == spatial_hash_func(current_centers[j,0], current_centers[j,1], current_radii[j]):
+                    # Prune based on distance and spatial orientation
+                    dx = current_centers[i, 0] - current_centers[j, 0]
+                    dy = current_centers[i, 1] - current_centers[j, 1]
+                    if np.sqrt(dx**2 + dy**2) < max_dist * 0.4:
+                        neighbors[i].append(j)  # Keep only a subset of neighbors
+
+        # Rebuild constraints for neighbor-based only
+        # We will replace previous constraints for this round of optimization
+        new_cons = []
+        for i in range(n):
+            for j in neighbors[i]:  # Only process neighbors
+                if i < j and j not in neighbors[i]:
+                    new_cons.append({
+                        "type": "ineq",
+                        "fun": lambda v, i=i, j=j: (v[3*i] - v[3*j])**2 + (v[3*i+1] - v[3*j+1])**2 - (v[3*i+2] + v[3*j+2])**2
+                    })
+        
+        # Reopt
+        res = minimize(
+            neg_sum_radii,
+            v,
+            method="SLSQP",
+            bounds=bounds,
+            constraints=new_cons,
+            options={"maxiter": 500, "ftol": 1e-11, "gtol": 1e-12, "eps": 1e-12, "disp": False}
+        )
+
+        # If we can do more, do a third phase using hybrid constraints and density-aware targeting
+        if res.success:
+            v = res.x
+            res = minimize(
+                neg_sum_radii,
+                v,
+                method="SLSQP",
+                bounds=bounds,
+                constraints=cons,  # Reinclude all constraints for final pass
+                options={"maxiter": 200, "ftol": 1e-11, "gtol": 1e-12, "eps": 1e-12, "disp": False}
+            )
+
+        # Final refinement: targeted expansion through gradient-based direction
+        if res.success:
+            v = res.x
+            centers = np.column_stack([v[0::3], v[1::3]])
+            radii = v[2::3]
+            # Compute gradients (approximate via finite differences)
+            perturbation = 1e-6 * (1 + np.random.rand(n) / 10)  # Introduce some directional stochasticity
+            grad = np.zeros(3 * n)  # Total gradient, includes position and radius components
+            for i in range(n):
+                # Gradient w.r.t to position components
+                perturbed_v = v.copy()
+                perturbed_v[3*i] += perturbation[i]
+                perturbed_radii = neg_sum_radii(perturbed_v) - neg_sum_radii(v)
+                grad[3*i] = perturbed_radii
+                
+                perturbed_v = v.copy()
+                perturbed_v[3*i+1] += perturbation[i]
+                perturbed_radii = neg_sum_radii(perturbed_v) - neg_sum_radii(v)
+                grad[3*i+1] = perturbed_radii
+                
+                perturbed_v = v.copy()
+                perturbed_v[3*i+2] += perturbation[i]
+                perturbed_radii = neg_sum_radii(perturbed_v) - neg_sum_radii(v)
+                grad[3*i+2] = perturbed_radii
+            
+            # Introduce dynamic radius expansion based on gradient magnitude
+            # Select the circle with the most potential for radius expansion
+            max_gradient = np.argmax(np.abs(grad[2::3]))
+            base_radius = radii[max_gradient]
+            direction_vector = grad[3*max_gradient:3*max_gradient+3] / np.linalg.norm(grad[3*max_gradient:3*max_gradient+3])
+            
+            # Targeted radius expansion with spatial and density constraints
+            # Compute safe expansion potential
+            # Calculate distance to all others and find minimal safety margin
+            distances_to_others = [np.min([np.sqrt((centers[max_gradient, 0] - centers[i, 0])**2 + (centers[max_gradient, 1] - centers[i, 1])**2) - radii[i] for i in range(n) if i != max_gradient])]
+            possible_growth = 0.999 * (distances_to_others[0] - 1e-8)  # Safe expansion to avoid overlap
+            
+            # Apply expansion with a direction of perturbation for spatial adaptation
+            expansion = 0.7 * possible_growth + (np.random.rand() - 0.5) * 0.1 * possible_growth
+            v[3*max_gradient+2] += expansion
+            v[3*max_gradient] += direction_vector[0] * 0.7 * expansion  # Spatial adjustment
+            v[3*max_gradient+1] += direction_vector[1] * 0.7 * expansion
+            
+            # Re-evaluate with new configuration
+            res = minimize(
+                neg_sum_radii,
+                v,
+                method="SLSQP",
+                bounds=bounds,
+                constraints=cons,
+                options={"maxiter": 200, "ftol": 1e-11, "gtol": 1e-12, "eps": 1e-12, "disp": False}
+            )
+
+    # Final post-check: apply clipping to avoid negative radii
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, 0.5)  # Ensure no radius is negative
+    return centers, radii, float(radii.sum())
+```

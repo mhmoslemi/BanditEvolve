@@ -1,0 +1,195 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    
+    # Base grid configuration (with enhanced spatial hierarchy to improve expansion potential)
+    cols = 5
+    rows = (n + cols - 1) // cols
+    base_col_width = 1.0 / cols
+    base_row_height = 1.0 / rows
+
+    # Spatial initialization: staggered grid with adaptive offsetting
+    # Use a more refined grid to encourage expansion through better spatial distribution
+    # We'll also create a 'dynamic grid' that allows for adaptive scaling of grid cells
+    xs = []
+    ys = []
+    grid_cell_sizes = np.random.uniform(0.9, 1.1, size=n)  # Slight variation to encourage movement
+    
+    for i in range(n):
+        row = i // cols
+        col = i % cols
+        x_center = (col + 0.5) / cols
+        y_center = (row + 0.5) / rows
+
+        # Use dynamic cell sizing to better distribute space
+        # Adjust for row/column spacing to avoid overcrowding
+        # Add spatial noise to reduce symmetry and increase search space
+        x_offset = np.random.uniform(-0.04, 0.04)
+        y_offset = np.random.uniform(-0.04, 0.04)
+        x = x_center + x_offset
+        y = y_center + y_offset
+        
+        # Stagger rows for better utilization of space in 2D packing
+        if row % 2 == 1:
+            x += base_col_width * 0.4  # Adjust for staggered layout, not full half
+        xs.append(x)
+        ys.append(y)
+    
+    # Initialize radii with a more aggressive base value to enable expansion
+    # Base radius is larger to allow room for growth while still respecting boundaries
+    r_initial = 0.35 / cols - 1e-3
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = np.full(n, r_initial)
+
+    # Ensure precise 3*n length for bounds and decision vector
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    # Objective function to minimize negative total radius to maximize packing
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    # Vectorized constraint definitions for boundaries using lambda with captured i
+    cons = []
+    for i in range(n):
+        # Left + radius <= 1
+        def left_bound_func(v, i=i):
+            return 1.0 - v[3*i] - v[3*i+2]
+        cons.append({"type": "ineq", "fun": left_bound_func})
+        # Right - radius >= 0
+        def right_bound_func(v, i=i):
+            return v[3*i] - v[3*i+2]
+        cons.append({"type": "ineq", "fun": right_bound_func})
+        # Bottom + radius <= 1
+        def bottom_bound_func(v, i=i):
+            return 1.0 - v[3*i+1] - v[3*i+2]
+        cons.append({"type": "ineq", "fun": bottom_bound_func})
+        # Top - radius >= 0
+        def top_bound_func(v, i=i):
+            return v[3*i+1] - v[3*i+2]
+        cons.append({"type": "ineq", "fun": top_bound_func})
+    
+    # Vectorized overlap constraints using vectorized computation
+    # Avoid lambda closures to ensure numerical safety and speed
+    # Pre-allocate for speed by using index mapping
+    # This is more secure than using lambda for i,j in constraints
+    for i in range(n):
+        for j in range(i + 1, n):
+            # Compute distance squared constraint
+            # Function returns distance squared - (r_i + r_j)^2
+            def overlap_func(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                return dx*dx + dy*dy - (v[3*i+2] + v[3*j+2])**2
+            cons.append({"type": "ineq", "fun": overlap_func})
+    
+    # Initial optimization with increased max iterations and tighter tolerance
+    # Use L-BFGS-B for faster convergence in this phase
+    res = minimize(neg_sum_radii, v0, method="L-BFGS-B", bounds=bounds,
+                   constraints=cons, options={"maxiter": 2000, "ftol": 1e-12, "gtol": 1e-9})
+    
+    # Perturbation phase: spatial reconfiguration + radius expansion
+    if res.success:
+        v = res.x
+        radii = v[2::3]
+        centers = np.column_stack([v[0::3], v[1::3]])
+        
+        # Step 1: Create a spatial hash grid that forces local geometric diversity
+        # This grid applies non-uniform scaling and spatial perturbation to circles
+        # Perturbations are scaled by the local space availability
+        # Use a random seed for repeatable but effective perturbation
+        perturbation_scale = 0.045
+        spatial_hash = np.random.rand(n, 2) * 0.06
+        perturbation_vector = np.zeros_like(v)
+        
+        for i in range(n):
+            # Apply spatial hash perturbation scaled by radius and grid spacing
+            r = radii[i]
+            perturbation_vector[3*i] += spatial_hash[i, 0] * r
+            perturbation_vector[3*i+1] += spatial_hash[i, 1] * r
+        
+        # Apply perturbation and reoptimize
+        perturbed_v = v + perturbation_vector
+        # Clamp within [0,1] and [1e-4, 0.5] for all elements
+        perturbed_v = np.clip(perturbed_v, 0.0, 1.0)
+        perturbed_v[2::3] = np.clip(perturbed_v[2::3], 1e-4, 0.5)
+        
+        # Run second phase with tighter tolerances
+        res = minimize(neg_sum_radii, perturbed_v, method="L-BFGS-B", bounds=bounds,
+                       constraints=cons, options={"maxiter": 1500, "ftol": 1e-12, "gtol": 1e-9})
+    
+    # Final optimization phase with radius expansion strategy and local optimization
+    if res.success:
+        v = res.x
+        radii = v[2::3]
+        centers = np.column_stack([v[0::3], v[1::3]])
+        dists = np.zeros((n, n))
+        
+        # Optimize performance using vectorized operations for distance matrix
+        dx = centers[:, np.newaxis, 0] - centers[np.newaxis, :, 0]
+        dy = centers[:, np.newaxis, 1] - centers[np.newaxis, :, 1]
+        dists = np.sqrt(dx**2 + dy**2)
+        
+        # Find circle with maximum minimal distance to other circles (most spatially unconstrained)
+        min_dists = np.min(dists, axis=1)
+        max_min_distance_idx = np.argmax(min_dists)
+        max_min_distance = min_dists[max_min_distance_idx]
+        
+        # Expand the most unconstrained circle while maintaining constraints
+        # First, calculate the current radius sum to track growth
+        current_total = np.sum(radii)
+        # Calculate how much we can expand the max-min circle
+        # Expand by 0.007 as a target, but distribute this to create a ripple effect
+        # Target total expansion: 0.007
+        target_total = current_total + 0.007
+        # Maximum expansion is limited by space constraints; this is just a heuristic
+        expansion_amount = (target_total - current_total) / n
+        
+        # Create expansion vector with targeted expansion on max-min circle
+        new_radii = radii.copy()
+        # Apply expansion with a slight over-optimization for exploration
+        # Over-optimizing by 1.2 times to promote novel configurations
+        new_radii[max_min_distance_idx] += expansion_amount * 1.2
+        # Spread expansion to others with varying intensity to maintain spatial integrity
+        for i in range(n):
+            if i != max_min_distance_idx:
+                # Introduce variance to avoid perfect symmetry and encourage spatial diversity
+                random_factor = np.random.uniform(0.8, 1.2)
+                new_radii[i] += expansion_amount * random_factor
+        
+        # Apply expanded radii and re-optimize with local constraint tightening
+        # Create a new decision vector with new radii
+        v_new = v.copy()
+        v_new[2::3] = new_radii
+        
+        # Re-check constraints with new radii to ensure feasibility before optimization
+        # This check is crucial to avoid optimization failure due to infeasible starting point
+        is_feasible = True
+        for i in range(n):
+            for j in range(i+1, n):
+                dx = v_new[3*i] - v_new[3*j]
+                dy = v_new[3*i+1] - v_new[3*j+1]
+                dist = np.sqrt(dx**2 + dy**2)
+                if dist < (v_new[3*i+2] + v_new[3*j+2]) - 1e-10:
+                    is_feasible = False
+                    break
+            if not is_feasible:
+                break
+        
+        if is_feasible:
+            # Run final optimization with tighter constraints and high precision
+            res = minimize(neg_sum_radii, v_new, method="L-BFGS-B", bounds=bounds,
+                           constraints=cons, options={"maxiter": 2500, "ftol": 1e-12, "gtol": 1e-9})
+        else:
+            # If infeasible, use the current result with a small decay in expansion
+            res = minimize(neg_sum_radii, v, method="L-BFGS-B", bounds=bounds,
+                           constraints=cons, options={"maxiter": 500, "ftol": 1e-12, "gtol": 1e-9})
+    
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, 0.5)
+    return centers, radii, float(radii.sum())

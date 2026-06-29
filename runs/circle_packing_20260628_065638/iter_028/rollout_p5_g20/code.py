@@ -1,0 +1,177 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    
+    # Optimal layout structure optimization with hybrid geometry and dynamic spatial hashing
+    # We'll use a combination of hexagonal grid, dynamic spatial perturbation and constrained expansion
+    
+    # Dynamic grid configuration based on number of circles for better density
+    cols = 5
+    rows = (n + cols - 1) // cols
+    
+    # Initialize cluster-aware positions with randomized geometric clustering
+    xs = []
+    ys = []
+    for i in range(n):
+        row = i // cols
+        col = i % cols
+        # Base geometric coordinates with staggered pattern
+        base_x = (col + 0.5) / cols * 0.85
+        base_y = (row + 0.5) / rows * 0.85
+        # Add cluster-aware spatial noise
+        cluster_factor = 0.03
+        spatial_noise = np.random.rand(2) * cluster_factor
+        x = base_x + spatial_noise[0]
+        y = base_y + spatial_noise[1]
+        # Staggered row offset to prevent overlap at grid points
+        if row % 2 == 1:
+            x += 0.4 / cols
+        xs.append(x)
+        ys.append(y)
+    
+    # Base radius calculation with dynamic adjustment
+    r0 = 0.35 / cols - 1e-3
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = np.full(n, r0)
+    
+    # Define strict bounds for all 3 * n parameters
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-6, 0.5)]  # Radius starts at 1e-6 to avoid issues
+        
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+    
+    # Vectorized constraints with lambda capture to prevent closure issues
+    cons = []
+    for i in range(n):
+        # Left edge constraint (x - r >= 0)
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        # Right edge constraint (x + r <= 1)
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        # Bottom edge constraint (y - r >= 0)
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        # Top edge constraint (y + r <= 1)
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+    
+    for i in range(n):
+        for j in range(i + 1, n):
+            # Overlap constraint (distance between centers >= r_i + r_j)
+            # Avoid squaring to reduce numerical instability
+            cons.append({
+                "type": "ineq", 
+                "fun": lambda v, i=i, j=j: 
+                    ((v[3*i] - v[3*j])**2 + (v[3*i+1] - v[3*j+1])**2) 
+                    - (v[3*i+2] + v[3*j+2])**2
+            })
+    
+    # Phase 1: Initial optimization with strong convergence
+    res = minimize(
+        neg_sum_radii, 
+        v0, 
+        method="SLSQP", 
+        bounds=bounds,
+        constraints=cons,
+        options={"maxiter": 1000, "ftol": 1e-10, "gtol": 1e-10, "eps": 1e-9}
+    )
+    
+    # Phase 2: Asymmetric reconfiguration with adaptive spatial hashing and guided expansion
+    if res.success:
+        v = res.x
+        radii = v[2::3]
+        centers = np.column_stack([v[0::3], v[1::3]])
+        
+        # Compute current total and isolation metrics for expansion
+        total_sum = np.sum(radii)
+        dists = np.zeros((n, n))
+        
+        # Vectorized distance calculation
+        dx = centers[:, np.newaxis, 0] - centers[np.newaxis, :, 0]
+        dy = centers[:, np.newaxis, 1] - centers[np.newaxis, :, 1]
+        dists = np.sqrt(dx**2 + dy**2)
+        
+        # Calculate isolation metric (inverse of total interaction)
+        min_interactions = np.sum(1 / (dists + 1e-8), axis=1)
+        least_constrained_idx = np.argmax(min_interactions)
+        
+        # Phase 3: Dynamic spatial hashing perturbation
+        spatial_hash = np.random.rand(n, 2) * 0.04
+        perturbed_v = v.copy()
+        for i in range(n):
+            # Spatial perturbation based on radius and spatial position
+            radius_factor = radii[i] / np.mean(radii)
+            direction = np.array([spatial_hash[i, 0], spatial_hash[i, 1]])
+            perturbed_v[3*i] += direction[0] * radius_factor * 0.5
+            perturbed_v[3*i+1] += direction[1] * radius_factor * 0.5
+        
+        # Phase 4: Re-evaluate with spatial perturbation
+        res = minimize(
+            neg_sum_radii, 
+            perturbed_v, 
+            method="SLSQP", 
+            bounds=bounds,
+            constraints=cons,
+            options={"maxiter": 400, "ftol": 1e-11, "gtol": 1e-11, "eps": 1e-10}
+        )
+        
+        if res.success:
+            v = res.x
+            radii = v[2::3]
+            centers = np.column_stack([v[0::3], v[1::3]])
+            
+            # Phase 5: Guided targeted radius expansion with controlled expansion
+            # Calculate expansion amount with safety margin
+            expansion_amount = 0.005  # Control expansion based on known margin
+            growth_factor = expansion_amount / (n - 1)
+            
+            # Create an expansion vector with targeted expansion
+            new_radii = radii.copy()
+            new_radii[least_constrained_idx] += growth_factor * 1.3  # Over-allocate to trigger reconfiguration
+            for i in range(n):
+                if i != least_constrained_idx:
+                    new_radii[i] += growth_factor * (1.0 + 0.1 * np.random.rand())  # Stochastic expansion
+                
+            # Apply expansion with constraint validation loop
+            while True:
+                # Create new vector with the updated radii
+                expanded_v = v.copy()
+                expanded_v[2::3] = new_radii
+                
+                # Extract new centers and check for overlaps
+                expanded_centers = np.column_stack([expanded_v[0::3], expanded_v[1::3]])
+                overlap_detected = False
+                for i in range(n):
+                    for j in range(i + 1, n):
+                        dx = expanded_centers[i, 0] - expanded_centers[j, 0]
+                        dy = expanded_centers[i, 1] - expanded_centers[j, 1]
+                        dist = np.sqrt(dx * dx + dy * dy)
+                        if dist < new_radii[i] + new_radii[j] - 1e-12:
+                            overlap_detected = True
+                            break
+                    if overlap_detected:
+                        break
+                if not overlap_detected:
+                    break
+                else:
+                    # Reduce expansion slightly if overlap occurs
+                    scale = 0.98  # Controlled reduction to ensure validity
+                    new_radii = radii + (new_radii - radii) * scale
+            
+            # Final optimization on expanded parameters
+            res = minimize(
+                neg_sum_radii, 
+                expanded_v, 
+                method="SLSQP", 
+                bounds=bounds,
+                constraints=cons,
+                options={"maxiter": 400, "ftol": 1e-11, "gtol": 1e-11, "eps": 1e-10}
+            )
+    
+    # Final fallback if optimization fails
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())

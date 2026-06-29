@@ -1,0 +1,231 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = 5
+    rows = (n + cols - 1) // cols
+    
+    # Use a refined initialization with cluster-based spatial distribution and adaptive perturbation
+    xs = []
+    ys = []
+    cluster_centers = []
+    for row in range(rows):
+        for col in range(cols):
+            # Define cluster centers with alternating row offsets
+            base_x = (col + 0.5) / cols
+            base_y = (row + 0.5) / rows
+            if row % 2 == 1:  # Staggered grid
+                base_x += 0.5 / cols
+            cluster_centers.append((base_x, base_y))
+    
+    # Assign 1-2 circles to each cluster based on proximity and spatial balance
+    cluster_indices = []
+    for i in range(n):
+        cluster_idx = i % len(cluster_centers)
+        cluster_indices.append(cluster_idx)
+    
+    # Create base centers with refined perturbation
+    xs = [center[0] for center in cluster_centers]
+    ys = [center[1] for center in cluster_centers]
+    # Add randomized offsets to break symmetry and cluster tightly
+    random_offset = np.random.uniform(-0.04, 0.04, size=(n, 2))
+    xs = np.array(xs) + random_offset[np.array(cluster_indices), 0]
+    ys = np.array(ys) + random_offset[np.array(cluster_indices), 1]
+    
+    # Calculate initial radii with cluster-specific base
+    radii_base = 0.45 / cols - 1e-3
+    r0 = np.zeros(n) + radii_base
+    # Add minimal radius boost to cluster edges
+    for i in range(n):
+        if abs(xs[i] - 0.0) < 1e-3 or abs(xs[i] - 1.0) < 1e-3:
+            r0[i] += 5e-5
+        if abs(ys[i] - 0.0) < 1e-3 or abs(ys[i] - 1.0) < 1e-3:
+            r0[i] += 5e-5
+    
+    # Build initial vector
+    v0 = np.empty(3 * n)
+    v0[0::3] = xs
+    v0[1::3] = ys
+    v0[2::3] = r0
+    
+    # Setup bounds with strict constraints on circle positions and radii
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]  # 3*n entries for 3*26=78
+    
+    def neg_sum_radii(v):
+        # Penalized sum of radii with adaptive scaling based on cluster balance
+        radii = v[2::3]
+        # Cluster weight matrix for prioritization
+        cluster_weights = np.zeros(n)
+        cluster_count = np.bincount(cluster_indices)
+        for i in range(n):
+            cluster_count_idx = cluster_count[cluster_indices[i]]
+            cluster_weights[i] = 1.0 + (0.2 * (cluster_count_idx - 1))
+        return -np.sum(radii * cluster_weights)
+    
+    # Define constraints with lambda closures and bound checks
+    cons = []
+    # Boundary constraints
+    for i in range(n):
+        # Left boundary
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        # Right boundary
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        # Bottom boundary
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+        # Top boundary
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+    
+    # Overlap constraints with optimized pairwise evaluation
+    # Precompute cluster proximity to identify highly interacting circles
+    cluster_proximity = []
+    for i in range(n):
+        row_i = i // cols
+        col_i = i % cols
+        for j in range(n):
+            row_j = j // cols
+            col_j = j % cols
+            dx = (col_i - col_j) * (1.0 / cols)
+            dy = (row_i - row_j) * (1.0 / rows)
+            cluster_proximity.append((i, j, dx*dx + dy*dy))
+    cluster_proximity = np.array(cluster_proximity)
+    
+    # Select top 6 most interacting cluster pairs and their indices
+    interacting_pairs = np.argsort(cluster_proximity[:, 2])[:6]
+    interacting_i = np.unique(cluster_proximity[interacting_pairs, [0,1]])
+    
+    # Add special constraints for these circles
+    for ii in interacting_i:
+        for jj in interacting_i:
+            if ii < jj:
+                if ii in interacting_i and jj in interacting_i:
+                    cons.append({"type": "ineq", 
+                                 "fun": lambda v, ii=ii, jj=jj:
+                                     (v[3*ii] - v[3*jj])**2 + (v[3*ii+1] - v[3*jj+1])**2 
+                                     - (v[3*ii+2] + v[3*jj+2])**2})
+    
+    # Regular overlap checking
+    for i in range(n):
+        for j in range(i+1, n):
+            # If not part of the special interaction list, apply constraint
+            if i not in interacting_i and j not in interacting_i and i != j:
+                cons.append({"type": "ineq", 
+                             "fun": lambda v, i=i, j=j:
+                                 (v[3*i] - v[3*j])**2 + (v[3*i+1] - v[3*j+1])**2 
+                                 - (v[3*i+2] + v[3*j+2])**2})
+    
+    # Initial optimization with adaptive parameters
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 500, "ftol": 1e-10,
+                                             "eps": 1e-8, "disp": False})
+    
+    # Post-optimization reconfiguration: geometric dissection and topology reordering
+    if res.success:
+        v = res.x
+        radii = v[2::3]
+        centers = np.column_stack([v[0::3], v[1::3]])
+        
+        # Identify the two most interacting and least constrained circles
+        dists = np.zeros((n, n))
+        for i in range(n):
+            for j in range(n):
+                dx = centers[i, 0] - centers[j, 0]
+                dy = centers[i, 1] - centers[j, 1]
+                dists[i, j] = np.sqrt(dx*dx + dy*dy)
+        # For each circle, find min distance to others (least constrained)
+        min_dist = np.min(dists, axis=1)
+        least_constrained_idx = np.argmax(min_dist)
+        
+        # Identify the two most interacting circles
+        interaction = np.sum(dists, axis=1)
+        top_interacting_idx = np.argsort(interaction)[-2:]
+        
+        # Apply targeted geometric dissection on top two interacting circles
+        v_modified = v.copy()
+        for idx in top_interacting_idx:
+            # Add random perturbation to positions
+            v_modified[3*idx] += np.random.uniform(-0.06, 0.06)
+            v_modified[3*idx+1] += np.random.uniform(-0.06, 0.06)
+            # Adjust radii to maintain cluster balance
+            cluster_idx = cluster_indices[idx]
+            cluster_count = np.bincount(cluster_indices)[cluster_idx]
+            new_radius = radii[idx] * (1.0 + 0.05 * (np.random.rand() - 0.5))
+            
+            # Apply radius expansion with cluster-based growth
+            # Cluster growth factor based on current radius distribution
+            mean_radius = np.mean(radii)
+            radius_scaling = 1.0 + (radii[idx] / mean_radius) * (np.random.rand() - 0.5)
+            v_modified[3*idx+2] = new_radius * radius_scaling
+        
+        # Reconfigure topology with new positions and radii
+        res = minimize(neg_sum_radii, v_modified, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 300, "ftol": 1e-10,
+                                                 "eps": 1e-8, "disp": False})
+    
+    # Final optimization with controlled expansion to least constrained circle
+    if res.success:
+        v = res.x
+        radii = v[2::3]
+        centers = np.column_stack([v[0::3], v[1::3]])
+        # Re-evaluate cluster constraint weights for expansion
+        cluster_weights = np.zeros(n)
+        cluster_count = np.bincount(cluster_indices)
+        for i in range(n):
+            cluster_count_idx = cluster_count[cluster_indices[i]]
+            cluster_weights[i] = 1.0 + (0.2 * (cluster_count_idx - 1))
+        
+        # Find the circle with the largest min distance to others (least constrained)
+        dists = np.zeros((n, n))
+        for i in range(n):
+            for j in range(n):
+                dx = centers[i, 0] - centers[j, 0]
+                dy = centers[i, 1] - centers[j, 1]
+                dists[i, j] = np.sqrt(dx*dx + dy*dy)
+        min_dist = np.min(dists, axis=1)
+        least_constrained_idx = np.argmax(min_dist)
+        
+        # Compute growth factor based on cluster weight
+        base_growth = 0.006 * (cluster_weights[least_constrained_idx] / np.sum(cluster_weights))
+        new_radius = radii[least_constrained_idx] + base_growth * 1.2
+        
+        # Apply expansion with constraint validation
+        # Create an expansion vector with soft constraints
+        expanded_v = v.copy()
+        expanded_v[3*least_constrained_idx+2] = new_radius
+        
+        # Validate and refine expansion while maintaining non-overlap
+        while True:
+            expanded_centers = np.column_stack([expanded_v[0::3], expanded_v[1::3]])
+            valid = True
+            for i in range(n):
+                for j in range(i+1, n):
+                    dx = expanded_centers[i, 0] - expanded_centers[j, 0]
+                    dy = expanded_centers[i, 1] - expanded_centers[j, 1]
+                    dist = np.sqrt(dx*dx + dy*dy)
+                    if dist < (expanded_v[3*i+2] + expanded_v[3*j+2] - 1e-10):
+                        valid = False
+                        break
+                if not valid:
+                    break
+            if valid:
+                break
+            else:
+                # If invalid, reduce expansion slightly
+                new_radius = radii[least_constrained_idx] + base_growth * 0.9
+                expanded_v[3*least_constrained_idx+2] = new_radius
+        
+        # Re-evaluate with new radii
+        res = minimize(neg_sum_radii, expanded_v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 300, "ftol": 1e-10,
+                                                 "eps": 1e-8, "disp": False})
+    
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    # Final radius clipping with minimal constraints
+    radii = np.clip(v[2::3], 1e-5, 0.5)
+    # Final validation pass for numerical stability
+    if np.isnan(radii).any():
+        # Fallback in case of corruption
+        radii = np.zeros_like(radii) + 0.01
+    return centers, radii, float(radii.sum())

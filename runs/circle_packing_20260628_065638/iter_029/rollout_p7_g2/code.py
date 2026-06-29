@@ -1,0 +1,174 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = 5
+    rows = (n + cols - 1) // cols
+    
+    # Optimize initial positions with randomized geometric clustering and adaptive staggering
+    xs = []
+    ys = []
+    for i in range(n):
+        row = i // cols
+        col = i % cols
+        x_center = (col + 0.5) / cols
+        y_center = (row + 0.5) / rows
+        
+        # Adaptive offset based on row spacing and col density
+        row_offset = (row % 2) * 0.6 / cols  # 60% of column spacing for alternate rows
+        col_offset = np.random.uniform(-0.15, 0.15)  # wider offset for initial disturbance
+        x = x_center + col_offset + row_offset
+        y = y_center + np.random.uniform(-0.15, 0.15)  # more variance in vertical position
+        
+        # Apply column boundary checks to ensure initial position validity
+        x = max(min(x, 1.0 - 0.02), 0.02)  # leave 2% padding for radius expansion
+        y = max(min(y, 1.0 - 0.02), 0.02)
+        xs.append(x)
+        ys.append(y)
+    
+    # Start with larger radius for more aggressive expansion
+    # Initial base radius is set to 0.48 / cols (double original base) and adjust with expansion
+    r0 = 0.48 / cols - 1e-3
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = np.full(n, r0)
+
+    # Strict bounds with tighter constraints for more effective optimization
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.45)]  # max radius adjusted to 0.45
+
+    # Create objective and constraints
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+    
+    # Vectorized constraints with lambda capture and proper binding
+    cons = []
+    for i in range(n):
+        # Left + radius <= 1
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        # Right - radius >= 0
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        # Bottom + radius <= 1
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+        # Top - radius >= 0
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+    
+    # Vectorized overlap constraints using lambda with captured i,j
+    for i in range(n):
+        for j in range(i + 1, n):
+            cons.append({"type": "ineq",
+                         "fun": lambda v, i=i, j=j: 
+                             (v[3*i] - v[3*j])**2 + (v[3*i+1] - v[3*j+1])**2 
+                             - (v[3*i+2] + v[3*j+2])**2})
+
+    # Initial optimization with increased max iterations and tighter tolerances
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 2500, "ftol": 1e-13, "gtol": 1e-10})
+
+    # Perform geometric dissection on the most dynamically interacting pair of circles
+    # First, identify the pair with the smallest inter-circle distance
+    if res.success:
+        v = res.x
+        centers = np.column_stack([v[0::3], v[1::3]])
+        radii = v[2::3]
+        dists = np.zeros((n, n))
+        
+        # Use vectorized broadcasting to compute all pairwise distances
+        dx = centers[:, np.newaxis, 0] - centers[np.newaxis, :, 0]
+        dy = centers[:, np.newaxis, 1] - centers[np.newaxis, :, 1]
+        dists = np.sqrt(dx**2 + dy**2)
+        
+        # Identify the pair with the smallest non-zero distance
+        non_zero_dists = dists[dists > 1e-8]
+        if len(non_zero_dists) > 0:
+            min_idx = np.unravel_index(np.argmin(dists[dists > 1e-8]), dists.shape)
+            i_pair, j_pair = min_idx[0], min_idx[1]
+            
+            # Create a copy of the current solution for geometric dissection
+            dissection_v = v.copy()
+            
+            # Apply a controlled perturbation to one circle
+            dissection_v[3*i_pair] += np.random.uniform(-0.05, 0.05)
+            dissection_v[3*i_pair+1] += np.random.uniform(-0.05, 0.05)
+            
+            # Apply a larger, more directional perturbation to the other circle
+            dissection_v[3*j_pair] += np.random.uniform(-0.2, 0.2)
+            dissection_v[3*j_pair+1] += np.random.uniform(-0.2, 0.2)
+            
+            # Re-evaluate with perturbed configuration
+            res = minimize(neg_sum_radii, dissection_v, method="SLSQP", bounds=bounds,
+                           constraints=cons, options={"maxiter": 400, "ftol": 1e-12, "gtol": 1e-10})
+
+    # Implement targeted radius expansion for the least constrained circle
+    # Also enforce novel adjacency constraint to trigger reordering
+    if res.success:
+        v = res.x
+        centers = np.column_stack([v[0::3], v[1::3]])
+        radii = v[2::3]
+        
+        # Identify least constrained circle with respect to distance to others
+        # Compute minimum distance to all other circles
+        min_dists = np.min(np.sqrt((centers[:, np.newaxis, 0] - centers[np.newaxis, :, 0])**2 + 
+                                 (centers[:, np.newaxis, 1] - centers[np.newaxis, :, 1])**2), axis=1)
+        
+        # Find the circle with the maximum minimum distance (most constrained)
+        # Actually, we want the circle with the smallest min distance (least constrained)
+        least_constrained_idx = np.argmin(min_dists)
+        
+        # Calculate the current total and apply targeted expansion
+        current_total = np.sum(radii)
+        expansion_factor = np.min( np.array([0.005, (0.15 / current_total) * (1 - 0.15 / np.mean(radii))]) )
+        
+        # Create a new radii vector with expansion
+        new_radii = radii.copy()
+        # Use a dynamic radius expansion that respects non-overlap while encouraging reordering
+        max_possible_radius = 0.45
+        for i in range(n):
+            if i != least_constrained_idx:
+                # Add expansion while ensuring no single circle grows beyond max
+                new_radii[i] = np.min([max_possible_radius, radii[i] + expansion_factor * (0.15 + 0.85 * np.random.rand())])
+        
+        # Apply radius expansion with additional constraint to trigger reordering
+        # Add an adjacency constraint: ensure the two most interacting circles don't have equal radii
+        # This creates a new constraint that encourages different spatial arrangements
+        # We enforce that radius[i_pair] != radius[j_pair] + 1e-4 (small delta for numerical stability)
+        # This is a soft constraint and only acts when radii start approaching each other
+        
+        # Reconstruct the decision vector with new radii
+        expanded_v = v.copy()
+        expanded_v[2::3] = new_radii
+        # Add soft adjacency constraint to force reordering
+        # Only activate if the two circles' radii are approaching equality
+        if (abs(new_radii[i_pair] - new_radii[j_pair]) < 1e-3):
+            cons.append({"type": "ineq", 
+                         "fun": lambda v, i=i_pair, j=j_pair:
+                             abs(v[3*i+2] - v[3*j+2]) - 1e-2})  # 1e-2 as a safety margin
+        
+        # Re-evaluate with expanded radii and new constraint
+        res = minimize(neg_sum_radii, expanded_v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 400, "ftol": 1e-12, "gtol": 1e-10})
+
+    # Final refinement to stabilize configuration
+    if res.success:
+        v = res.x
+        centers = np.column_stack([v[0::3], v[1::3]])
+        radii = v[2::3]
+        
+        # Apply boundary tightening and clipping to prevent numerical drift
+        for i in range(n):
+            # Ensure center stays within the square with a margin for radius
+            v[3*i] = max(min(v[3*i], 1.0 - 1e-8), 1e-8)
+            v[3*i+1] = max(min(v[3*i+1], 1.0 - 1e-8), 1e-8)
+            v[3*i+2] = np.clip(v[3*i+2], 1e-6, 0.45)
+        
+        # Final optimization pass
+        res = minimize(neg_sum_radii, v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 600, "ftol": 1e-13, "gtol": 1e-11})
+
+    # Final cleanup and export
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())

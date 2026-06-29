@@ -1,0 +1,94 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = int(np.ceil(np.sqrt(n)))
+    rows = (n + cols - 1) // cols
+    
+    # Initialize positions using dynamic fractal-based placement
+    xs = np.zeros(n)
+    ys = np.zeros(n)
+    for i in range(n):
+        row = i // cols
+        col = i % cols
+        x = (col + 0.5) / cols
+        y = (row + 0.5) / rows
+        # Apply fractal scaling to break symmetry and create complex layout
+        x += np.sin(row * np.pi / 2) * 0.05
+        y += np.cos(col * np.pi / 2) * 0.05
+        # Alternate row staggering with fractal-based offset
+        if row % 2 == 1:
+            x += (np.sin(row * np.pi / 4) * 0.1) / cols
+        xs[i] = x
+        ys[i] = y
+    
+    r0 = 0.35 / cols - 1e-3
+    v0 = np.empty(3 * n)
+    v0[0::3] = xs
+    v0[1::3] = ys
+    v0[2::3] = np.full(n, r0)
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    # Vectorized constraints for boundaries
+    cons = []
+    for i in range(n):
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+    
+    # Vectorized overlap constraints
+    for i in range(n):
+        for j in range(i + 1, n):
+            def constraint_func(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                return dx*dx + dy*dy - (v[3*i+2] + v[3*j+2])**2
+            cons.append({"type": "ineq", "fun": constraint_func})
+
+    # Initial optimization with increased max iterations and tighter tolerance
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 1500, "ftol": 1e-10})
+    
+    # Radical spatial reconfiguration with strict non-overlapping enforcement
+    if res.success:
+        v = res.x
+        # Create a new spatial configuration using fractal-based randomization
+        perturbation = np.random.rand(n, 2) * 0.1
+        perturbed_v = v.copy()
+        for i in range(n):
+            perturbed_v[3*i] += perturbation[i, 0] * np.sin(i * np.pi / 26)
+            perturbed_v[3*i+1] += perturbation[i, 1] * np.cos(i * np.pi / 26)
+        # Re-evaluate with perturbed parameters
+        res = minimize(neg_sum_radii, perturbed_v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 300, "ftol": 1e-10})
+
+    # Controlled expansion of outermost circle with strict boundary constraints
+    if res.success:
+        v = res.x
+        centers = v[0::3], v[1::3]
+        radii = v[2::3]
+        # Identify the outermost circle using distance from boundaries
+        dists = np.zeros(n)
+        for i in range(n):
+            x, y, r = centers[0][i], centers[1][i], radii[i]
+            dists[i] = min(x - r, 1.0 - x - r, y - r, 1.0 - y - r)
+        outermost_idx = np.argmin(dists)
+        # Expand its radius slightly while maintaining boundaries
+        v[3*outermost_idx + 2] += 0.003
+        v[3*outermost_idx] += np.random.uniform(-0.005, 0.005)
+        v[3*outermost_idx+1] += np.random.uniform(-0.005, 0.005)
+        # Re-evaluate with adjusted parameters
+        res = minimize(neg_sum_radii, v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 300, "ftol": 1e-10})
+
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())

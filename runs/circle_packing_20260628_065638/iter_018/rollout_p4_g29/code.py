@@ -1,0 +1,106 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = 5
+    rows = (n + cols - 1) // cols
+    
+    # Initialize positions with randomized geometric clustering and staggered grid
+    xs = []
+    ys = []
+    for i in range(n):
+        row = i // cols
+        col = i % cols
+        x_center = (col + 0.5) / cols
+        y_center = (row + 0.5) / rows
+        # Randomized offset to break symmetry and avoid clustering
+        x = x_center + np.random.uniform(-0.05, 0.05)
+        y = y_center + np.random.uniform(-0.05, 0.05)
+        # Shift alternate rows to create staggered grid
+        if row % 2 == 1:
+            x += 0.5 / cols
+        xs.append(x)
+        ys.append(y)
+    
+    r0 = 0.35 / cols - 1e-3
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = np.full(n, r0)
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    # Vectorized constraints for boundaries
+    cons = []
+    for i in range(n):
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+    
+    # Vectorized overlap constraints with geometric hashing
+    for i in range(n):
+        for j in range(i + 1, n):
+            def constraint_func(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                return dx*dx + dy*dy - (v[3*i+2] + v[3*j+2])**2
+            cons.append({"type": "ineq", "fun": constraint_func})
+
+    # Initial optimization
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 1500, "ftol": 1e-10})
+    
+    # Implement 'shake' heuristic: perturb small circles to escape local minima
+    if res.success:
+        v = res.x
+        # Identify small circles based on radius
+        radii = v[2::3]
+        small_radius_mask = radii < np.mean(radii) - 0.001
+        small_indices = np.where(small_radius_mask)[0]
+        if len(small_indices) > 0:
+            # Apply small random perturbations
+            perturbation = np.random.uniform(-0.02, 0.02, size=3*len(small_indices))
+            v[3*small_indices] += perturbation[0::3]
+            v[3*small_indices+1] += perturbation[1::3]
+            v[3*small_indices+2] += perturbation[2::3]
+        
+        # Re-evaluate with perturbed parameters
+        res = minimize(neg_sum_radii, v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 300, "ftol": 1e-10})
+
+    # Targeted radius expansion on most isolated circle
+    if res.success:
+        v = res.x
+        radii = v[2::3]
+        # Calculate distances between all circles
+        dists = np.zeros((n, n))
+        for i in range(n):
+            for j in range(n):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                dists[i, j] = np.sqrt(dx*dx + dy*dy)
+        # Identify the most isolated circle (with largest minimum distance)
+        min_dists = np.min(dists, axis=1)
+        isolated_idx = np.argmax(min_dists)
+        # Expand its radius while maintaining constraints
+        total_sum = np.sum(radii)
+        target_total_sum = total_sum + 0.005
+        expansion = (target_total_sum - total_sum) / (n - 1)
+        # Distribute the expansion to other circles to maintain feasibility
+        for i in range(n):
+            if i != isolated_idx:
+                v[3*i + 2] += expansion
+        # Re-evaluate with adjusted parameters
+        res = minimize(neg_sum_radii, v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 300, "ftol": 1e-10})
+
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())

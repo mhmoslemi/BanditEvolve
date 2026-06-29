@@ -1,0 +1,68 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = 5  # Manual adjustment for a hexagonal grid
+    rows = (n + cols - 1) // cols  # Ensure enough rows for 26 circles
+    
+    # Initialize positions using a hexagonal grid pattern
+    xs = []
+    ys = []
+    for i in range(n):
+        row = i // cols
+        col = i % cols
+        x = (col + 0.5) / cols
+        y = (row + 0.5) / rows
+        # Offset even rows for hexagonal packing
+        if row % 2 == 1:
+            x += 0.5 / cols
+        xs.append(x)
+        ys.append(y)
+    
+    r0 = 0.5 / cols - 1e-3
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = np.full(n, r0)
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    # Enforce constraints with penalty function to handle overlapping and out-of-bounds
+    def constraint_func(v, i, j):
+        x1, y1, r1 = v[3*i], v[3*i+1], v[3*i+2]
+        x2, y2, r2 = v[3*j], v[3*j+1], v[3*j+2]
+        # Check bounds
+        if x1 - r1 < 0 or x1 + r1 > 1 or y1 - r1 < 0 or y1 + r1 > 1:
+            return -1e5  # Large penalty for out-of-bounds
+        if x2 - r2 < 0 or x2 + r2 > 1 or y2 - r2 < 0 or y2 + r2 > 1:
+            return -1e5
+        # Check overlap
+        dx = x1 - x2
+        dy = y1 - y2
+        dist_sq = dx*dx + dy*dy
+        min_dist_sq = (r1 + r2)**2
+        if dist_sq < min_dist_sq - 1e-8:
+            return -1e5  # Large penalty for overlapping
+        return dist_sq - min_dist_sq
+
+    cons = []
+    for i in range(n):
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+    for i in range(n):
+        for j in range(i + 1, n):
+            cons.append({"type": "ineq", "fun": lambda v, i=i, j=j: constraint_func(v, i, j)})
+
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 1500, "ftol": 1e-9})
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())

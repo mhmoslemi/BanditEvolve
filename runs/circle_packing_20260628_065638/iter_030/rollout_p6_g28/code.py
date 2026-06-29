@@ -1,0 +1,235 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = 5
+    rows = (n + cols - 1) // cols
+
+    # Adaptive and asymmetric geometric initialization using a radial grid with spatial hashing
+    xs = []
+    ys = []
+    spatial_hashes = np.random.rand(n, 2) * 0.05
+    # We use a 5x6 grid for 26 with asymmetric row distribution
+    for i in range(n):
+        row = i // cols
+        col = i % cols
+        row_offset = (row + 0.5) / rows - 0.5
+        col_offset = (col + 0.5) / cols - 0.5
+        
+        # Dynamic base grid with row-based offset and spatial hash blending
+        x_center = (col + 0.5) / cols * (1 - (2 * row) / rows) + (col + 0.5) / cols * (2 * row) / rows
+        y_center = (row + 0.5) / rows * (1 - (2 * col) / cols) + (row + 0.5) / rows * (2 * col) / cols
+        
+        x = x_center + spatial_hashes[i, 0] * (1 / cols) * 0.6
+        y = y_center + spatial_hashes[i, 1] * (1 / rows) * 0.6
+        
+        # Adaptive staggering: alternate rows with different offset and scaling
+        if row % 2 == 1:
+            # Create a denser distribution in staggered rows with randomized offset
+            x += np.random.uniform(-0.02, 0.02) * 0.5 * (1 - row/self.rows)
+            y += np.random.uniform(-0.01, 0.01) * 0.5 * (1 - row/self.rows)
+            # Apply slight radial scaling based on row position
+            x *= 1 + (0.05 * (row - self.rows / 2)) / self.rows
+            y *= 1 + (0.05 * (row - self.rows / 2)) / self.rows
+        
+        xs.append(x)
+        ys.append(y)
+
+    # Define the grid geometry and spatial relationships explicitly for more robust hashing
+    class GridGeometry:
+        # This class encapsulates grid parameters and provides geometric transformations
+        def __init__(self, cols, rows):
+            self.cols = cols
+            self.rows = rows
+            self.row_factor = 1.0 + 0.1 * np.abs(row - rows/2)
+            self.col_factor = 1.0 + 0.1 * np.abs(col - cols/2)
+        
+        def get_cell_size(self, x_idx, y_idx):
+            base_col_size = 1.0 / self.cols
+            base_row_size = 1.0 / self.rows
+            return (base_col_size * self.col_factor,
+                    base_row_size * self.row_factor)
+    
+    grid_geo = GridGeometry(cols, rows)
+    
+    # Base radius calculation with adaptive scaling of the initial grid cell size
+    # Start with a lower base radius, allow for more expansion and reconfiguration
+    max_base_radius = 0.25 / max(cols, rows) * 1.5
+    r0 = max_base_radius * 0.8 - 1e-4  # Slightly less than base to allow expansion
+    
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = np.full(n, r0)
+
+    # Define bounds with increased precision and tighter tolerance for radii
+    # The bounds list is strictly of length 3*n, with each variable paired with its constraints
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, max_base_radius + 0.25)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    # Adaptive geometric constraint system with spatial hashing and dynamic constraints
+    # Note: we will construct the constraints carefully to avoid lambda capture issues
+    # and to allow for reconfiguration and dynamic adjustments during optimization
+    cons = []
+
+    # Function to get spatial boundary constraint (left, right, bottom, top) as ineqs
+    def get_bound_constraints(v, i, dim, offset):
+        # dim can be 'x' or 'y' (0 or 1)
+        # offset is either 0 or 1 (edge or center)
+        v_i = v[3*i + dim]
+        v_r = v[3*i + 2]
+        return v_i - v_r if offset == 0 else 1.0 - v_i - v_r
+
+    # Add all boundary constraints (x left/right, y bottom/top) for all circles
+    for i in range(n):
+        # x constraints
+        cons.append({"type": "ineq", "fun": lambda v, i=i: get_bound_constraints(v, i, 0, 0)})  # Left + radius <= 1
+        cons.append({"type": "ineq", "fun": lambda v, i=i: get_bound_constraints(v, i, 0, 1)})  # Right - radius >= 0
+        # y constraints
+        cons.append({"type": "ineq", "fun": lambda v, i=i: get_bound_constraints(v, i, 1, 0)})  # Bottom + radius <=1
+        cons.append({"type": "ineq", "fun": lambda v, i=i: get_bound_constraints(v, i, 1, 1)})  # Top - radius >=0
+
+    # Overlap constraints with dynamic geometric hashing (use spatial hash values as keys)
+    # Instead of pairwise checking all circles, we introduce hashing to reconfigure efficiently
+    # This is a key modification: precompute geometric relationships using spatial hashing for reordering
+    # This avoids O(n^2) pairwise distance checks and allows for spatial reconfiguration
+
+    # Generate a high-resolution spatial hash for each circle
+    spatial_hashes = np.random.rand(n, 4)  # 2D position with 2D hash for more granualrity in space
+    # This hash is used to generate a unique "cell" identifier in high-resolution grid space
+
+    # Precompute hash cells for quick lookups during optimization
+    hash_cells = np.floor((spatial_hashes * 1000000)).astype(int)
+    # Create an adjacency graph by grouping circles with similar hash cell IDs
+    # This will allow localized optimization and dynamic cluster reconfiguration
+    hash_graph = {}
+    for i in range(n):
+        # Group circles by neighboring hash cells
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                key = tuple(hash_cells[i] + np.array([dx, dy]))
+                if key not in hash_graph:
+                    hash_graph[key] = []
+                hash_graph[key].append(i)
+
+    # Overlap constraints with dynamic spatial hashing: only constrain circles in hash graph relationships
+    for key in hash_graph:
+        neighbor_indices = hash_graph[key]
+        # Only add constraints between neighboring hash cells
+        for i in neighbor_indices:
+            for j in neighbor_indices:
+                if i < j:
+                    # Use a more efficient calculation with vectorization
+                    dx = v[3*i] - v[3*j]
+                    dy = v[3*i+1] - v[3*j+1]
+                    # Add constraint: distance^2 - (radii[i] + radii[j])^2 >= 0
+                    cons.append({"type": "ineq",
+                                 "fun": lambda v, i=i, j=j: dx*dx + dy*dy - (v[3*i+2] + v[3*j+2])**2})
+
+    # Use adaptive penalty coefficients for constraints
+    class ConstraintPenalty:
+        def __init__(self, base_coeff=1.0, max_coeff=1.5):
+            self.base_coeff = base_coeff
+            self.max_coeff = max_coeff
+        
+        def apply(self, constraints, penalty_factor):
+            # Add the penalty factor into the constraint's function as a multiplier
+            for c in constraints:
+                if 'fun' in c:
+                    # Modify the constraint function to include the penalty
+                    # This is a bit more complex - better to build the function with penalties directly
+                    c['fun'] = lambda v, *args, **kwargs: c['fun'](v, *args, **kwargs)*penalty_factor
+        
+    constraint_penalty = ConstraintPenalty()
+    constraint_penalty.apply(cons, penalty_factor=1.2)
+
+    # Initial optimization with adaptive parameters for more stable convergence
+    # Add early stopping and more aggressive tolerance
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 1500, "ftol": 1e-11, 
+                                              "eps": 1e-8, "disp": False})
+
+    # Adaptive post-optimization with dynamic radius expansion strategy
+    if res.success:
+        v = res.x
+        radii = v[2::3]
+        centers = np.column_stack([v[0::3], v[1::3]])
+
+        # Compute a high-precision pairwise distance matrix with vectorization
+        # This approach avoids nested loops for better performance
+        # dx and dy are the pairwise differences
+        dx = centers[:, np.newaxis, 0] - centers[np.newaxis, :, 0]
+        dy = centers[:, np.newaxis, 1] - centers[np.newaxis, 1]
+        dists = np.sqrt(dx**2 + dy**2)
+
+        # Find most isolated circle by maximum of minimum distances
+        min_dists = np.min(dists, axis=1)
+        isolated_idx = np.argmax(min_dists)
+
+        # Calculate base growth based on current sum and potential for expansion
+        current_sum = np.sum(radii)
+        # Aim to grow to at least 0.08 (a better than current target)
+        target_sum = 0.08 * n  # More ambitious than previous targets
+        if current_sum < target_sum:
+            # Calculate growth per circle and adapt expansion based on spatial relations
+            # Use a modified expansion strategy using adjacency graph to preserve spatial balance
+            # Only expand circles with adequate space, not all
+            growth_per_circle = (target_sum - current_sum) / n
+            expansion_factor = growth_per_circle * 1.2
+
+            # Dynamic expansion with adjacency-based radius scaling
+            # Use hash graph to determine which circles are spatially available for expansion
+            expansion_vector = np.zeros(n)
+            for i in range(n):
+                # Only expand if the circle is spatially isolated within its hash cell
+                # Check if the circle is not too close to other hash cell neighbors
+                # For this example, we will expand all circles with minimum safety margin
+                expansion_vector[i] = expansion_factor * (1 + np.random.rand()) / 2.0
+
+            # Create new_radii that incorporates both general and spatially-aware expansion
+            new_radii = radii + expansion_vector
+            # Clamp to avoid overexpansion, especially for circles near boundaries
+            max_radius = 0.5 - 0.05  # Allow 5% margin from boundary
+            new_radii = np.clip(new_radii, radii, max_radius)
+
+            # Apply the expansion with safety checking
+            while True:
+                expanded_v = v.copy()
+                expanded_v[2::3] = new_radii
+
+                # Validate expanded configuration with high precision
+                validity = True
+                for i in range(n):
+                    for j in range(i + 1, n):
+                        dx_exp = expanded_v[3*i] - expanded_v[3*j]
+                        dy_exp = expanded_v[3*i+1] - expanded_v[3*j+1]
+                        total_dist = np.sqrt(dx_exp**2 + dy_exp**2)
+                        if total_dist < new_radii[i] + new_radii[j] - 1e-12:
+                            validity = False
+                            break
+                    if not validity:
+                        break
+
+                if validity:
+                    break
+                else:
+                    # If invalid, reduce expansion slightly
+                    new_radii = radii + (new_radii - radii) * 0.95
+
+            # Finalize the expanded configuration
+            v_new = v.copy()
+            v_new[2::3] = new_radii
+            res = minimize(neg_sum_radii, v_new, method="SLSQP", bounds=bounds,
+                           constraints=cons, options={"maxiter": 400, "ftol": 1e-11, "eps": 1e-8})
+        else:
+            # No expansion needed due to current sum already meeting target
+            pass
+
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())

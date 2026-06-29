@@ -1,0 +1,137 @@
+```python
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = 5
+    rows = (n + cols - 1) // cols
+    
+    # Define a spatial constraint hash map to create randomized, geometrically diverse initial positions
+    xs = []
+    ys = []
+    for i in range(n):
+        row = i // cols
+        col = i % cols
+        # Base grid position
+        base_x = (col + 0.5) / cols
+        base_y = (row + 0.5) / rows
+        
+        # Spatial hash for randomized, non-symmetric placement
+        hash_x = np.random.rand() * 0.08 - 0.04
+        hash_y = np.random.rand() * 0.08 - 0.04
+        
+        # Adjust offset based on row parity for staggered grid
+        x = base_x + hash_x
+        if row % 2 == 1:
+            x += 0.5 / cols  # Shift alternate rows for staggered placement
+        y = base_y + hash_y
+        
+        xs.append(x)
+        ys.append(y)
+    
+    r0 = 0.35 / cols - 1e-3  # Initial radius baseline
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = np.full(n, r0)
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    # Vectorized constraints for boundaries
+    cons = []
+    for i in range(n):
+        # Left boundary: x - r >= 0
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        # Right boundary: x + r <= 1
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        # Bottom boundary: y - r >= 0
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        # Top boundary: y + r <= 1
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+
+    # Vectorized overlap constraints with a geometric hashing approach
+    for i in range(n):
+        for j in range(i + 1, n):
+            # This lambda uses a closure for i and j (fixed at the loop level)
+            # Use a named tuple for closure capture (better than anonymous)
+            def get_constraint(i, j):
+                def _constraint(v):
+                    dx = v[3*i] - v[3*j]
+                    dy = v[3*i+1] - v[3*j+1]
+                    dist_sq = dx*dx + dy*dy
+                    return dist_sq - (v[3*i+2] + v[3*j+2])**2
+                return _constraint
+            cons.append({"type": "ineq", "fun": get_constraint(i, j)})
+
+    # Initial optimization with high precision and iterative refinement
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 2500, "ftol": 1e-12, "maxls": 150})
+    
+    if res.success:
+        v = res.x
+        radii = v[2::3]
+        centers = np.column_stack([v[0::3], v[1::3]])
+        
+        # Step 1: Apply geometric hashing reconfiguration to break symmetry
+        # Use a more precise random geometric transformation
+        hash_space = np.random.rand(n, 2) * 0.12 - 0.06
+        perturbed_v = v.copy()
+        for i in range(n):
+            perturbed_v[3*i] += hash_space[i, 0]
+            perturbed_v[3*i+1] += hash_space[i, 1]
+        
+        # Re-evaluate with perturbed positions
+        res = minimize(neg_sum_radii, perturbed_v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 500, "ftol": 1e-12, "maxls": 100})
+    
+    if res.success:
+        v = res.x
+        radii = v[2::3]
+        centers = np.column_stack([v[0::3], v[1::3]])
+        
+        # Step 2: Identify the circle with the smallest radius (most constrained)
+        min_radius_idx = np.argmin(radii)
+        min_radius = radii[min_radius_idx]
+        
+        # Step 3: Apply asymmetric radius expansion to the smallest circle
+        # Calculate pairwise distances for constraint-aware expansion
+        dx = centers[:, np.newaxis, 0] - centers[np.newaxis, :, 0]
+        dy = centers[:, np.newaxis, 1] - centers[np.newaxis, :, 1]
+        dists = np.sqrt(dx**2 + dy**2)
+        
+        # Compute minimum distance to others for interaction metric
+        min_dist = np.min(dists, axis=1)
+        interaction_index = np.argmax(min_dist)  # Find circle with least interaction
+        
+        # Step 4: Expand radius of most unconstrained and smallest circle
+        # Targeted expansion to break current layout and trigger reconfiguration
+        target_total_sum = np.sum(radii) + 0.006
+        expansion_factor = (target_total_sum - np.sum(radii)) / n
+        
+        # Apply expansion with a spatial-aware penalty to maintain layout stability
+        new_radii = radii.copy()
+        # Expand the smallest and most isolated circle more aggressively
+        new_radii[min_radius_idx] += expansion_factor * 1.5
+        new_radii[interaction_index] += expansion_factor * 1.2
+        # Moderate expansion for others
+        for i in range(n):
+            if i != min_radius_idx and i != interaction_index:
+                new_radii[i] += expansion_factor * 0.9 + np.random.rand() * 0.01
+        
+        v_new = v.copy()
+        v_new[2::3] = new_radii
+        
+        # Re-evaluate with expanded radii
+        res = minimize(neg_sum_radii, v_new, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 500, "ftol": 1e-12, "maxls": 100})
+    
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())
+```

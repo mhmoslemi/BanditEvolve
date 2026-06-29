@@ -1,0 +1,232 @@
+```python
+import numpy as np
+import math
+
+def run_packing():
+    n = 26
+    rows = 5  # Optimal based on prior experiments with 5x6 grid for better density
+    cols = (n + rows - 1) // rows
+    # Add 1 row for better density control
+    cols = (n + cols - 1) // cols  # Ensure integer columns
+    
+    # Generate initial positions with improved geometric hashing + perturbation
+    xs = []
+    ys = []
+    # Generate a base grid with some skew to avoid uniformity
+    for i in range(n):
+        row = i // cols
+        col = i % cols
+        x_center_base = (col + 0.5) / cols
+        y_center_base = (row + 0.5) / rows
+        # Introduce more aggressive radial perturbation to break symmetry
+        # and add geometric hashing for better initial distribution pattern
+        x_radial = x_center_base + np.random.uniform(-0.1, 0.1) * (1 / 4.0) * (1 - row / rows)
+        y_radial = y_center_base + np.random.uniform(-0.1, 0.1) * (1 / 4.0) * (1 - row / rows)
+        # Add stagger
+        if row % 2 == 1:
+            x_radial += 0.5 / cols * (1 - row / rows)  # More pronounced stagger at lower rows
+        xs.append(x_radial)
+        ys.append(y_radial)
+    
+    # Optimize initial radii based on grid spacing, use more nuanced radius baseline
+    # Use row and column-based radius baseline based on grid density
+    r0 = 0.4 / cols  # More aggressive initial radius than before, based on row spacing
+    # Add dynamic penalty: smaller radii at top rows to allow packing
+    r0_base = r0 * np.linspace(0.8, 1.2, cols)  # Row-based radius scaling
+    r0_vector = r0_base[:n % cols] * np.ones(n) if n % cols else r0_base * np.ones(n)
+    r0_vector = r0_vector - 0.02 * np.random.rand(n)  # Add small random reduction for better fit
+    
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = r0_vector
+    
+    # Construct bounds with same length as decision vector
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]  
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    # Vectorized constraints for boundaries with type-checked lambdas via closure
+    cons = []
+    for i in range(n):
+        # Left + radius <= 1
+        cons.append({"type": "ineq", "fun": (lambda v, i=i: 1.0 - v[3*i] - v[3*i+2])})
+        # Right - radius >= 0
+        cons.append({"type": "ineq", "fun": (lambda v, i=i: v[3*i] - v[3*i+2])})
+        # Bottom + radius <= 1
+        cons.append({"type": "ineq", "fun": (lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2])})
+        # Top - radius >= 0
+        cons.append({"type": "ineq", "fun": (lambda v, i=i: v[3*i+1] - v[3*i+2])})
+    
+    # Vectorized overlap constraints with adaptive scaling based on radii
+    for i in range(n):
+        for j in range(i + 1, n):
+            # We use adaptive constraint bounds for more efficient optimization
+            # Calculate adaptive minimum separation (based on radii average)
+            # Also use tighter bounds to improve convergence
+            def constraint_func(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                return (dx**2 + dy**2) - (v[3*i+2] + v[3*j+2])**2
+            cons.append({"type": "ineq", "fun": constraint_func})
+    
+    # Initial run with maxiter 3000 and tighter tolerance
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 3000, "ftol": 1e-10, "eps": 1e-9})
+    
+    # Implement syntactic safety filter and targeted expansion strategy per directive
+    if res.success:
+        # Safeguard: enforce type safety and numerical stability via constraints
+        # Ensure that we don't get unbounded radii via constraints
+        for i in range(n):
+            if v0[2::3][i] < 0.001:
+                # If any initial radius is too small, trigger a safer expansion phase
+                v0[2::3][i] = 0.002  # Minimal safe baseline
+                break
+        
+        # Safe post-optimization perturbation strategy:
+        v = res.x
+        # Create adaptive safe-radius expansion target based on current configuration
+        # This expansion is conditional only on non-overlapping and non-overflow
+        # We use safety checking during expansion
+        radii = v[2::3]
+        centers = np.column_stack([v[0::3], v[1::3]])
+        # Compute distance matrix
+        dx = centers[:, np.newaxis, 0] - centers[np.newaxis, :, 0]
+        dy = centers[:, np.newaxis, 1] - centers[np.newaxis, 1]
+        dists = np.sqrt(dx**2 + dy**2)
+        # Compute adjacency matrix
+        adj_matrix = dists <= (radii + radii.reshape(-1, 1))
+        
+        # Safely identify least constrained circle (maximum of min distances to others)
+        # Avoid using np.nan's in constraint-based filtering
+        # Validate if adj matrix is safe
+        for i in range(n):
+            if np.isnan(adj_matrix[i]).any():
+                # Skip this i in expansion if invalid
+                adj_matrix[i] = np.inf  # Mark invalid entries
+        min_dist_per_circle = np.min(adj_matrix, axis=1)
+        non_nan_mask = np.isfinite(min_dist_per_circle)
+        if np.any(non_nan_mask):
+            valid_circle_indices = np.where(non_nan_mask)[0]
+            # Select the least constrained circle (maximum min_distance)
+            least_constrained_idx = valid_circle_indices[np.argmax(min_dist_per_circle[non_nan_mask])]
+        else:
+            # All circles invalid - fallback to random expansion on first valid
+            least_constrained_idx = 0
+        
+        # Compute current total and calculate maximum safe expansion
+        current_total = np.sum(radii)
+        # Calculate maximum safe expansion as 1% of unit square area
+        max_safe_growth = 0.01 * (1 * 1) / n  # 1% of area divided by number of circles
+        growth_per_circle = max_safe_growth * (1 + 0.5 * np.random.rand(n))  # stochastic growth
+        
+        # Ensure we do not expand any circle beyond 0.35 (based on prior SOTA)
+        max_radius_limit = 0.35
+        growth_per_circle = np.clip(growth_per_circle, 0, max_radius_limit - radii)
+        
+        # Safe expansion vector
+        new_radii = np.copy(radii)
+        # Apply expansion to the least constrained circle first
+        max_growth = growth_per_circle[least_constrained_idx]
+        new_radii[least_constrained_idx] = np.clip(radii[least_constrained_idx] + max_growth, 1e-4, max_radius_limit)
+        
+        # Apply expansion to all others but with less
+        for i in range(n):
+            if i != least_constrained_idx:
+                # Safety factor to avoid accidental expansion
+                safe_factor = 0.8 if i % 3 == 0 else 1.0
+                new_radii[i] = np.clip(radii[i] + growth_per_circle[i] * safe_factor, 1e-4, max_radius_limit)
+        
+        # Construct new vector
+        v_new = v.copy()
+        v_new[2::3] = new_radii
+        
+        # Re-evaluate with expanded radii and new configuration
+        # Rebuild distance matrices and adjacency matrices in vectorized way
+        dx = v_new[0::3] - v_new[0::3][:, np.newaxis]
+        dy = v_new[1::3] - v_new[1::3][:, np.newaxis]
+        dists = np.sqrt(dx**2 + dy**2)
+        # Check all overlaps with tolerance in vectorized form
+        # Build mask that is true for each pair (i,j)
+        # Apply constraints on all pairs
+        overlap_mask = np.zeros((n, n), dtype=bool)
+        for i in range(n):
+            for j in range(i+1, n):
+                d = dists[i, j]
+                if d < (v_new[2::3][i] + v_new[2::3][j]) - 1e-12:
+                    overlap_mask[i, j] = True
+                    overlap_mask[j, i] = True
+        
+        # Only proceed if no overlaps
+        if not np.any(overlap_mask):
+            # Safe to proceed with new configuration
+            res = minimize(neg_sum_radii, v_new, method="SLSQP", bounds=bounds,
+                           constraints=cons, options={"maxiter": 300, "ftol": 1e-12, "eps": 1e-10})
+        else:
+            # If there are overlaps, fallback to the previous solution
+            v = res.x
+            # However, this will be overridden by the next logic
+            # If overlaps, we'll check the previous solution for safety
+            # But if the previous solution was not safe, this may fail
+            # As a fallback, we'll just use the last solution we found
+            pass
+    
+    # Final safety check and configuration
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, 0.35)  # Limit max radius for safety
+    # Ensure no edge-case circles are placed against walls
+    # This is critical as some solver variants may violate boundary checks
+    # Apply a final safety check
+    for i in range(n):
+        x, y, r = centers[i, 0], centers[i, 1], radii[i]
+        if x - r < 0 or x + r > 1 or y - r < 0 or y + r > 1:
+            # Re-position safely using a soft constraint reposition
+            # This is a last-ditch effort to ensure safety
+            # We can try perturbing the circle to ensure it stays inside
+            # If it's at the edge, adjust it towards the center
+            if x - r < 0:
+                centers[i, 0] = max(0 + r, x - (x - r)/2)
+            elif x + r > 1:
+                centers[i, 0] = min(1 - r, x + (x + r - 1)/2)
+            if y - r < 0:
+                centers[i, 1] = max(0 + r, y - (y - r)/2)
+            elif y + r > 1:
+                centers[i, 1] = min(1 - r, y + (y + r - 1)/2)
+            # Also limit the size to ensure it fits
+            radii[i] = min(radii[i], np.min([np.min(centers[i, 0] - 0.001), 
+                                            1 - centers[i, 0] - 0.001,
+                                            np.min(centers[i, 1] - 0.001),
+                                            1 - centers[i, 1] - 0.001]))  # 0.001 buffer
+    
+    # Final safety check once again
+    for i in range(n):
+        x, y, r = centers[i, 0], centers[i, 1], radii[i]
+        if x - r < -1e-12 or x + r > 1 + 1e-12 or y - r < -1e-12 or y + r > 1 + 1e-12:
+            # Edge case, we can try to slightly decrease the radii and re-center
+            # Apply small radius reduction and re-center for safety
+            centers[i, 0] = max(0.02, min(0.98, x))
+            centers[i, 1] = max(0.02, min(0.98, y))
+            radii[i] = min(radii[i], 0.35)
+    
+    # Final post-check for any edge-case circle
+    for i in range(n):
+        x, y, r = centers[i, 0], centers[i, 1], radii[i]
+        if (x - r < -1e-12 or x + r > 1 + 1e-12 or 
+            y - r < -1e-12 or y + r > 1 + 1e-12):
+            # Re-center if it's beyond safe limit
+            if x - r < -1e-12:
+                centers[i, 0] = np.clip(r, 0.0, 1.0)
+            elif x + r > 1 + 1e-12:
+                centers[i, 0] = np.clip(1 - r, 0.0, 1.0)
+            if y - r < -1e-12:
+                centers[i, 1] = np.clip(r, 0.0, 1.0)
+            elif y + r > 1 + 1e-12:
+                centers[i, 1] = np.clip(1 - r, 0.0, 1.0)
+    
+    return centers, radii, float(radii.sum())
+```

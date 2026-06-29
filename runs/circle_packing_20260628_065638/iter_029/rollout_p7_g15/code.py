@@ -1,0 +1,222 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = int(np.ceil(np.sqrt(n)))
+    rows = (n + cols - 1) // cols
+    initial_col_offset = 0.03
+    initial_row_offset = 0.02
+
+    # Create an initial grid of centers with dynamic offset
+    x_centers = (np.arange(cols) + 0.5 + initial_col_offset) / cols
+    y_centers = (np.arange(rows) + 0.5 + initial_row_offset) / rows
+    # Initialize centers with grid pattern and spatial randomization for diversity
+    xs = []
+    ys = []
+    for i in range(n):
+        row = i // cols
+        col = i % cols
+        x = x_centers[col] + np.random.uniform(-0.03, 0.03)
+        y = y_centers[row] + np.random.uniform(-0.03, 0.03)
+        if row % 2 == 1:  # Alternate rows to create staggered pattern
+            x += 0.5 / cols * np.random.uniform(-0.3, 0.3)
+        xs.append(x)
+        ys.append(y)
+    
+    r0 = 0.35 / cols - 1e-3
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = np.full(n, r0)
+
+    # Create bounds for the decision vector:
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]  # Length 3*n
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    # Optimize with SLSQP method, vectorized constraints
+    # Create constraint set
+    cons = []
+    for i in range(n):
+        # Boundary constraints
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+
+    # Precompute distance matrix for pairwise constraints to optimize
+    dists = np.zeros((n, n))
+    for i in range(n):
+        for j in range(n):
+            dx = v0[3*i] - v0[3*j]
+            dy = v0[3*i+1] - v0[3*j+1]
+            dists[i, j] = np.sqrt(dx*dx + dy*dy)
+    for i in range(n):
+        for j in range(i+1, n):
+            cons.append({"type": "ineq", "fun": lambda v, i=i, j=j: (v[3*i] - v[3*j])**2 + (v[3*i+1] - v[3*j+1])**2 - (v[3*i+2]+v[3*j+2])**2})
+
+    # Initial optimization with tighter tolerances
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds, constraints=cons, 
+                   options={"maxiter": 1600, "ftol": 1e-12, "eps": 1e-10})
+    
+    # First reconfiguration: identify dynamic interaction circles
+    if res.success:
+        v = res.x
+        centers = np.column_stack([v[0::3], v[1::3]])
+        radii = v[2::3]
+        
+        # Calculate gradient of sum_radii w.r.t. each circle's position
+        # To approximate this, use a small perturbation
+        gradient_estimates = np.zeros((n, 2))
+        perturbation = 1e-6
+        for i in range(n):
+            v_perturbed = v.copy()
+            v_perturbed[3*i] += perturbation
+            res_p = minimize(neg_sum_radii, v_perturbed, method="SLSQP", bounds=bounds, constraints=cons, 
+                             options={"maxiter": 10, "ftol": 1e-10})
+            if res_p.success:
+                delta_radii = -np.sum(res_p.x[2::3] - v[2::3])
+                gradient_estimates[i, 0] = delta_radii / perturbation
+            v_perturbed = v.copy()
+            v_perturbed[3*i+1] += perturbation
+            res_p = minimize(neg_sum_radii, v_perturbed, method="SLSQP", bounds=bounds, constraints=cons, 
+                             options={"maxiter": 10, "ftol": 1e-10})
+            if res_p.success:
+                delta_radii = -np.sum(res_p.x[2::3] - v[2::3])
+                gradient_estimates[i, 1] = delta_radii / perturbation
+        
+        # Find top-2 interacting circles (high absolute gradients, possibly overlapping)
+        dynamic_circle_indices = np.sort(np.argsort(np.abs(gradient_estimates).sum(axis=1)))[-2:]
+        dynamic_circle_indices = dynamic_circle_indices.astype(int)
+        print(f"Top-2 interacting circles: {dynamic_circle_indices}")
+        
+        # Isolate and reconfigure their spatial relationships
+        # Create new constraint set that prioritizes reconfiguration of these two
+        revised_cons = []
+        for i in range(n):
+            revised_cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+            revised_cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+            revised_cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+            revised_cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+
+        # Re-add overlap constraints, with increased weighting for the dynamic circles
+        for i in range(n):
+            for j in range(i+1, n):
+                if i == dynamic_circle_indices[0] or i == dynamic_circle_indices[1] or j == dynamic_circle_indices[0] or j == dynamic_circle_indices[1]:
+                    revised_cons.append({"type": "ineq", "fun": lambda v, i=i, j=j: (v[3*i] - v[3*j])**2 + (v[3*i+1] - v[3*j+1])**2 - (v[3*i+2]+v[3*j+2])**2})
+                else:
+                    revised_cons.append({"type": "ineq", "fun": lambda v, i=i, j=j: (v[3*i] - v[3*j])**2 + (v[3*i+1] - v[3*j+1])**2 - (v[3*i+2]+v[3*j+2])**2})
+
+        # Force a geometric reconfiguration by perturbing spatial relationships
+        v_perturbed = v.copy()
+        for i in dynamic_circle_indices:
+            # Add random perturbations to the positions of dynamic circles to force new configuration
+            v_perturbed[3*i] += np.random.uniform(-0.05, 0.05)
+            v_perturbed[3*i+1] += np.random.uniform(-0.05, 0.05)
+        
+        # Re-evaluate with new constraints and perturbed parameters
+        res = minimize(neg_sum_radii, v_perturbed, method="SLSQP", bounds=bounds, constraints=revised_cons,
+                       options={"maxiter": 600, "ftol": 1e-12})
+
+    # Second reconfiguration: identify least constrained circle based on spatial gradient
+    if res.success:
+        v = res.x
+        centers = np.column_stack([v[0::3], v[1::3]])
+        radii = v[2::3]
+        
+        # Recalculate gradients for position changes
+        gradient_estimates = np.zeros((n, 2))
+        perturbation = 1e-6
+        for i in range(n):
+            v_perturbed = v.copy()
+            v_perturbed[3*i] += perturbation
+            res_p = minimize(neg_sum_radii, v_perturbed, method="SLSQP", bounds=bounds, constraints=revised_cons, 
+                             options={"maxiter": 10, "ftol": 1e-10})
+            if res_p.success:
+                delta_radii = -np.sum(res_p.x[2::3] - v[2::3])
+                gradient_estimates[i, 0] = delta_radii / perturbation
+            v_perturbed = v.copy()
+            v_perturbed[3*i+1] += perturbation
+            res_p = minimize(neg_sum_radii, v_perturbed, method="SLSQP", bounds=bounds, constraints=revised_cons, 
+                             options={"maxiter": 10, "ftol": 1e-10})
+            if res_p.success:
+                delta_radii = -np.sum(res_p.x[2::3] - v[2::3])
+                gradient_estimates[i, 1] = delta_radii / perturbation
+        
+        # Find least constrained circle by spatial gradient magnitude (smaller gradients means less constraint)
+        least_constrained_idx = np.argmin(np.abs(gradient_estimates).sum(axis=1))
+        print(f"Least constrained circle: {least_constrained_idx}")
+        
+        # Expand radius of least constrained circle in a constraint-aware way
+        # Calculate maximum possible expansion
+        current_total = np.sum(radii)
+        current_radius = radii[least_constrained_idx]
+        # Estimate the maximum expandable radius based on distances to other circles
+        dists = np.zeros(n)
+        for j in range(n):
+            if j == least_constrained_idx:
+                continue
+            dx = centers[least_constrained_idx, 0] - centers[j, 0]
+            dy = centers[least_constrained_idx, 1] - centers[j, 1]
+            dists[j] = np.sqrt(dx*dx + dy*dy)
+        # Potential growth for this circle is: (min_distance - current_radius) where min_distance is to any circle
+        max_expansion = np.min(dists) - current_radius
+        max_expansion = max(max_expansion, 0.002)  # Minimum safe expansion
+        target_radius = current_radius + max_expansion * 0.6  # Conservative expansion to avoid overlap
+        
+        # Create a radius adjustment vector with targeted expansion
+        new_radii = radii.copy()
+        new_radii[least_constrained_idx] = target_radius
+        
+        # Apply the expansion in a stepwise manner with careful validation
+        while True:
+            expanded_v = v.copy()
+            expanded_v[2::3] = new_radii
+            expanded_centers = np.column_stack([expanded_v[0::3], expanded_v[1::3]])
+            valid = True
+            for i in range(n):
+                for j in range(i + 1, n):
+                    dx = expanded_centers[i, 0] - expanded_centers[j, 0]
+                    dy = expanded_centers[i, 1] - expanded_centers[j, 1]
+                    dist = np.sqrt(dx*dx + dy*dy)
+                    if dist < new_radii[i] + new_radii[j] - 1e-12:
+                        valid = False
+                        break
+                if not valid:
+                    break
+            if valid:
+                break
+            else:
+                # If invalid, reduce expansion
+                new_radii = radii + (new_radii - radii) * 0.95
+        
+        # Final optimization
+        v_new = v.copy()
+        v_new[2::3] = new_radii
+        res = minimize(neg_sum_radii, v_new, method="SLSQP", bounds=bounds, constraints=revised_cons,
+                       options={"maxiter": 300, "ftol": 1e-12})
+    
+    # Final refinement with tight validation
+    if res.success:
+        v = res.x
+        centers = np.column_stack([v[0::3], v[1::3]])
+        radii = v[2::3]
+        # Ensure positions are within the unit square
+        for i in range(n):
+            if v[3*i] - radii[i] < -1e-12 or v[3*i] + radii[i] > 1 + 1e-12:
+                v[3*i] = max(min(v[3*i], 1.0), 0.0)
+            if v[3*i+1] - radii[i] < -1e-12 or v[3*i+1] + radii[i] > 1 + 1e-12:
+                v[3*i+1] = max(min(v[3*i+1], 1.0), 0.0)
+            # Ensure radius is within bounds
+            v[3*i+2] = np.clip(v[3*i+2], 1e-6, 0.5)
+        # Final optimization pass
+        res = minimize(neg_sum_radii, v, method="SLSQP", bounds=bounds, constraints=revised_cons,
+                       options={"maxiter": 250, "ftol": 1e-12, "eps": 1e-10})
+    
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())

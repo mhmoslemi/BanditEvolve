@@ -1,0 +1,85 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = 5
+    rows = (n + cols - 1) // cols
+    
+    # Initialize positions using a randomized geometric clustering algorithm
+    centers = np.random.rand(n, 2)
+    radii = np.full(n, 0.1)
+    
+    # Normalize to unit square and cluster using k-means
+    from sklearn.cluster import KMeans
+    kmeans = KMeans(n_clusters=cols, random_state=42).fit(centers)
+    cluster_centers = kmeans.cluster_centers_
+    
+    # Assign each circle to a cluster
+    for i in range(n):
+        cluster = kmeans.labels_[i]
+        # Assign position within cluster using a grid-like layout
+        x = cluster_centers[cluster, 0] + (i % cols - cols / 2) / cols
+        y = cluster_centers[cluster, 1] + (i // cols - rows / 2) / rows
+        centers[i] = [x, y]
+    
+    # Initial radii based on cluster spacing
+    r0 = 0.3 / cols - 1e-3
+    v0 = np.empty(3 * n)
+    v0[0::3] = centers[:, 0]
+    v0[1::3] = centers[:, 1]
+    v0[2::3] = np.full(n, r0)
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    cons = []
+    for i in range(n):
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+    for i in range(n):
+        for j in range(i + 1, n):
+            def constraint_func(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                return dx*dx + dy*dy - (v[3*i+2] + v[3*j+2])**2
+            cons.append({"type": "ineq", "fun": constraint_func})
+
+    # Initial optimization with increased max iterations and tighter tolerance
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 1500, "ftol": 1e-10})
+    
+    # Forced reconfiguration: expand the most isolated cluster
+    if res.success:
+        v = res.x
+        # Identify the cluster with the largest minimum distance to other clusters
+        x = v[0::3]
+        y = v[1::3]
+        r = v[2::3]
+        distances = np.zeros(n)
+        for i in range(n):
+            for j in range(n):
+                if i != j:
+                    dx = x[i] - x[j]
+                    dy = y[i] - y[j]
+                    distances[i] = max(distances[i], np.sqrt(dx*dx + dy*dy) - r[i] - r[j])
+        isolated_indices = np.argsort(distances)[-5:]
+        
+        # Create a new configuration with expanded cluster
+        new_v = v.copy()
+        for i in isolated_indices:
+            new_v[3*i+2] = np.clip(r[i] + 0.02, 1e-4, 0.5)
+        
+        # Re-evaluate with new configuration
+        res = minimize(neg_sum_radii, new_v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 300, "ftol": 1e-10})
+    
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())

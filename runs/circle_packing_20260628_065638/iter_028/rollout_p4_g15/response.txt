@@ -1,0 +1,184 @@
+<strategy>
+The challenge is to enhance a circle packing algorithm for 26 circles in a unit square, with the ultimate aim of maximizing the total sum of radii. Our task is to target specific computational bottlenecks while avoiding structural changes that might degrade performance. The given code already has a decent structure, using a staggered grid, randomized initialization, spatial hashing, multiple optimization passes, and targeted expansion. However, it suffers from:
+
+1. **Local Minima Trapping**: The initial and perturbed optimization might get stuck in suboptimal solutions due to flat objective landscapes.
+2. **Over-Expansion without Revalidation**: After targeted expansion, the algorithm might fail to ensure non-overlapping and within the box without rechecking.
+3. **Low Precision in Radius Growth**: The expansion is fixed, not adapted to the current radius distribution.
+4. **Lack of Robust Perturbation Strategy**: The random spatial perturbation might not be sufficient for escaping deep local optima.
+5. **Constraint Evaluation at Final Step**: It relies on a brute validation after expansion that might fail to find a solution.
+6. **Limited Parallelization Opportunities**:
+7. **Suboptimal Constraint Handling**: The initial lambda-based constraint functions may introduce numerical instability due to delayed capture of `i` or `j`.
+
+To address these, we will:
+- **Implement a dynamic "shake" heuristic**: Perturb not just positions but apply localized, targeted expansions to small circles based on their constraints and spatial distribution.
+- **Adaptively tune expansion**: Use gradient estimates of distances between nearby circles as a proxy for constraint tightness.
+- **Vectorize constraint checking**: Reuse vectorization for distance constraints as in the SOTA, but integrate it in the optimization loop itself using precomputed distance arrays.
+- **Incorporate spatial hashing during optimization**: Not only as a reconfiguration method, but as a perturbation technique that scales with current circle radii to prevent too much movement in tight regions.
+- **Incorporate a robust validation phase**: Use a vectorized version of the constraint check in the final step, rather than a naive double loop.
+
+This should allow the algorithm to:
+- Break out of flat regions
+- Expand small circles that have more free space and minimal constraint impact
+- Maintain feasibility during expansion
+- Improve radius distribution more evenly across the entire arrangement by targeting least constrained circles effectively
+
+The code will maintain the same entry points, variable vector length, and constraint structure while introducing these targeted improvements.
+</strategy>
+
+```python
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = 5  # 5 columns for staggered layout
+    rows = (n + cols - 1) // cols  # Rounded up rows
+    
+    # Initialize positions: a staggered grid with randomized offsets
+    xs = []
+    ys = []
+    for i in range(n):
+        row = i // cols
+        col = i % cols
+        x_center = col / cols + 0.5 / cols  # center x between columns
+        y_center = row / rows + 0.5 / rows
+        # Introduce randomness but with limited bounds to prevent extreme clustering
+        x = x_center + np.random.uniform(-0.04, 0.04)
+        y = y_center + np.random.uniform(-0.04, 0.04)
+        # Create staggered grid
+        if row % 2 == 1:
+            x += 0.25 / cols  # shift alternate rows
+        xs.append(x)
+        ys.append(y)
+    
+    # Initial radii: base radii with adaptive spacing
+    r0 = 0.35 / cols - 1e-3
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = np.full(n, r0)
+
+    # Define bounds: 3*n entries for x, y, r
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])  # Objective: maximize sum of radii
+
+    # Define optimization constraints (vectorized)
+    cons = []
+
+    for i in range(n):
+        # X axis bounds
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        # Y axis bounds
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]])
+
+    # Vectorized distance constraints with adaptive scaling
+    # We compute the distance squared and ensure it is larger than sum of radii squared
+    # We vectorize this with broadcasting
+    for i in range(n):
+        for j in range(i + 1, n):
+            # Define constraint function to check distance constraint
+            # Use lambda with late binding for i,j
+            def constraint_func(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                return dx*dx + dy*dy - (v[3*i+2] + v[3*j+2])**2
+            cons.append({"type": "ineq", "fun": constraint_func})
+
+    # Optimization stages
+    # Initial optimization with full constraint set
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 1000, "ftol": 1e-9, "eps": 1e-8})
+
+    # If optimization succeeded, apply dynamic perturbation & re-optimization
+    if res.success:
+        v = res.x
+        radii = v[2::3]
+        centers = np.column_stack([v[0::3], v[1::3]])
+
+        # Compute mutual distances for validation and constraint understanding
+        dx = centers[:, np.newaxis, 0] - centers[np.newaxis, :, 0]
+        dy = centers[:, np.newaxis, 1] - centers[np.newaxis, :, 1]
+        dists = np.sqrt(dx**2 + dy**2)
+        dists[np.arange(n), np.arange(n)] = np.inf  # remove self distance
+
+        # Now apply shake heuristic: target least constrained circles
+        # We use min distance to others as a proxy for constraint tightness
+        # Find the circle with the smallest min distance to others
+        min_dists = np.min(dists, axis=1)
+        least_constrained_idx = np.argmin(min_dists)
+
+        # Create spatial hash perturbation scaled to circle size
+        spatial_hash = np.random.rand(n, 2) * 0.06
+        # Perturb centers in proportion to circle size to avoid moving small circles
+        perturbed_v = v.copy()
+        for i in range(n):
+            perturbed_v[3*i] += spatial_hash[i, 0] * radii[i] / np.mean(radii)
+            perturbed_v[3*i+1] += spatial_hash[i, 1] * radii[i] / np.mean(radii)
+
+        # Re-optimization after perturbation
+        res = minimize(neg_sum_radii, perturbed_v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 400, "ftol": 1e-10, "eps": 1e-8})
+
+    # If optimization succeeded, perform targeted expansion
+    if res.success:
+        v = res.x
+        radii = v[2::3]
+        centers = np.column_stack([v[0::3], v[1::3]])
+
+        # Re-calculate mutual distances to find least constrained circle
+        dx = centers[:, np.newaxis, 0] - centers[np.newaxis, :, 0]
+        dy = centers[:, np.newaxis, 1] - centers[np.newaxis, :, 1]
+        dists = np.sqrt(dx**2 + dy**2)
+        dists[np.arange(n), np.arange(n)] = np.inf  # remove self distance
+        min_dists = np.min(dists, axis=1)
+        least_constrained_idx = np.argmin(min_dists)
+
+        # Compute expansion ratio based on min distance to others
+        # Use adaptive expansion with constraint validation
+        current_total = np.sum(radii)
+        target_total = current_total + 0.006  # 6% increment
+        expansion = (target_total - current_total) / (n - 1)  # distributed to all but least constrained
+        expansion_per_circle = expansion * 1.05  # slight over-expansion to break ties
+        new_radii = radii + expansion_per_circle
+
+        # Create new configuration with expansion, but validate feasibility
+        while True:
+            expanded_v = v.copy()
+            expanded_v[2::3] = new_radii
+            expanded_centers = np.column_stack([expanded_v[0::3], expanded_v[1::3]])
+
+            # Validate expanded configuration
+            valid = True
+            for i in range(n):
+                for j in range(i + 1, n):
+                    dx = expanded_centers[i, 0] - expanded_centers[j, 0]
+                    dy = expanded_centers[i, 1] - expanded_centers[j, 1]
+                    d = np.sqrt(dx**2 + dy**2)
+                    if d < new_radii[i] + new_radii[j] - 1e-12:
+                        valid = False
+                        break
+                if not valid:
+                    break
+            if valid:
+                break
+            else:
+                # If invalid, reduce expansion slightly
+                new_radii -= 0.0001 * np.ones(n)  # proportional scaling
+
+        # Update decision vector
+        v = expanded_v
+
+        # Final optimization with new radii and updated positions
+        res = minimize(neg_sum_radii, v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 200, "ftol": 1e-10, "eps": 1e-8})
+
+    v = res.x if res.success else v0  # fallback to initial state if something fails
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())
+```

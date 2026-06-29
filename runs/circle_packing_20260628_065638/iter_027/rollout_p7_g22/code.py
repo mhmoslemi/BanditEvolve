@@ -1,0 +1,141 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = int(np.ceil(np.sqrt(n)))
+    rows = (n + cols - 1) // cols
+    grid_spacing = 1.0 / cols
+    
+    # Initialize grid points with jittered staggered layout
+    xs = []
+    ys = []
+    for i in range(n):
+        row_idx = i // cols
+        col_idx = i % cols
+        x_center = (col_idx + 0.5) * grid_spacing
+        y_center = (row_idx + 0.5) * grid_spacing
+        
+        # Add jitter for non-uniform clustering
+        x = x_center + np.random.uniform(-grid_spacing * 0.08, grid_spacing * 0.08)
+        y = y_center + np.random.uniform(-grid_spacing * 0.08, grid_spacing * 0.08)
+        
+        # Staggering: alternate rows shifted by half grid spacing
+        if row_idx % 2 == 1:
+            x += grid_spacing / 2
+        xs.append(x)
+        ys.append(y)
+    
+    # Initial radii estimate: based on grid spacing and margin
+    r0 = grid_spacing * 0.35 - 1e-3
+    
+    # Initialize decision vector
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = np.full(n, r0)
+    
+    # Define bounds: x, y in [0,1], radii in [1e-4, 0.5]
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+    
+    # Objective: sum of radii, maximized (so we minimize negative of it)
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+    
+    # Boundary constraints: circle must fit inside square
+    cons = []
+    for i in range(n):
+        # Left side constraint: x - r >= 0
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        # Right side constraint: x + r <= 1
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        # Bottom side constraint: y - r >= 0
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        # Top side constraint: y + r <= 1
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+    
+    # Circle-circle constraints (non-overlap) with improved vectorization
+    for i in range(n):
+        for j in range(i + 1, n):
+            # Constraint: distance between centers >= r_i + r_j
+            cons.append({"type": "ineq",
+                         "fun": lambda v, i=i, j=j: 
+                               (v[3*i] - v[3*j])**2 + (v[3*i+1] - v[3*j+1])**2 
+                               - (v[3*i+2] + v[3*j+2])**2})
+    
+    # First optimize with standard configuration
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 1500, "ftol": 1e-10,
+                                             "eps": 1e-9, "disp": False})
+    
+    # Shake heuristic: perturb small circles and re-optimize
+    if res.success:
+        v = res.x
+        # Identify small circles to shake
+        radii = v[2::3]
+        small_radius_threshold = np.percentile(radii, 20)
+        small_indices = np.where(radii < small_radius_threshold)[0]
+        
+        if len(small_indices) > 0:
+            # Generate perturbations with radial scaling
+            perturbation_scale = np.sqrt(np.pi * np.mean(radii)) / 8.0
+            perturbations = np.random.uniform(-perturbation_scale, perturbation_scale, size=(len(small_indices), 2))
+            
+            # Apply perturbations to x and y of small circles
+            perturbed_v = v.copy()
+            for idx, i in enumerate(small_indices):
+                perturbed_v[3*i] += perturbations[idx, 0]
+                perturbed_v[3*i+1] += perturbations[idx, 1]
+            
+            # Re-optimize with perturbed configuration
+            res = minimize(neg_sum_radii, perturbed_v, method="SLSQP", bounds=bounds,
+                           constraints=cons, options={"maxiter": 400, "ftol": 1e-10,
+                                                     "eps": 1e-8, "disp": False})
+    
+    # Post-optimization refinement: targeted expansion with careful handling
+    if res.success:
+        v = res.x
+        radii = v[2::3]
+        centers = np.column_stack([v[0::3], v[1::3]])
+        
+        # Vectorized distance matrix for all pairs
+        dx = centers[:, np.newaxis, 0] - centers[np.newaxis, :, 0]
+        dy = centers[:, np.newaxis, 1] - centers[np.newaxis, 1]
+        dists = np.sqrt(dx**2 + dy**2)
+        
+        # Find the circle with the largest minimum distance to all others (least constrained)
+        min_dists = np.min(dists, axis=1)
+        least_constrained_idx = np.argmax(min_dists)
+        
+        # Calculate allowed expansion for least constrained circle
+        # Compute expansion factor based on available space
+        # Start with 0.002 increase, with dynamic max based on margin
+        max_allowed_increase = np.min([1.0 - (centers[least_constrained_idx, 0] + radii[least_constrained_idx]), 
+                                      (1.0 - centers[least_constrained_idx, 0]) - radii[least_constrained_idx],
+                                      1.0 - (centers[least_constrained_idx, 1] + radii[least_constrained_idx]), 
+                                      (1.0 - centers[least_constrained_idx, 1]) - radii[least_constrained_idx]
+                                     ]) * 0.5
+        
+        # Initial expansion of 0.002 with some variation
+        expansion_amount = 0.002 + np.random.uniform(-0.0005, 0.0005)
+        expansion_amount = np.clip(expansion_amount, 0, max_allowed_increase)
+        
+        # Apply expansion to least constrained circle
+        new_radii = radii.copy()
+        new_radii[least_constrained_idx] += expansion_amount
+        
+        # Update decision vector
+        new_v = v.copy()
+        new_v[2::3] = new_radii
+        
+        # Re-evaluate with new radii
+        res = minimize(neg_sum_radii, new_v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 300, "ftol": 1e-10,
+                                                 "eps": 1e-8, "disp": False})
+    
+    # Final processing
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())

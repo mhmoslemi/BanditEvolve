@@ -1,0 +1,236 @@
+```python
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = int(np.ceil(np.sqrt(n)))
+    rows = (n + cols - 1) // cols
+    
+    # Improved grid initialization: 
+    # - Use a hybrid of grid + random perturbation for better initial distribution
+    # - Add dynamic column allocation to better handle 26 circles
+    # - Increase random perturbation to 0.08 to break symmetry
+    xs = []
+    ys = []
+    for i in range(n):
+        col_idx = i % cols
+        row_idx = i // cols
+        
+        # Adaptive x center based on column index
+        x_center = (col_idx + 0.05) / cols
+        # Row allocation is dynamic
+        y_center = (row_idx + 0.05) / rows
+        # Add jitter to prevent perfect symmetry
+        x = x_center + np.random.uniform(-0.08, 0.08)
+        y = y_center + np.random.uniform(-0.08, 0.08)
+        # Alternate row staggering to create diagonal spacing
+        if row_idx % 2 == 1:
+            x += 0.5 / cols * (1 - 0.3 * np.random.rand())
+        xs.append(x)
+        ys.append(y)
+    
+    # Dynamic radius scaling with improved formula
+    r0 = 0.38 / (cols + 1) - 1e-3
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = np.full(n, r0)
+    
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]  # length 3*n
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+    
+    # Vectorized boundary constraints with explicit closure capture
+    cons = []
+    for i in range(n):
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+    
+    # Vectorized constraints with closure capture and vectorization optimization
+    # Use explicit captures for i,j to avoid lambda capture issues
+    for i in range(n):
+        for j in range(i + 1, n):
+            # Use partial functions for better closure handling
+            def constraint_func(i_i, j_i):
+                def inner(v):
+                    dx = v[3*i_i] - v[3*j_i]
+                    dy = v[3*i_i+1] - v[3*j_i+1]
+                    return dx*dx + dy*dy - (v[3*i_i+2] + v[3*j_i+2])**2
+                return inner
+            cons.append({"type": "ineq", "fun": constraint_func(i, j)})
+    
+    # Initial optimization with increased tolerance and adaptive steps
+    options = {
+        "maxiter": 2000,
+        "ftol": 1e-11,
+        "gtol": 1e-9,
+        "eps": 1e-8,  # smaller step size for better gradient resolution
+        "iprint": 0,
+    }
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options=options)
+    
+    # Grammatical validation step: 
+    # 1. Ensure all arrays are consistent with exact 26 entries
+    # 2. Validate non-overlapping and within bounds conditionally
+    # 3. Check for NaNs and negative radii
+    
+    def validate_state(v):
+        centers = v[0::3]
+        r = v[2::3]
+        for i in range(n):
+            x, y = centers[i], r[i]
+            if (x - r[i] < -1e-12 or x + r[i] > 1 + 1e-12
+                or y - r[i] < -1e-12 or y + r[i] > 1 + 1e-12):
+                return -1
+        for i in range(n):
+            for j in range(i + 1, n):
+                dx = centers[i] - centers[j]
+                dy = centers[i] - centers[j]
+                distance = np.sqrt(np.dot(dx, dx) + np.dot(dy, dy))
+                if distance < r[i] + r[j] - 1e-12:
+                    return -1
+        return 0
+    
+    # Apply grammatical safety and optimization post-initial attempt
+    if res.success:
+        # Re-verify for NaNs
+        v = res.x
+        if np.isnan(v).any():
+            v = v0
+        else:
+            val = validate_state(v)
+            if val == -1:
+                # If validation failed, revert to v0 and try to fix with perturbations
+                v = v0
+                for _ in range(3):
+                    # Apply random perturbation to coordinates only
+                    perturbation = np.random.normal(0, 0.01, size=2*n)
+                    v = v.copy()
+                    v[0::3] += perturbation[0::2]
+                    v[1::3] += perturbation[1::2]
+                    res = minimize(neg_sum_radii, v, method="SLSQP", bounds=bounds,
+                                   constraints=cons, options={**options, **{"maxiter": 100}})
+                    # Re-check val
+                    val = validate_state(res.x)
+                    if val == 0:
+                        v = res.x
+                        break
+            else:
+                v = res.x
+    else:
+        # If initial optimization fails, fallback to v0 
+        v = v0
+    
+    # Enhanced adaptive expansion phase: 
+    # 1. Use advanced gradient-aided expansion
+    # 2. Use graph-theoretic topology to prioritize expansion
+    # 3. Use controlled re-optimization with smart perturbations
+    
+    # Compute base state
+    centers = v[0::3]
+    radii = v[2::3]
+    # Compute distance matrix with vectorization
+    dx = centers[:, np.newaxis, 0] - centers[np.newaxis, :, 0]
+    dy = centers[:, np.newaxis, 1] - centers[np.newaxis, :, 1]
+    dists = np.sqrt(dx**2 + dy**2)
+    
+    # Compute adjacency matrix with vectorized comparison
+    adj = dists <= (radii + radii[:, np.newaxis])
+    
+    # Component analysis for graph partitioning
+    from scipy.sparse import csr_matrix, csgraph
+    graph = csr_matrix(adj)
+    components = csgraph.connected_components(graph)[1]
+    
+    # Find component with least constraint per unit radius
+    component_radii = np.array([np.sum(radii[components == c]) for c in np.unique(components)])
+    component_dists = np.array([np.min(dists[components == c], axis=1).mean() for c in np.unique(components)])
+    component_ratio = component_dists / component_radii
+    least_constrained_component = np.argmin(component_ratio)
+    
+    # Extract indices of this component
+    selected_indices = np.where(components == least_constrained_component)[0]
+    
+    # Compute minimal expansion factor to unlock potential
+    target_radii_total = np.sum(radii) + 0.014
+    expansion_factor = (target_radii_total - np.sum(radii)) / (len(selected_indices))
+    
+    # Perform targeted expansion with gradient-based augmentation
+    # Create initial expansion mask from adjacency matrix
+    expansion_mask = np.zeros(n)
+    expansion_mask[selected_indices] = 1
+    
+    # Apply soft-radius expansion with smart gradient augmentation
+    # Use L-BFGS-B for better convergence in constrained spaces
+    # Generate perturbations based on component connectivity
+    from scipy.optimize import minimize
+    
+    # Optimization function for targeted expansion phase
+    def expanded_neg_sum(v):
+        nonlocal radii # for debugging
+        # Compute current radii and centers
+        centers = v[0::3]
+        r = v[2::3]
+        # Ensure radii are non-negative
+        r = np.clip(r, 1e-6, 0.5)
+        # Calculate distance matrix
+        dx = centers[:, np.newaxis, 0] - centers[np.newaxis, :, 0]
+        dy = centers[:, np.newaxis, 1] - centers[np.newaxis, :, 1]
+        dists = np.sqrt(dx**2 + dy**2)
+        # Check for any overlap (vectorized)
+        overlaps = (dists <= (r + r[:, np.newaxis])) & (dists > 0)
+        if overlaps.any():
+            # Penalize overlapping configurations to avoid them
+            penalty = 1e6 * np.sum(overlaps)
+        else:
+            penalty = 0
+        # Add boundary constraints penalty
+        boundary_penalty = 0
+        for i in range(n):
+            if v[3*i] - v[3*i+2] < -1e-12:
+                boundary_penalty += 1e6
+            if 1.0 - v[3*i] - v[3*i+2] < -1e-12:
+                boundary_penalty += 1e6
+            if v[3*i+1] - v[3*i+2] < -1e-12:
+                boundary_penalty += 1e6
+            if 1.0 - v[3*i+1] - v[3*i+2] < -1e-12:
+                boundary_penalty += 1e6
+        # Add expansion target penalty: we want to increase minimal components
+        component_radii = np.array([np.sum(r[components == c]) for c in np.unique(components)])
+        component_dists = np.array([np.min(dists[components == c], axis=1).mean() for c in np.unique(components)])
+        component_ratio = component_dists / component_radii
+        least_constrained = np.argmin(component_ratio)
+        target_component = components == least_constrained
+        expansion_mask = np.zeros(n)
+        expansion_mask[target_component] = 1
+        expansion_cost = -np.sum(expansion_mask * r)  # Negative to maximize
+        return penalty + boundary_penalty + expansion_cost
+    
+    # Run targeted expansion optimization
+    # Use L-BFGS-B for better performance with nonlinear constraints
+    try:
+        res_expanded = minimize(expanded_neg_sum, v, 
+                               method="SLSQP", bounds=bounds,
+                               constraints=cons,
+                               options={**options, "maxiter": 500, "ftol": 1e-11})
+    except:
+        # Catch any critical errors and fall back to original solution
+        res_expanded = minimize(neg_sum_radii, v, method="SLSQP", bounds=bounds,
+                               constraints=cons, options=options)
+    
+    # Final revalidation and cleanup
+    v = res_expanded.x
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, 0.5)
+    # Final check for NaN values
+    if np.isnan(centers).any() or np.isnan(radii).any():
+        centers = np.column_stack([v0[0::3], v0[1::3]])
+        radii = np.clip(v0[2::3], 1e-6, 0.5)
+    return centers, radii, float(radii.sum())
+```

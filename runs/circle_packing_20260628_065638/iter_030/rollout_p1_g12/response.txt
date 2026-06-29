@@ -1,0 +1,270 @@
+```python
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols_initial = int(np.ceil(np.sqrt(n)))
+    rows = (n + cols_initial - 1) // cols_initial
+    # Adaptive column count with dynamic adjustment for non-uniform distributions
+    cols = cols_initial + (n % cols_initial != 0)  # Add one if asymmetric
+    
+    # Initialize positions with spatial hashing, asymmetric grid, and perturbation
+    # Use a more refined perturbation based on proximity and direction
+    xs = []
+    ys = []
+    # Spatial hashing grid with adaptive offsets
+    grid_cell_size = (1.0 / cols) + 0.008
+    grid_cell_size_y = (1.0 / rows) + 0.008
+    # Use a more complex perturbation method to avoid local minima
+    perturbation_scale = 0.06
+    perturbation_direction = np.random.rand(n, 2) * 2.0 - 1.0  # [-1, 1]^2
+
+    for i in range(n):
+        row_idx = i // cols
+        col_idx = i % cols
+        x_center = (col_idx + 0.25) * grid_cell_size
+        y_center = (row_idx + 0.25) * grid_cell_size_y
+
+        # Anisotropic perturbation based on row and column to avoid grid-like structures
+        row_factor = 1.0 + 0.05 * np.sin(np.pi * row_idx / (rows - 1))
+        col_factor = 1.0 + 0.05 * np.cos(np.pi * col_idx / (cols - 1))
+
+        x_perturb = perturbation_direction[i, 0] * (np.sin(np.pi * row_idx / rows) * grid_cell_size * row_factor)
+        y_perturb = perturbation_direction[i, 1] * (np.cos(np.pi * col_idx / cols) * grid_cell_size_y * col_factor)
+
+        x = x_center + x_perturb
+        y = y_center + y_perturb
+
+        # Ensure x and y are within [1e-4, 1.0 - 1e-4] to avoid edge issues
+        x = np.clip(x, 1e-4, 1.0 - 1e-4)
+        y = np.clip(y, 1e-4, 1.0 - 1e-4)
+        
+        xs.append(x)
+        ys.append(y)
+    
+    # Use a more sophisticated initial radius estimate with density-based weighting
+    # Initial radii with better spacing, based on grid density
+    r0 = 0.45 / cols  # Increase initial radius to allow better expansion
+    r0 = np.clip(r0, 1e-4, 0.46)  # Avoid extremely large values
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = np.full(n, r0)  # Initial radii with increased size
+    
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.49)]  # Keep upper bound below 0.5
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])  # Objective: maximize sum of radii
+    
+    # Vectorized constraint for boundaries - carefully defined with capture
+    cons = []
+    for i in range(n):
+        # Left: x - r >= 0
+        cons.append({"type": "ineq", "fun": (lambda v, i=i: v[3*i] - v[3*i+2])})
+        # Right: x + r <= 1
+        cons.append({"type": "ineq", "fun": (lambda v, i=i: 1.0 - v[3*i] - v[3*i+2])})
+        # Bottom: y - r >= 0
+        cons.append({"type": "ineq", "fun": (lambda v, i=i: v[3*i+1] - v[3*i+2])})
+        # Top: y + r <= 1
+        cons.append({"type": "ineq", "fun": (lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2])})
+    
+    # Overlap constraints: use vectorized distance calculation with better gradient handling
+    # Precompute distance constraints as a single vectorized function
+    # Precompute all pairs and ensure the constraint function is correctly defined to avoid closure capturing issues
+    # Use lambda with closure binding to capture i and j at definition time
+    overlap_constraints = []
+    for i in range(n):
+        for j in range(i + 1, n):
+            # Use a more explicit lambda to avoid scoping issues
+            overlap_constraints.append({
+                "type": "ineq", 
+                "fun": lambda v, i=i, j=j: 
+                (v[3*i] - v[3*j]) ** 2 + (v[3*i+1] - v[3*j+1]) ** 2 - (v[3*i+2] + v[3*j+2]) ** 2
+            })
+    
+    # Optimization parameters: refine to balance exploration and exploitation
+    initial_optimization_options = {
+        'maxiter': 2000,  # More conservative than SOTA to allow convergence
+        'ftol': 1e-12,    # Tighter than SOTA but more precise
+        'gtol': 1e-10,    # Tighter tolerance for gradients
+        'disp': False
+    }
+    
+    # First optimization pass with more precise constraints
+    res1 = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                    constraints=cons + overlap_constraints, 
+                    options=initial_optimization_options)
+    
+    # Post-optimization refinement step: 
+    # Apply a multi-pass refinement with adaptive perturbation based on spacing and gradient
+    # Introduce a spatially adaptive perturbation to avoid getting stuck in local minima
+    # Also ensure that we preserve non-overlapping structure through a check and re-eval
+    
+    if res1.success:
+        v = res1.x
+
+        # Step 1: Perform gradient-based post-optimization with adaptive perturbation scaling
+        # Create a spatially adaptive perturbation matrix
+        # Perturb based on proximity, spacing, and gradient strength
+        centers = np.column_stack([v[0::3], v[1::3]])
+        radii = v[2::3]
+        
+        # Calculate inter-circle distances
+        dist_matrix = np.zeros((n, n))
+        for i in range(n):
+            for j in range(n):
+                if i != j:
+                    dx = centers[i, 0] - centers[j, 0]
+                    dy = centers[i, 1] - centers[j, 1]
+                    dist_matrix[i, j] = np.sqrt(dx**2 + dy**2)
+        
+        # Calculate spacing indices for perturbation focus
+        spacing_indices = np.argsort(np.diag(dist_matrix))  # Spacing for nearest neighbors
+        nearest_neighbor_indices = spacing_indices[:3]  # Focus on first three
+        
+        # Apply spatially adaptive perturbation using directional and spacing-based scaling
+        # Perturbation scale based on inverse of distance from nearest neighbor
+        perturbation_scale_factor = (dist_matrix[nearest_neighbor_indices, :] + 1e-6)  # Avoid division by zero
+        perturbation_scale_factor = 1.0 / np.max(perturbation_scale_factor) * 0.03   # Scale to 0.03 for refinement
+        
+        # Directional perturbation based on gradient direction from nearest neighbors
+        gradient_dir_matrix = (centers[nearest_neighbor_indices, :][:, np.newaxis, :] - centers[np.newaxis, :, :]) 
+        dists = np.sqrt(np.sum(gradient_dir_matrix ** 2, axis=2))
+        
+        # Normalize gradients and apply directional perturbation
+        gradient_dir_matrix /= np.max(dists, axis=1, keepdims=True)
+        grad_perturbation = gradient_dir_matrix * perturbation_scale_factor * np.mean(radii) * 0.5
+        final_perturbation = grad_perturbation[0]  # Select one to avoid over-perturbation
+
+        # Construct new decision vector with fine perturbation
+        v_new = v.copy()
+        v_new[0::3] += final_perturbation[0]
+        v_new[1::3] += final_perturbation[1]
+        v_new[2::3] = radii  # Keep radii unchanged during fine perturbation
+
+        # Perform secondary optimization with perturbed positions
+        res2 = minimize(
+            neg_sum_radii, 
+            v_new, 
+            method="SLSQP", 
+            bounds=bounds, 
+            constraints=cons + overlap_constraints,
+            options={
+                'maxiter': 1200,
+                'ftol': 1e-12,
+                'gtol': 1e-10
+            }
+        )
+        
+        if res2.success:
+            v = res2.x
+
+    # Final refinement: apply strategic radius expansion only on circles with sufficient spacing
+    # Identify circles with max spacing and apply controlled expansion
+    # Use spatial hashing for refined expansion
+    if res1.success or res2.success:
+        centers = np.column_stack([v[0::3], v[1::3]])
+        radii = v[2::3]
+        
+        # Vectorized distance calculation for all pairs
+        dx = centers[:, np.newaxis, 0] - centers[np.newaxis, :, 0]
+        dy = centers[:, np.newaxis, 1] - centers[np.newaxis, 1]
+        dists = np.sqrt(dx**2 + dy**2)
+
+        # Calculate min distance for each circle to others
+        min_dists = np.min(dists, axis=1)
+        # Calculate max possible expansion for any circle (max radius)
+        max_radius_potential = 0.45  # Max radius that keeps circles inside the unit square
+
+        # Find circles with maximum spacing for potential expansion
+        expansion_candidates = np.argsort(min_dists)[::-1]  # Sort by descending spacing
+        best_candidate = expansion_candidates[0]  # Most spaced circle
+
+        # Calculate how much we can expand
+        # Current radius and max possible expansion
+        current_radius = radii[best_candidate]
+        max_expansion = max_radius_potential - current_radius
+        if max_expansion > 0:
+            # Expand by a fraction of the max possible expansion
+            expansion_amount = max_expansion * 0.8  # 80% of max potential
+            # Add a small perturbation to the candidate's center to open up more room
+            # Use a directional perturbation based on the average of directions away from neighbors
+            # Calculate the sum of unit vectors pointing away from neighboring circles
+            neighbor_vecs = []
+            for neighbor_idx in range(n):
+                if neighbor_idx != best_candidate:
+                    dx = centers[neighbor_idx, 0] - centers[best_candidate, 0]
+                    dy = centers[neighbor_idx, 1] - centers[best_candidate, 1]
+                    dist = np.sqrt(dx**2 + dy**2) + 1e-6  # Avoid division by zero
+                    direction = np.array([dx, dy]) / dist
+                    neighbor_vecs.append(direction)
+            avg_dir = np.mean(neighbor_vecs, axis=0)  # Average direction away from neighbors
+            # Normalize to unit vector
+            avg_dir = avg_dir / np.linalg.norm(avg_dir)
+            # Apply small directional perturbation to center
+            perturbation_size = expansion_amount * 0.02  # Small adjustment
+            perturb = avg_dir * perturbation_size
+            # Make sure the new center is within the square limits
+            new_x = centers[best_candidate, 0] + perturb[0]
+            new_y = centers[best_candidate, 1] + perturb[1]
+            new_x = np.clip(new_x, 1e-4, 1.0 - 1e-4)
+            new_y = np.clip(new_y, 1e-4, 1.0 - 1e-4)
+            
+            # Update center and expand the radius
+            v[3 * best_candidate] = new_x
+            v[3 * best_candidate + 1] = new_y
+            v[3 * best_candidate + 2] += expansion_amount
+
+            # Perform tertiary optimization to adjust with the new expansion
+            res3 = minimize(
+                neg_sum_radii, 
+                v, 
+                method="SLSQP", 
+                bounds=bounds, 
+                constraints=cons + overlap_constraints,
+                options={
+                    'maxiter': 600,
+                    'ftol': 1e-12,
+                    'gtol': 1e-10
+                }
+            )
+            
+            if res3.success:
+                v = res3.x
+
+    # Final validation and clipping
+    v = res1.x if not (res2.success or res3.success) else v
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, 0.45)  # Clamp radii to prevent overflow
+    
+    # Final double-checking to ensure constraints are enforced, even if optimization failed
+    # In case the final optimization isn't perfect, apply last-minute checks with a secondary validation step
+    
+    # Apply a small perturbation to the positions to avoid edge cases and allow last-minute expansion
+    # But only if the optimization is not successful (i.e., res3 is not successful)
+    if not (res1.success or res2.success or res3.success):
+        perturbation = 0.005 * np.random.rand(n, 2)
+        v_perturbed = v.copy()
+        v_perturbed[0::3] = np.clip(v_perturbed[0::3] + perturbation[:, 0], 1e-4, 1.0 - 1e-4)
+        v_perturbed[1::3] = np.clip(v_perturbed[1::3] + perturbation[:, 1], 1e-4, 1.0 - 1e-4)
+        res_final = minimize(
+            neg_sum_radii, 
+            v_perturbed, 
+            method="SLSQP", 
+            bounds=bounds, 
+            constraints=cons + overlap_constraints,
+            options={
+                'maxiter': 200,
+                'ftol': 1e-12,
+                'gtol': 1e-10
+            }
+        )
+        v = res_final.x if res_final.success else v
+
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, 0.45)
+    sum_radii = float(radii.sum())
+    return centers, radii, sum_radii
+```

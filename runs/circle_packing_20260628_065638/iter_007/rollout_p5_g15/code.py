@@ -1,0 +1,103 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = 5
+    rows = (n + cols - 1) // cols
+
+    # Randomized geometric clustering initialization
+    np.random.seed(42)
+    positions = np.random.rand(n, 2)
+    positions = positions / np.max(positions, axis=0)
+    positions = positions * 0.9 + 0.05  # Avoid edge clipping
+
+    # Cluster analysis to identify tightest group
+    dist_matrix = np.zeros((n, n))
+    for i in range(n):
+        for j in range(n):
+            dist_matrix[i, j] = np.linalg.norm(positions[i] - positions[j])
+    cluster_indices = np.argsort(dist_matrix.sum(axis=1))[:5]  # Select top 5 densest clusters
+
+    # Apply controlled radius expansion to the tightest cluster
+    r0 = 0.3 / cols - 1e-3
+    v0 = np.empty(3 * n)
+    v0[0::3] = positions[:, 0]
+    v0[1::3] = positions[:, 1]
+    v0[2::3] = np.full(n, r0)
+
+    # Increase radii of the tightest cluster
+    for idx in cluster_indices:
+        v0[3*idx + 2] = min(0.5, v0[3*idx + 2] + 0.02)
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    cons = []
+    for i in range(n):
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+    for i in range(n):
+        for j in range(i + 1, n):
+            def constraint_func(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                return dx*dx + dy*dy - (v[3*i+2] + v[3*j+2])**2
+            cons.append({"type": "ineq", "fun": constraint_func})
+
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 1500, "ftol": 1e-10})
+
+    # Local refinement for isolated circles
+    if res.success:
+        v = res.x
+        centers = v[0::3], v[1::3]
+        radii = v[2::3]
+        dists = np.zeros(n)
+        for i in range(n):
+            for j in range(n):
+                if i != j:
+                    dx = centers[0][i] - centers[0][j]
+                    dy = centers[1][i] - centers[1][j]
+                    dists[i] += np.sqrt(dx*dx + dy*dy)
+        isolated_index = np.argmin(dists)
+        v[3*isolated_index + 2] += 0.002
+        v[3*isolated_index + 0] += 0.005
+        v[3*isolated_index + 1] += 0.005
+        res = minimize(neg_sum_radii, v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 300, "ftol": 1e-10})
+
+    # Perturbation of smallest and boundary circles
+    if res.success:
+        v = res.x
+        radii = v[2::3]
+        small_indices = np.argsort(radii)[:4]
+        boundary_indices = []
+        for i in range(n):
+            x = v[3*i]
+            y = v[3*i+1]
+            r = v[3*i+2]
+            if x < r or x > 1 - r or y < r or y > 1 - r:
+                boundary_indices.append(i)
+        perturb_indices = np.unique(np.concatenate((small_indices, boundary_indices)))
+        perturbation = 0.05 * np.random.rand(len(perturb_indices) * 3)
+        perturbed_v = v.copy()
+        idx = 0
+        for i in perturb_indices:
+            perturbed_v[3*i] += perturbation[idx]
+            perturbed_v[3*i+1] += perturbation[idx+1]
+            perturbed_v[3*i+2] += perturbation[idx+2]
+            idx += 3
+        perturbed_v[2::3] = np.clip(perturbed_v[2::3], 1e-4, 0.5)
+        res = minimize(neg_sum_radii, perturbed_v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 200, "ftol": 1e-10})
+
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())

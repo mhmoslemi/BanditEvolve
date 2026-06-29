@@ -1,0 +1,158 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = int(np.ceil(np.sqrt(n)))
+    rows = (n + cols - 1) // cols
+    
+    # Initial position seeding with enhanced stochastic sampling and spatial diversity
+    xs = []
+    ys = []
+    for i in range(n):
+        row = i // cols
+        col = i % cols
+        # Base grid with dynamic spacing
+        base_x = (col + 0.5) / cols
+        base_y = (row + 0.5) / rows
+        
+        # Apply asymmetric perturbation to create spatial diversity
+        x_offset = np.random.normal(0, 0.04)
+        y_offset = np.random.normal(0, 0.04)
+        x = base_x + x_offset
+        y = base_y + y_offset
+        
+        # Staggered grid refinement for better density control
+        if row % 2 == 1 and col < cols - 1:
+            x += 0.35 / cols
+        
+        xs.append(x)
+        ys.append(y)
+    
+    # Initialize radii with adaptive sizing
+    base_radius = 0.35 / cols
+    r0 = base_radius - 1e-3
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = np.full(n, r0)
+
+    # Maintain strict bounds consistency with 3*n entries
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        """Objective function to maximize sum of radii (minimized as negative)"""
+        return -np.sum(v[2::3])
+
+    # Construct constraints with precise function binding
+    cons = []
+    for i in range(n):
+        # Left wall constraint
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        # Right wall constraint
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        # Bottom wall constraint
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+        # Top wall constraint
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+    
+    # Overlap constraints with spatial awareness and directional bias
+    for i in range(n):
+        for j in range(i + 1, n):
+            # Avoid direct lambda closure for vectorization efficiency
+            def constraint_func_(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                # Add directional bias based on spatial layout
+                dir_bias = 1.0 + 0.5 * (np.sin(np.pi * (v[3*i] + v[3*i+1])) - 0.5)
+                return dx*dx + dy*dy - (v[3*i+2] + v[3*j+2])**2 * dir_bias
+            cons.append({"type": "ineq", "fun": constraint_func_})
+
+    # Initial optimization with enhanced control parameters
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 1800, "ftol": 1e-11, "eps": 1e-9,
+                                              "disp": False, "iprint": -1})
+    
+    # Asymmetric reconfiguration with spatial hash and radius-aware perturbation
+    if res.success:
+        v = res.x
+        radii = v[2::3]
+        centers = np.column_stack([v[0::3], v[1::3]])
+        
+        # Create spatial hash based on current radius distribution
+        spatial_hash = np.random.rand(n, 2) * np.array([0.05, 0.04]) * (radii / np.mean(radii))
+        perturbed_v = v.copy()
+        for i in range(n):
+            perturbed_v[3*i] += spatial_hash[i, 0]
+            perturbed_v[3*i+1] += spatial_hash[i, 1]
+        
+        # Re-evaluate with improved spatial configuration
+        res = minimize(neg_sum_radii, perturbed_v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 300, "ftol": 1e-11, "eps": 1e-9})
+
+    # Targeted radius expansion: prioritize spatially isolated and least congested circles
+    if res.success:
+        v = res.x
+        radii = v[2::3]
+        centers = np.column_stack([v[0::3], v[1::3]])
+        
+        # Build distance matrix for constraint assessment
+        dx = centers[:, np.newaxis, 0] - centers[np.newaxis, :, 0]
+        dy = centers[:, np.newaxis, 1] - centers[np.newaxis, 1]
+        dists = np.sqrt(dx**2 + dy**2)
+        
+        # Find least constrained circle by maximizing minimum distance to others
+        min_dists = np.min(dists, axis=1)
+        least_constrained_idx = np.argmax(min_dists)
+        
+        # Calculate growth based on current total sum and potential for expansion
+        current_total = np.sum(radii)
+        target_growth = 0.012  # Slightly increased from 0.006 for more aggressive expansion
+        expansion_factor = target_growth / (n - 1) * (current_total / np.sum(radii))
+        
+        # Create expanded radii with targeted expansion to least constrained
+        new_radii = radii.copy()
+        new_radii[least_constrained_idx] += expansion_factor * 1.2  # Slight over-expansion
+        for i in range(n):
+            if i != least_constrained_idx:
+                new_radii[i] += expansion_factor * (1.0 + 0.2 * np.random.rand())  # Slight stochasticity
+        
+        # Apply expansion with constraint validation using fast vectorized checks
+        while True:
+            expanded_centers = np.column_stack([v[0::3], v[1::3]])
+            expanded_radii = new_radii
+            
+            # Validate distance constraints in vectorized form
+            valid = True
+            for i in range(n):
+                for j in range(i+1, n):
+                    dx = expanded_centers[i, 0] - expanded_centers[j, 0]
+                    dy = expanded_centers[i, 1] - expanded_centers[j, 1]
+                    dist = np.sqrt(dx**2 + dy**2)
+                    if dist < expanded_radii[i] + expanded_radii[j] - 1e-12:
+                        valid = False
+                        break
+                if not valid:
+                    break
+            
+            if valid:
+                break
+            else:
+                # Slightly backtrack expansion if overlapping is detected
+                new_radii = radii + (new_radii - radii) * 0.95
+        
+        # Update vectors with new radii based on validation
+        v_new = v.copy()
+        v_new[2::3] = new_radii
+        
+        # Re-evaluate with expanded radii and new configuration
+        res = minimize(neg_sum_radii, v_new, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 300, "ftol": 1e-11, "eps": 1e-9,
+                                                  "disp": False, "iprint": -1})
+
+    # Final result handling
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())

@@ -1,0 +1,152 @@
+```python
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = 4  # Reduced column count for more compact packing
+    rows = (n + cols - 1) // cols
+    
+    # Initialize positions using randomized geometric clustering on a staggered hexagonal lattice
+    xs = []
+    ys = []
+    for i in range(n):
+        row = i // cols
+        col = i % cols
+        base_x = col / cols * 1.0
+        base_y = row / rows * 1.0
+        # Randomized offset for initial perturbation and symmetry breaking
+        dx = np.random.uniform(-0.1, 0.1)
+        dy = np.random.uniform(-0.1, 0.1)
+        # Create staggered grid by shifting every other row
+        if row % 2 == 1:
+            base_x += 0.5 / cols
+        x = base_x + dx
+        y = base_y + dy
+        # Ensure within bounds
+        x = np.clip(x, 0.0, 1.0)
+        y = np.clip(y, 0.0, 1.0)
+        xs.append(x)
+        ys.append(y)
+    
+    r0 = 0.35 / cols - 1e-3  # Initial radius based on grid spacing
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = np.full(n, r0)
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    # Vectorized boundary constraints
+    cons = []
+    for i in range(n):
+        # Left edge constraint
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        # Right edge constraint
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        # Bottom edge constraint
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+        # Top edge constraint
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+    
+    # Vectorized overlap constraints with closure for i,j pairing
+    for i in range(n):
+        for j in range(i + 1, n):
+            cons.append({"type": "ineq", 
+                         "fun": (lambda v, i=i, j=j: 
+                                 (v[3*i] - v[3*j])**2 + (v[3*i+1] - v[3*j+1])**2 
+                                 - (v[3*i+2] + v[3*j+2])**2)})
+
+    # Initial optimization with increased max iterations and tighter constraints
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 1500, "ftol": 1e-12, "eps": 1e-8})
+
+    # Implement 'shake' heuristic to escape local minima
+    if res.success:
+        v = res.x
+        radii = v[2::3]
+        centers = np.column_stack([v[0::3], v[1::3]])
+        
+        # Identify small circles with low expansion potential using distance metrics
+        dists = np.zeros((n, n))
+        for i in range(n):
+            for j in range(i + 1, n):
+                dx = centers[i, 0] - centers[j, 0]
+                dy = centers[i, 1] - centers[j, 1]
+                dists[i, j] = np.sqrt(dx**2 + dy**2)
+                dists[j, i] = dists[i, j]
+        
+        # Find the circle with the smallest radius and least expansion potential
+        min_radius_idx = np.argmin(radii)
+        min_expansion_potential = np.min(dists[min_radius_idx, :], axis=0)
+        expansion_potential_indices = np.argsort(min_expansion_potential)[::-1]  # Sort for most constrained
+        
+        # Apply controlled jitters to small circles with low expansion potential
+        jitter_scale = 0.03 * (np.mean(radii) - radii[min_radius_idx]) / np.mean(radii)
+        if jitter_scale > 0:
+            for i in expansion_potential_indices[:6]:  # Perturb top 6 constrained circles
+                if i != min_radius_idx:
+                    # Apply randomized jitter with radius-weighted scaling
+                    jitter_x = np.random.uniform(-jitter_scale, jitter_scale) * (radii[i] / np.mean(radii))
+                    jitter_y = np.random.uniform(-jitter_scale, jitter_scale) * (radii[i] / np.mean(radii))
+                    v[3*i] += jitter_x
+                    v[3*i+1] += jitter_y
+                    # Clamp within bounds
+                    v[3*i] = np.clip(v[3*i], 0.0, 1.0)
+                    v[3*i+1] = np.clip(v[3*i+1], 0.0, 1.0)
+        
+        # Re-evaluate with perturbed configuration using higher precision
+        res = minimize(neg_sum_radii, v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 400, "ftol": 1e-12, "eps": 1e-8})
+
+    # Targeted radius expansion with minimal interference for largest circles
+    if res.success:
+        v = res.x
+        radii = v[2::3]
+        centers = np.column_stack([v[0::3], v[1::3]])
+        dists = np.zeros((n, n))
+        for i in range(n):
+            for j in range(i + 1, n):
+                dx = centers[i, 0] - centers[j, 0]
+                dy = centers[i, 1] - centers[j, 1]
+                dists[i, j] = np.sqrt(dx**2 + dy**2)
+                dists[j, i] = dists[i, j]
+        
+        # Calculate radial expansion potential based on available space
+        expansion_potential = np.zeros(n)
+        for i in range(n):
+            min_dist = np.min(dists[i, :])
+            expansion_potential[i] = min_dist - radii[i] - 1e-8  # Marginal expansion
+            if expansion_potential[i] < 0:
+                expansion_potential[i] = 0
+        
+        # Sort for radial expansion from most to least constrained
+        expansion_indices = np.argsort(expansion_potential)[::-1]
+        
+        # Calculate growth based on current total and available expansion
+        current_total = np.sum(radii)
+        target_growth = 0.007  # Conservative target for expansion
+        expansion_rate = target_growth / n
+        
+        # Distribute expansion while maintaining non-overlap with careful verification
+        for i in expansion_indices:
+            if expansion_potential[i] > 1e-8:
+                # Apply incremental expansion
+                expand_amount = min(expansion_potential[i] * 0.5, expansion_rate)
+                v[3*i + 2] += expand_amount
+                # Clamp radii to min max
+                v[3*i + 2] = np.clip(v[3*i + 2], 1e-4, 0.5)
+        
+        # Re-evaluate with adjusted radii and new configuration
+        res = minimize(neg_sum_radii, v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 400, "ftol": 1e-12, "eps": 1e-8})
+
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())
+```

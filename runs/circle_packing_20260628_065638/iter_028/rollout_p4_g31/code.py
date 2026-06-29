@@ -1,0 +1,120 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = 5
+    rows = (n + cols - 1) // cols
+    
+    # Initialize with a dense, staggered grid with random perturbation
+    xs_base = np.array([(col + 0.5) / cols for col in range(cols)])
+    ys_base = np.array([(row + 0.5) / rows for row in range(rows)])
+    xs = []
+    ys = []
+    
+    # Add random perturbations with adaptive scaling for better coverage
+    for i in range(n):
+        row = i // cols
+        col = i % cols
+        x_base = xs_base[col]
+        y_base = ys_base[row]
+        x = x_base + np.random.uniform(-0.05, 0.05)
+        y = y_base + np.random.uniform(-0.05, 0.05)
+        if row % 2 == 1:
+            x += 0.5 / cols
+        xs.append(x)
+        ys.append(y)
+    
+    # Calculate initial radius using more adaptive sizing
+    max_distance = np.sqrt(2) / cols  # Diagonal of cell
+    r0 = max_distance / (np.sqrt(n) + 1) - 1e-3
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = np.full(n, r0)
+    
+    bounds = []
+    # Ensure bounds list and decision vector length match
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+    
+    # Objective function
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+    
+    # Constraints construction using lambda with captured i
+    cons = []
+    for i in range(n):
+        # Left boundary constraint
+        cons.append({"type": "ineq", "fun": (lambda v, i=i: 1.0 - v[3*i] - v[3*i+2])})
+        # Right boundary constraint
+        cons.append({"type": "ineq", "fun": (lambda v, i=i: v[3*i] - v[3*i+2])})
+        # Bottom boundary constraint
+        cons.append({"type": "ineq", "fun": (lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2])})
+        # Top boundary constraint
+        cons.append({"type": "ineq", "fun": (lambda v, i=i: v[3*i+1] - v[3*i+2])})
+    
+    # Vectorized overlap constraints with lambda and i, j
+    for i in range(n):
+        for j in range(i + 1, n):
+            cons.append({
+                "type": "ineq", 
+                "fun": (lambda v, i=i, j=j: 
+                        (v[3*i] - v[3*j])**2 + (v[3*i+1] - v[3*j+1])**2 
+                        - (v[3*i+2] + v[3*j+2])**2)
+            })
+    
+    # Initial optimization with adaptive constraints and tighter tolerances
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 1600, "ftol": 1e-10, "gtol": 1e-10})
+    
+    # Implement shake heuristic for smallest circles
+    if res.success:
+        v = res.x
+        radii = v[2::3]
+        centers = np.column_stack([v[0::3], v[1::3]])
+        
+        # Identify smallest circles
+        min_radius_idx = np.argsort(radii)[:2]  # Select 2 smallest for shaking
+        
+        # Generate perturbation vector with radius scaling
+        shake_vector = np.zeros(3 * n)
+        for idx in min_radius_idx:
+            # Radius scaling factor for meaningful perturbation
+            scale_factor = 0.1 * np.sqrt(radii[idx])  # Larger scales for smaller circles
+            shake_vector[3*idx] = np.random.uniform(-scale_factor*0.5, scale_factor*0.5)
+            shake_vector[3*idx + 1] = np.random.uniform(-scale_factor*0.5, scale_factor*0.5)
+            shake_vector[3*idx + 2] = np.random.uniform(-scale_factor*0.2, scale_factor*0.2)
+        
+        # Create perturbed vector
+        perturbed_v = v.copy() + shake_vector
+        
+        # Re-optimize after perturbation
+        res = minimize(neg_sum_radii, perturbed_v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 300, "ftol": 1e-10, "gtol": 1e-10})
+        
+        # If still successful, perform targeted expansion
+        if res.success:
+            v = res.x
+            radii = v[2::3]
+            centers = np.column_stack([v[0::3], v[1::3]])
+            
+            # Re-identify smallest circles for targeted expansion
+            min_radius_idx = np.argsort(radii)[:2]
+            
+            # Calculate expansion vector with more controlled expansion
+            expansion = 0.007
+            expansion_vector = np.zeros(3 * n)
+            for idx in min_radius_idx:
+                expansion_vector[3*idx + 2] = expansion * (np.median(radii) / radii[idx])
+            
+            # Create new vector with expansion
+            expanded_v = v.copy() + expansion_vector
+            
+            # Re-optimize with expansion
+            res = minimize(neg_sum_radii, expanded_v, method="SLSQP", bounds=bounds,
+                           constraints=cons, options={"maxiter": 200, "ftol": 1e-10, "gtol": 1e-10})
+    
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())

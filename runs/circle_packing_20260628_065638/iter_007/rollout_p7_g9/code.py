@@ -1,0 +1,104 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = 5
+    rows = (n + cols - 1) // cols
+    
+    # Initialize positions using Voronoi tessellation-inspired placement
+    xs = []
+    ys = []
+    for i in range(n):
+        row = i // cols
+        col = i % cols
+        x = (col + 0.5) / cols
+        y = (row + 0.5) / rows
+        # Introduce variation to break symmetry and allow better expansion
+        if row % 3 == 1:
+            x += 0.1 / cols
+        if row % 2 == 1:
+            y += 0.1 / rows
+        xs.append(x)
+        ys.append(y)
+    
+    r0 = 0.3 / cols - 1e-3
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = np.full(n, r0)
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    # Vectorized constraint setup for overlap
+    cons = []
+    for i in range(n):
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+    
+    # Vectorized overlap constraints
+    def overlap_constraints(v):
+        x = v[0::3]
+        y = v[1::3]
+        r = v[2::3]
+        dist_sq = np.sum((x[:, np.newaxis] - x[np.newaxis, :]) ** 2 + 
+                         (y[:, np.newaxis] - y[np.newaxis, :]) ** 2, axis=0)
+        min_dist_sq = (r[:, np.newaxis] + r[np.newaxis, :]) ** 2
+        return np.diag(np.zeros(n)) - (dist_sq - min_dist_sq)
+    
+    cons_overlap = []
+    for i in range(n):
+        for j in range(i + 1, n):
+            cons_overlap.append({"type": "ineq", "fun": lambda v, i=i, j=j: overlap_constraints(v)[i,j]})
+    
+    cons += cons_overlap
+
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 1500, "ftol": 1e-10})
+    
+    # Local refinement step: perturb the most isolated circle
+    if res.success:
+        v = res.x
+        centers = v[0::3], v[1::3]
+        radii = v[2::3]
+        dists = np.zeros(n)
+        for i in range(n):
+            for j in range(n):
+                if i != j:
+                    dx = centers[0][i] - centers[0][j]
+                    dy = centers[1][i] - centers[1][j]
+                    dists[i] += np.sqrt(dx*dx + dy*dy)
+        isolated_index = np.argmin(dists)
+        v[3*isolated_index + 2] += 0.002
+        v[3*isolated_index + 0] += 0.005
+        v[3*isolated_index + 1] += 0.005
+        res = minimize(neg_sum_radii, v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 300, "ftol": 1e-10})
+
+    # Add a 'shake' heuristic: perturb the smallest circles and re-optimize
+    if res.success:
+        v = res.x
+        radii = v[2::3]
+        smallest_indices = np.argsort(radii)[:4]  # Perturb the 4 smallest circles
+        for idx in smallest_indices:
+            # Perturb positions and radii
+            v[3*idx + 0] += np.random.uniform(-0.01, 0.01)
+            v[3*idx + 1] += np.random.uniform(-0.01, 0.01)
+            v[3*idx + 2] += np.random.uniform(-0.001, 0.001)
+            # Ensure bounds are maintained
+            v[3*idx + 0] = np.clip(v[3*idx + 0], 0.0, 1.0)
+            v[3*idx + 1] = np.clip(v[3*idx + 1], 0.0, 1.0)
+            v[3*idx + 2] = np.clip(v[3*idx + 2], 1e-4, 0.5)
+        res = minimize(neg_sum_radii, v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 200, "ftol": 1e-10})
+
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())

@@ -1,0 +1,82 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = 5
+    rows = (n + cols - 1) // cols
+    
+    # Initialize positions using a randomized geometric clustering algorithm
+    xs = np.random.uniform(0.1, 0.9, n)
+    ys = np.random.uniform(0.1, 0.9, n)
+    # Group into clusters of 5 and place them in a hexagonal grid
+    cluster_centers = np.random.uniform(0.2, 0.8, (n // 5 + 1, 2))
+    for i in range(n):
+        cluster_idx = i // 5
+        offset = np.random.uniform(-0.2, 0.2, 2)
+        xs[i] = cluster_centers[cluster_idx, 0] + offset[0]
+        ys[i] = cluster_centers[cluster_idx, 1] + offset[1]
+    
+    # Ensure cluster spacing
+    for i in range(n // 5 + 1):
+        for j in range(i + 1, n // 5 + 1):
+            dx = cluster_centers[i, 0] - cluster_centers[j, 0]
+            dy = cluster_centers[i, 1] - cluster_centers[j, 1]
+            if np.sqrt(dx*dx + dy*dy) < 0.3:
+                cluster_centers[i] += np.random.uniform(-0.1, 0.1, 2)
+                cluster_centers[j] += np.random.uniform(-0.1, 0.1, 2)
+    
+    r0 = 0.25 / np.sqrt(n) - 1e-3
+    v0 = np.empty(3 * n)
+    v0[0::3] = xs
+    v0[1::3] = ys
+    v0[2::3] = np.full(n, r0)
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    cons = []
+    for i in range(n):
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+    for i in range(n):
+        for j in range(i + 1, n):
+            def constraint_func(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                return dx*dx + dy*dy - (v[3*i+2] + v[3*j+2])**2
+            cons.append({"type": "ineq", "fun": constraint_func})
+
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 1500, "ftol": 1e-10})
+    
+    # Optimized cluster-based refinement
+    if res.success:
+        v = res.x
+        centers = v[0::3], v[1::3]
+        radii = v[2::3]
+        # Group circles into clusters and adjust radius expansion
+        cluster_r = np.zeros(n // 5 + 1)
+        for i in range(n // 5 + 1):
+            idxs = np.arange(i * 5, min((i + 1) * 5, n))
+            cluster_r[i] = np.mean(radii[idxs])
+        # Select the cluster with the tightest packing for radius expansion
+        tightest_cluster = np.argmin([np.std(radii[np.arange(i * 5, min((i + 1) * 5, n))]) for i in range(n // 5 + 1)])
+        idxs = np.arange(tightest_cluster * 5, min((tightest_cluster + 1) * 5, n))
+        v[3*idxs + 2] += 0.005
+        # Adjust positions slightly to prevent overlap
+        for idx in idxs:
+            v[3*idx + 0] += np.random.uniform(-0.01, 0.01)
+            v[3*idx + 1] += np.random.uniform(-0.01, 0.01)
+        res = minimize(neg_sum_radii, v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 300, "ftol": 1e-10})
+
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())

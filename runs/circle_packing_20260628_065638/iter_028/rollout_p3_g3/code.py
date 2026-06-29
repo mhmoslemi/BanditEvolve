@@ -1,0 +1,149 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = 5
+    rows = (n + cols - 1) // cols
+    
+    # Initialize positions with more refined grid and probabilistic spacing
+    xs = []
+    ys = []
+    for i in range(n):
+        row = i // cols
+        col = i % cols
+        x_center = (col + 0.5) / cols
+        y_center = (row + 0.5) / rows
+        # Randomized offset with adaptive scaling
+        x_offset = np.random.normal(0, 0.06)  # Smaller spread for better control
+        y_offset = np.random.normal(0, 0.06)
+        # Shift alternate rows for staggered grid
+        if row % 2 == 1:
+            x_offset += 0.5 / cols * np.random.choice([-1, 1]) * 0.2
+        x = x_center + x_offset
+        y = y_center + y_offset
+        # Apply grid-based boundary expansion
+        if row % 2 == 0 and col < 3: 
+            x += np.random.uniform(-0.04, 0.04) * (0.9 - 0.2 * col)
+        if row % 1 == 0 and col > 1: 
+            y += np.random.uniform(-0.04, 0.04) * (0.9 - 0.15 * col)
+        xs.append(x)
+        ys.append(y)
+    
+    r0 = 0.4 / cols - 1e-3
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = np.full(n, r0)
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]  # matches v0 length
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])  # minimize the negative of the total area
+
+    # Vectorized and more robust constraints with closure captures
+    cons = []
+    for i in range(n):
+        cons.append({"type": "ineq", "fun": (lambda v, i=i: v[3*i] - v[3*i+2])})
+        cons.append({"type": "ineq", "fun": (lambda v, i=i: 1.0 - v[3*i] - v[3*i+2])})
+        cons.append({"type": "ineq", "fun": (lambda v, i=i: v[3*i+1] - v[3*i+2])})
+        cons.append({"type": "ineq", "fun": (lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2])})
+    
+    # Add dynamic spacing constraints to improve packing
+    for i in range(n):
+        for j in range(i + 1, n):
+            # Weighted spacing based on relative sizes and positions
+            cons.append({"type": "ineq", 
+                         "fun": (lambda v, i=i, j=j: 
+                                 (v[3*i] - v[3*j])**2 + (v[3*i+1] - v[3*j+1])**2 
+                                 - (v[3*i+2] + v[3*j+2])**2 * 1.01)})
+
+    # Initial optimization
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 2000, "ftol": 1e-10, "gtol": 1e-9})
+    
+    # Asymmetric reconfiguration: random perturbations with radius-based scaling
+    if res.success:
+        v = res.x
+        radii = v[2::3]
+        centers = np.column_stack([v[0::3], v[1::3]])
+        
+        # Create radius-weighted spatial reconfiguration
+        spatial_weights = np.random.rand(n, 2) * 0.05 * (radii / np.mean(radii))
+        perturbed_v = v.copy()
+        for i in range(n):
+            perturbed_v[3*i] += spatial_weights[i, 0]
+            perturbed_v[3*i+1] += spatial_weights[i, 1]
+        
+        # Adaptive re-optimization with tightened tolerances
+        res = minimize(neg_sum_radii, perturbed_v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 500, "ftol": 1e-11, "gtol": 1e-10})
+
+    # Targeted radius expansion on least constrained circle
+    if res.success:
+        v = res.x
+        radii = v[2::3]
+        centers = np.column_stack([v[0::3], v[1::3]])
+        dists = np.zeros((n, n))
+
+        # Vectorized distance calculation with broadcasting
+        dx = centers[:, np.newaxis, 0] - centers[np.newaxis, :, 0]
+        dy = centers[:, np.newaxis, 1] - centers[np.newaxis, :, 1]
+        dists = np.sqrt(dx**2 + dy**2)
+        
+        # Find least constrained circle (maximizing minimum distance)
+        min_dists = np.min(dists, axis=1)
+        least_constrained_idx = np.argmax(min_dists)
+        
+        # Calculate growth and expansion vector
+        current_total = np.sum(radii)
+        target_growth = 0.006
+        growth_rate = (target_growth / (n - 1)) * 0.7  # Reduced factor for more stability
+        new_radii = radii.copy()
+        
+        # Apply controlled expansion
+        for i in range(n):
+            if i != least_constrained_idx:
+                # Use radius-based expansion factor and small randomness
+                expansion_i = growth_rate * (1 + 0.05 * np.random.rand()) * (radii[i] / np.mean(radii))
+                new_radii[i] += expansion_i
+        
+        # Validate and refine new_radius vector with constraint checking
+        while True:
+            expanded_v = v.copy()
+            expanded_v[2::3] = new_radii
+            expanded_centers = np.column_stack([expanded_v[0::3], expanded_v[1::3]])
+            
+            # Validate new configuration
+            valid = True
+            for i in range(n):
+                for j in range(i + 1, n):
+                    dx = expanded_centers[i, 0] - expanded_centers[j, 0]
+                    dy = expanded_centers[i, 1] - expanded_centers[j, 1]
+                    dist = np.sqrt(dx**2 + dy**2)
+                    if dist < new_radii[i] + new_radii[j] - 1e-12:
+                        valid = False
+                        break
+                if not valid:
+                    break
+            
+            if valid:
+                break
+            else:
+                # Reduce expansion for constrained circles
+                for i in range(n):
+                    if i == least_constrained_idx:
+                        new_radii[i] += 0.98 * (new_radii[i] - radii[i]) 
+                    else:
+                        new_radii[i] -= 0.01 * (new_radii[i] - radii[i])
+        
+        # Update decision vector
+        v = expanded_v.copy()
+        res = minimize(neg_sum_radii, v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 500, "ftol": 1e-11, "gtol": 1e-10})
+
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())

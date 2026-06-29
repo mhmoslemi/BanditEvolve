@@ -1,0 +1,165 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    # Adaptive grid layout: dynamic row/col sizing, enhanced geometric hashing
+    cols = int(np.ceil(np.sqrt(n)))
+    rows = (n + cols - 1) // cols
+
+    # Enhanced initialization with multiple spatial hashing levels and non-uniform offset control
+    xs = []
+    ys = []
+    for i in range(n):
+        # Dynamic row/col assignment with row-aware scaling
+        row = i // cols
+        base_col = i % cols
+        
+        # Base positioning for row-aware staggered grid
+        x_center = (base_col + 0.5 + (row % 3 == 1) * 0.25) / cols
+        # Row-based vertical scaling to enable denser bottom rows
+        y_center = (row + 0.35 + (base_col % 2 == 0) * 0.12) / rows
+        
+        # Apply spatial hashing to introduce non-regular offsetting
+        # Level 1: Row- and column-based offset
+        row_hash = 0.03 * np.sin(row * 173.2)  # 173.2 is sqrt(30000) for non-periodic perturbation
+        col_hash = 0.04 * np.cos(base_col * 41.3)  # 41.3 is chosen to avoid alignment with grid
+        x = x_center + row_hash + col_hash
+        y = y_center + 0.04 * np.tan(row / 3.5)  # 3.5 is used to reduce vertical alignment patterns
+        
+        # Apply spatial constraint-aware random jitter with diminishing scale
+        # Scale based on row proximity to edges to prevent overcrowding
+        jitter_scale = 0.04 * (1 - np.min([row / (rows - 1), (rows - 1 - row) / (rows - 1)]))
+        x += np.random.uniform(-jitter_scale, jitter_scale)
+        y += np.random.uniform(-jitter_scale, jitter_scale)
+        
+        xs.append(x)
+        ys.append(y)
+    
+    # Initial radius estimation with adaptive scaling for edge proximity
+    # Radii scale inversely with grid density and based on row proximity
+    r0 = 0.4 / np.sqrt(cols) - 1e-3
+    radius_scaling = 0.95 + 0.05 * np.sqrt(rows) / cols
+    r0 = r0 * radius_scaling + np.random.uniform(-0.01 * radius_scaling, 0.01 * radius_scaling)
+    r0 = np.clip(r0, 1e-3, 0.25)  # Clamp to maintain feasibility
+    
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = np.full(n, r0)
+    
+    # Define bounds that exactly match the 3*n vector length
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+    
+    # Vectorized constraints for boundaries using lambda closures with i
+    cons = []
+    for i in range(n):
+        cons.append( { "type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2] } )
+        cons.append( { "type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2] } )
+        cons.append( { "type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2] } )
+        cons.append( { "type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2] } )
+    
+    # Vectorized overlap constraints with randomized geometric hashing and spatial-aware scaling
+    # Constraint functions now incorporate spatial hashing to prevent alignment
+    for i in range(n):
+        for j in range(i + 1, n):
+            # Introduce a spatial hashing parameter to perturb distance constraints
+            # This parameter scales with radius to make smaller circles more responsive
+            hash_factor = np.sqrt(v0[3*i+2] + v0[3*j+2])  # hash_factor based on radius
+            hash_scale = 0.02 + 0.005 * hash_factor
+            def constraint_func(v, i=i, j=j, hash_scale=hash_scale):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                # Add spatial hashing noise that scales with hash factor (radius) to ensure variability
+                hash_noise = 0.02 * np.random.rand() * hash_scale
+                dist_sq = (dx - hash_noise)**2 + (dy - hash_noise)**2
+                return dist_sq - (v[3*i+2] + v[3*j+2])**2
+            cons.append( { "type": "ineq", "fun": constraint_func } )
+    
+    # Initial optimization using a robust SLSQP variant with adaptive constraints and gradient control
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 900, "ftol": 1e-10, "eps": 1e-8})
+    
+    # First refinement: spatial perturbation with adaptive hashing
+    if res.success:
+        v = res.x
+        radii = v[2::3]
+        centers = np.column_stack([v[0::3], v[1::3]])
+        # Compute spatial hash map for perturbation based on radius and proximity
+        spatial_hash = np.random.rand(n, 2) * 0.03
+        # Perturbation scales with spatial hash to avoid uniform shifts
+        perturbation = spatial_hash * (radii / np.mean(radii) + 0.4)
+        
+        perturbed_v = v.copy()
+        for i in range(n):
+            perturbed_v[3*i] += perturbation[i, 0]
+            perturbed_v[3*i+1] += perturbation[i, 1]
+        
+        # Re-evaluate with perturbed parameters
+        res = minimize(neg_sum_radii, perturbed_v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 300, "ftol": 1e-10, "eps": 1e-8})
+    
+    # Second refinement: adaptive geometry hashing with gradient control
+    if res.success:
+        v = res.x
+        radii = v[2::3]
+        centers = np.column_stack([v[0::3], v[1::3]])
+        # Vectorized pairwise distance matrix for constraint validation
+        dx = centers[:, np.newaxis, 0] - centers[np.newaxis, :, 0]
+        dy = centers[:, np.newaxis, 1] - centers[np.newaxis, 1]
+        dists = np.sqrt(dx**2 + dy**2)
+        
+        # Find most constrained circle using minimum distance to others (non-zero) and least flexibility
+        # Filter out diagonal distances and use min distance from neighbor as cost
+        min_dists = np.min(dists, axis=1)
+        min_dists[np.arange(n)] = np.inf  # Exclude self
+        most_constrained_idx = np.argmin(min_dists)  # Circle with least flexibility/escape space
+        
+        # Compute "constrained radius" as sum of overlapping neighbors
+        constraining_radii = []
+        for j in range(n):
+            if j != most_constrained_idx:
+                dist_to_neigh = np.sqrt((centers[most_constrained_idx, 0] - centers[j, 0])**2
+                                       + (centers[most_constrained_idx, 1] - centers[j, 1])**2)
+                constraining_radius = np.abs(radii[j] - (dist_to_neigh - 1e-8))
+                constraining_radii.append(constraining_radius)
+        
+        # Use mean constraining radius to compute expansion target
+        if constraining_radii:
+            constraining_radius = np.mean(constraining_radii)
+            # Compute maximum possible expansion for constrained circle based on spacing
+            max_expansion = max(0.0, constraining_radius - radii[most_constrained_idx])
+            # Use a fraction (say, 0.8) to maintain feasibility
+            expansion_amount = max_expansion * 0.95
+            # Apply controlled expansion with gradient-aware perturbation
+            new_radii = radii.copy()
+            new_radii[most_constrained_idx] += expansion_amount
+            # Create an expanded decision vector
+            expanded_v = v.copy()
+            expanded_v[2::3] = new_radii
+            # Re-Optimize with expanded radii and constraint-aware gradients
+            res = minimize(neg_sum_radii, expanded_v, method="SLSQP", bounds=bounds,
+                           constraints=cons, options={"maxiter": 400, "ftol": 1e-11, "eps": 1e-8})
+        
+    # Final refinement: multi-level hashing with dual expansion and gradient control
+    if res.success:
+        v = res.x
+        # Re-evaluate geometric hashing and spatial perturbation for deeper refinement
+        perturbation = np.random.rand(n, 2) * 0.04
+        hash_scale = np.sqrt(v[2::3] / np.mean(v[2::3]))  # hash scale based on radius
+        perturbed_v = v.copy()
+        for i in range(n):
+            perturbed_v[3*i] += perturbation[i, 0] * hash_scale[i]
+            perturbed_v[3*i+1] += perturbation[i, 1] * hash_scale[i]
+        
+        res = minimize(neg_sum_radii, perturbed_v, method="SLSQP", bounds=bounds,
+                       constraints=cons, options={"maxiter": 400, "ftol": 1e-11, "eps": 1e-8})
+    
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())

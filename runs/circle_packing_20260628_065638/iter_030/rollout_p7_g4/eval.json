@@ -1,0 +1,21 @@
+{
+  "record": {
+    "kind": "mutate",
+    "band": "elite",
+    "arm_idx": 26,
+    "arm_source": "reflection",
+    "outcome": "invalid:eval",
+    "value": null,
+    "dmu": null,
+    "dsigma": null
+  },
+  "eval": {
+    "per_seed": {
+      "0": 0.0
+    },
+    "value": 0.0,
+    "valid": false,
+    "raw": null,
+    "msg": "run_failed:Cannot cast ufunc 'add' output from dtype('float64') to dtype('int64') with casting rule 'same_kind'"
+  }
+}

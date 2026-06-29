@@ -1,0 +1,157 @@
+```python
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = int(np.ceil(np.sqrt(n))) + 1  # Introduce more columns than rows for asymmetric tiling
+    rows = (n + cols - 1) // cols  # Ensure all circles fit
+    
+    # Initialize positions with randomized geometric clustering and staggered grid with adaptive spacing
+    xs = []
+    ys = []
+    for i in range(n):
+        row = i // cols
+        col = i % cols
+        x_center = (col + 0.5) / cols
+        y_center = (row + 0.5) / rows
+        # Randomized offset to break symmetry and avoid clustering
+        x_offset = np.random.uniform(-0.06, 0.06)
+        y_offset = np.random.uniform(-0.06, 0.06)
+        x = x_center + x_offset
+        y = y_center + y_offset
+        # Shift alternate rows to create staggered grid
+        if row % 2 == 1:
+            x += 0.1 / cols
+        xs.append(x)
+        ys.append(y)
+    
+    r0 = 0.25 / np.sqrt(n) - 1e-3  # Slightly smaller starting radius for better expansion room
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = np.full(n, r0)
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    # Vectorized constraints for boundaries using lambda with captured i (ensure lambda captures correctly with fixed i)
+    cons = []
+    for i in range(n):
+        # Left + radius <= 1
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i + 2]})
+        # Right - radius >= 0
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i + 2]})
+        # Bottom + radius <= 1
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i + 1] - v[3*i + 2]})
+        # Top - radius >= 0
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i + 1] - v[3*i + 2]})
+
+    # Vectorized overlap constraints using lambda with captured i,j
+    for i in range(n):
+        for j in range(i + 1, n):
+            # Using a lambda with a closure (i,j) to ensure it's bound at time of definition
+            constraint_func = lambda v, i=i, j=j: (v[3*i] - v[3*j])**2 + (v[3*i + 1] - v[3*j + 1])**2 - (v[3*i + 2] + v[3*j + 2])**2
+            cons.append({"type": "ineq", "fun": constraint_func})
+
+    # Initial optimization with increased max iterations and tighter tolerance
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds, constraints=cons, options={"maxiter": 2000, "ftol": 1e-11, "eps": 1e-9})
+    
+    # Disrupt spatial hierarchy with randomized tiling strategy based on Voronoi tessellation (adaptive placement)
+    if res.success:
+        v = res.x
+        radii = v[2::3]
+        centers = np.column_stack([v[0::3], v[1::3]])
+        
+        # Generate Voronoi grid for tiling (use K-D tree for adaptive partitioning)
+        from sklearn.neighbors import KDTree
+        tree = KDTree(centers)
+        distances, indices = tree.query(centers, k=3, return_distance=True)
+        
+        # Generate displacement vectors to break up existing layout with random geometric tiling
+        displacement = np.random.rand(n, 2) * (0.08 / np.sqrt(n))  # Scaled for smaller n
+        # Ensure minimal expansion to avoid losing prior stability
+        for i in range(n):
+            # Limit displacement to avoid excessive rearrangement
+            max_disp = 0.05 + 0.02 * (radii[i] / np.mean(radii))
+            displacement[i] *= max_disp
+            v[3*i] += displacement[i][0]
+            v[3*i + 1] += displacement[i][1]
+        
+        # Re-evaluate with new spatial configuration
+        res = minimize(neg_sum_radii, v, method="SLSQP", bounds=bounds, constraints=cons, options={"maxiter": 400, "ftol": 1e-11, "eps": 1e-9})
+
+    # Targeted radius expansion on most constrained circle with dynamic constraint analysis
+    if res.success:
+        v = res.x
+        radii = v[2::3]
+        centers = np.column_stack([v[0::3], v[1::3]])
+        
+        # Vectorized distance matrix with efficient computation (use broadcasting)
+        dx = centers[:, np.newaxis, 0] - centers[np.newaxis, :, 0]
+        dy = centers[:, np.newaxis, 1] - centers[np.newaxis, :, 1]
+        dists = np.sqrt(dx**2 + dy**2)
+        
+        # Compute constraint tightness based on minimum distance to neighbors
+        min_dists = np.min(dists, axis=1)
+        tightness = min_dists / (radii + 1e-8)  # Normalize with radius to prioritize smaller circles
+        most_constrained_idx = np.argmin(tightness)
+        
+        # Calculate growth based on current total sum and expansion potential via adaptive metric
+        current_total = np.sum(radii)
+        # Dynamic growth scaling based on current tightness and expansion room
+        target_growth = 0.004 * (1.0 + 0.5 * np.std(tightness))  # Use variability to boost expansion
+        expansion_factor = target_growth / (n - 1) * (current_total / (np.sum(radii) ** 1.2))  # Adjust exponent to prioritize smaller circles
+        
+        # Create expansion vector with targeted expansion on most constrained
+        new_radii = radii.copy()
+        expansion_radius = expansion_factor * 1.3  # 1.3x to trigger more aggressive expansion
+        if expansion_radius > 1e-4:
+            new_radii[most_constrained_idx] += expansion_radius
+        # Apply stochastic expansion on others to promote dispersion
+        for i in range(n):
+            if i != most_constrained_idx:
+                expansion_i = expansion_factor * (1.0 + 0.2 * np.random.rand())  # Random factor to prevent clustering
+                new_radii[i] += expansion_i
+        
+        # Apply expansion with constraint validation using broadcasting
+        while True:
+            expanded_v = v.copy()
+            expanded_v[2::3] = new_radii
+            expanded_centers = np.column_stack([expanded_v[0::3], expanded_v[1::3]])
+            
+            # Validate using vectorized distance calculation
+            valid = True
+            dist_matrix = np.sqrt((expanded_centers[:, np.newaxis, 0] - expanded_centers[np.newaxis, :, 0])**2
+                                 + (expanded_centers[:, np.newaxis, 1] - expanded_centers[np.newaxis, :, 1])**2)
+            for i in range(n):
+                for j in range(i + 1, n):
+                    if dist_matrix[i, j] < new_radii[i] + new_radii[j] - 1e-12:
+                        valid = False
+                        break
+                if not valid:
+                    break
+            
+            if valid:
+                break
+            else:
+                # If invalid, decrease expansion slightly and retry, using gradient-aware backtracking
+                # Use the previous tightness to adjust which circles are adjusted more
+                # Introduce adaptive backtracking based on constraint intensity
+                new_radii = radii + (new_radii - radii) * (0.95 - 0.05 * tightness)
+        
+        # Update decision vector and re-evaluate with expanded radii and new configuration
+        v_new = v.copy()
+        v_new[2::3] = new_radii
+        
+        # Re-evaluate with expanded radii and new configuration using hybrid strategy
+        res = minimize(neg_sum_radii, v_new, method="SLSQP", bounds=bounds, constraints=cons, options={"maxiter": 400, "ftol": 1e-11, "eps": 1e-9})
+    
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())
+```
