@@ -337,7 +337,7 @@ class TrainableLLM(BaseLLM):
                  enable_thinking=False, gen_batch_size=8,
                  lora_r=16, lora_alpha=32, lora_dropout=0.0, lr=1e-6, seed=42,
                  bands=None, per_band=True, adapter_bands=None,
-                 build_optimizers=True):
+                 build_optimizers=True, use_value_head=False, vf_lr=1e-5):
         from unsloth import FastLanguageModel        # MUST precede transformers
         import torch
         from peft import LoraConfig
@@ -459,6 +459,23 @@ class TrainableLLM(BaseLLM):
             model.eval()
             print(f"[llm][rl] generation replica ready on {self.device} "
                   f"(adapters: {self.adapter_names})", flush=True)
+
+        # ---- A2C critic: a scalar value head over the FROZEN backbone ----
+        # Only the training process (build_optimizers) and only rl_algo: a2c build
+        # it. The base model is a frozen feature extractor (no grad flows into it);
+        # just this linear head trains, so it is cheap and cannot OOM the 8B. V(s)
+        # reads the hidden state at the last prompt token (state = mutation prompt).
+        self.value_head = None
+        self.value_optimizer = None
+        if use_value_head and build_optimizers:
+            cfg_obj = (getattr(self.model, "config", None)
+                       or getattr(getattr(self.model, "base_model", None), "config", None))
+            hsz = int(cfg_obj.hidden_size)
+            self.value_head = torch.nn.Linear(hsz, 1).to(self.device).float()
+            self.value_optimizer = torch.optim.AdamW(
+                self.value_head.parameters(), lr=float(vf_lr))
+            print(f"[llm][rl] A2C value head (critic): Linear({hsz}->1) on "
+                  f"{self.device}  vf_lr={vf_lr}", flush=True)
 
     # --------------------------------------------------------- adapters
     def _adapter_for(self, band: Optional[str]) -> Optional[str]:
@@ -715,6 +732,51 @@ class TrainableLLM(BaseLLM):
     def set_train(self, mode=True):
         self.model.train(bool(mode))
 
+    # ------------------------------------------------- A2C critic (value head)
+    def state_value(self, prompt_ids, with_grad=False):
+        """Scalar critic value V(s) of a state s = prompt. Reads the hidden state
+        at the LAST prompt token from the FROZEN base (adapters disabled, no grad
+        into the 8B) and applies the trainable value head. with_grad=True keeps
+        the head's graph for the critic's MSE step; otherwise fully detached."""
+        torch = self.torch
+        if self.value_head is None:
+            raise RuntimeError("state_value() needs a value head "
+                               "(set rl_algo: a2c so make_llm builds one)")
+        cap = int(self.max_seq_length)
+        ids_list = list(prompt_ids)[-cap:] or [self.pad_id]
+        ids = torch.tensor(ids_list, dtype=torch.long,
+                           device=self.device).unsqueeze(0)
+        attn = torch.ones_like(ids)
+        inner = self.model.model
+        trunk = getattr(inner, "model", inner)
+        with torch.no_grad():                       # base = frozen feature extractor
+            try:
+                with self.model.disable_adapter():
+                    feat = trunk(input_ids=ids,
+                                 attention_mask=attn).last_hidden_state[0, -1]
+            except (AttributeError, RuntimeError):
+                feat = trunk(input_ids=ids,
+                             attention_mask=attn).last_hidden_state[0, -1]
+        feat = feat.float()
+        if with_grad:
+            return self.value_head(feat).squeeze(-1)
+        with torch.no_grad():
+            return self.value_head(feat).squeeze(-1)
+
+    def value_zero_grad(self):
+        if self.value_optimizer is not None:
+            self.value_optimizer.zero_grad(set_to_none=True)
+
+    def value_step(self, grad_clip=1.0):
+        if self.value_optimizer is None:
+            return 0.0
+        torch = self.torch
+        gn = torch.nn.utils.clip_grad_norm_(self.value_head.parameters(),
+                                            float(grad_clip))
+        self.value_optimizer.step()
+        self.value_optimizer.zero_grad(set_to_none=True)
+        return float(gn)
+
 
 # ---- multi-GPU generation for RL: train on one GPU, generate on the rest ----
 def _rl_gen_worker(gpu_id, model_kwargs, in_q, out_q, ready_q):
@@ -905,6 +967,10 @@ def make_llm(cfg):
             seed=getattr(cfg, "seed", 42),
             per_band=per_band,
             adapter_bands=adapter_bands,
+            # a2c needs the learned critic; only the trainer (build_optimizers=True)
+            # actually builds it, so the generation workers ignore this.
+            use_value_head=(str(getattr(cfg, "rl_algo", "grpo")).lower() == "a2c"),
+            vf_lr=getattr(cfg, "rl_vf_lr", 1e-5),
         )
         # RL trains ONE model on gpu_ids[0]; if more GPUs are listed, the REST run
         # data-parallel generation replicas (adapter synced each iteration). The

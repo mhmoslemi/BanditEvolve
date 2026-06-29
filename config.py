@@ -72,7 +72,7 @@ class Config:
     # (GRPO). RL is SINGLE-GPU: the multi-GPU gpu_ids replication below is ignored
     # under RL (you train ONE model), so point CUDA_VISIBLE_DEVICES at one device.
     rl_enabled: bool = False            # flips UnslothLLM -> TrainableLLM + GRPO
-    rl_algo: str = "grpo"               # informational; GRPO is what is implemented
+    rl_algo: str = "grpo"               # "grpo" (critic-free) | "a2c" (learned critic)
     rl_group_size: int = 8              # G completions per (parent, arm) = one group
     rl_train_every: int = 1             # run a GRPO update every N iterations
     rl_ppo_epochs: int = 1              # passes over the buffer per update (>1 uses the ratio)
@@ -101,6 +101,9 @@ class Config:
     rl_reward_sterile: float = -0.05
     rl_adv_eps: float = 1e-6            # advantage = (r-mean)/(std+eps)
     rl_min_group_std: float = 1e-8      # skip zero-variance groups (no signal)
+    # ----- A2C only (rl_algo: a2c): the learned value-head critic -----
+    rl_vf_coef: float = 0.5             # weight on the critic (value) MSE loss
+    rl_vf_lr: float = 1e-5             # critic lr (linear head; usually > actor lr)
 
     # multi-GPU data parallelism: explicit physical GPU ids for frozen-policy
     # replicas. "" or a single id -> one model on one GPU (current behavior).

@@ -1,0 +1,660 @@
+===== user =====
+You are an expert in circle packing and numerical optimization.
+
+Task: pack 26 non-overlapping circles inside the unit square [0,1]x[0,1] and
+maximize the sum of their radii. Write an improved version that achieves a larger sum of radii.
+
+Hard requirements for your program:
+- Define exactly this function: def run_packing() -> tuple[np.ndarray, np.ndarray, float]
+- It returns (centers, radii, sum_radii): centers has shape (26, 2),
+  radii has shape (26,), sum_radii is float(radii.sum()).
+- N IS EXACTLY 26. Every array you build and every bounds list you pass to an
+  optimizer must have a length consistent with 26 circles. Do not hardcode a
+  different count and do not let the variable vector and the bounds list disagree.
+- Every circle must lie inside the unit square and no two may overlap. The
+  result is checked by this exact validator (do not redefine it):
+
+```python
+def validate_packing(centers, radii):
+    n = centers.shape[0]
+    if np.isnan(centers).any() or np.isnan(radii).any():
+        return False, "NaN values present"
+    for i in range(n):
+        if radii[i] < 0:
+            return False, f"Circle {i} negative radius"
+    for i in range(n):
+        x, y = centers[i]
+        r = radii[i]
+        if (x - r < -1e-12 or x + r > 1 + 1e-12
+                or y - r < -1e-12 or y + r > 1 + 1e-12):
+            return False, f"Circle {i} outside unit square"
+    for i in range(n):
+        for j in range(i + 1, n):
+            dist = np.sqrt(np.sum((centers[i] - centers[j]) ** 2))
+            if dist < radii[i] + radii[j] - 1e-12:
+                return False, f"Circles {i},{j} overlap"
+    return True, "ok"
+
+```
+
+- numpy (as np) and math are already imported. scipy.optimize.minimize is
+  available as the name `minimize` (already imported for you). Do NOT re-import
+  scipy; just use `minimize(...)`.
+- Top-level helper functions only. No lambdas, no nested closures, no classes.
+- No file or network IO.
+
+A correct, self-consistent optimizer pattern you may adapt (note how the decision
+vector v has length 3*26 and the bounds list has the SAME length 3*26; this is
+the mismatch that most commonly breaks programs):
+
+```python
+def run_packing():
+    n = 26
+    # decision vector v = [x0,y0,r0, x1,y1,r1, ...], length 3*n
+    cols = int(np.ceil(np.sqrt(n)))
+    xs = (np.arange(n) % cols + 0.5) / cols
+    ys = (np.arange(n) // cols + 0.5) / cols
+    r0 = 0.5 / cols - 1e-3
+    v0 = np.empty(3 * n)
+    v0[0::3] = xs
+    v0[1::3] = ys
+    v0[2::3] = r0
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]   # length 3*n, matches v
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    cons = []
+    for i in range(n):
+        cons.append({"type": "ineq", "fun": (lambda i: lambda v: v[3*i]   - v[3*i+2])(i)})
+        cons.append({"type": "ineq", "fun": (lambda i: lambda v: 1.0 - v[3*i]   - v[3*i+2])(i)})
+        cons.append({"type": "ineq", "fun": (lambda i: lambda v: v[3*i+1] - v[3*i+2])(i)})
+        cons.append({"type": "ineq", "fun": (lambda i: lambda v: 1.0 - v[3*i+1] - v[3*i+2])(i)})
+    for i in range(n):
+        for j in range(i + 1, n):
+            cons.append({"type": "ineq",
+                          "fun": (lambda i, j: lambda v:
+                                  (v[3*i]-v[3*j])**2 + (v[3*i+1]-v[3*j+1])**2
+                                  - (v[3*i+2]+v[3*j+2])**2)(i, j)})
+
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 500, "ftol": 1e-9})
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())
+```
+
+You do not have to use this exact method, but whatever you do, keep the variable
+vector and the bounds list the same length, and return exactly 26 circles.
+
+Here is the current best program (sum of radii = 2.620075). Improve it:
+
+```python
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = 5  # Fixed hexagonal grid with 5 columns for better spacing
+    rows = (n + cols - 1) // cols  # Ensure enough rows for 26 circles
+    
+    # Initialize positions using a hexagonal grid pattern
+    xs = []
+    ys = []
+    for i in range(n):
+        row = i // cols
+        col = i % cols
+        x = (col + 0.5) / cols
+        y = (row + 0.5) / rows
+        # Offset even rows for hexagonal packing
+        if row % 2 == 1:
+            x += 0.5 / cols
+        xs.append(x)
+        ys.append(y)
+    
+    r0 = 0.5 / cols - 1e-3
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = np.full(n, r0)
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    cons = []
+    for i in range(n):
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+    for i in range(n):
+        for j in range(i + 1, n):
+            def constraint_func(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                dist_sq = dx*dx + dy*dy
+                min_dist_sq = (v[3*i+2] + v[3*j+2])**2
+                return dist_sq - min_dist_sq
+            cons.append({"type": "ineq", "fun": constraint_func})
+
+    # First phase: global optimization with penalty for out-of-bounds and overlapping circles
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 1000, "ftol": 1e-10, "eps": 1e-8})
+    v = res.x if res.success else v0
+
+    # Second phase: dual-phase mutation strategy - reorder constraint resolution and apply controlled perturbation
+    # Rebuild constraints to prioritize non-overlapping radii over position optimization
+    cons_mutated = []
+    for i in range(n):
+        cons_mutated.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons_mutated.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        cons_mutated.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        cons_mutated.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+    for i in range(n):
+        for j in range(i + 1, n):
+            def constraint_func_mutated(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                dist_sq = dx*dx + dy*dy
+                min_dist_sq = (v[3*i+2] + v[3*j+2])**2
+                return dist_sq - min_dist_sq
+            cons_mutated.append({"type": "ineq", "fun": constraint_func_mutated})
+
+    # Apply controlled perturbation to the seed configuration
+    v_mutated = v.copy()
+    for i in range(n):
+        v_mutated[3*i] += np.random.uniform(-0.02, 0.02)
+        v_mutated[3*i+1] += np.random.uniform(-0.02, 0.02)
+        v_mutated[3*i+2] = np.clip(v_mutated[3*i+2], 1e-4, 0.5)
+
+    # Rebuild bounds for mutated configuration
+    bounds_mutated = []
+    for _ in range(n):
+        bounds_mutated += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    res_mutated = minimize(neg_sum_radii, v_mutated, method="SLSQP", bounds=bounds_mutated,
+                           constraints=cons_mutated, options={"maxiter": 1000, "ftol": 1e-10, "eps": 1e-8})
+    v = res_mutated.x if res_mutated.success else v
+
+    # Third phase: local refinement with stricter constraints
+    perturbation = 0.05
+    v_perturbed = v.copy()
+    np.random.seed(42)
+    for i in range(n):
+        v_perturbed[3*i] += np.random.uniform(-perturbation, perturbation)
+        v_perturbed[3*i+1] += np.random.uniform(-perturbation, perturbation)
+        v_perturbed[3*i+2] += np.random.uniform(-perturbation, perturbation)
+
+    # Rebuild bounds and constraints for perturbed configuration
+    bounds_perturbed = []
+    for _ in range(n):
+        bounds_perturbed += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+    
+    cons_perturbed = []
+    for i in range(n):
+        cons_perturbed.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons_perturbed.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        cons_perturbed.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        cons_perturbed.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+    for i in range(n):
+        for j in range(i + 1, n):
+            def constraint_func_perturbed(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                dist_sq = dx*dx + dy*dy
+                min_dist_sq = (v[3*i+2] + v[3*j+2])**2
+                return dist_sq - min_dist_sq
+            cons_perturbed.append({"type": "ineq", "fun": constraint_func_perturbed})
+
+    res_perturbed = minimize(neg_sum_radii, v_perturbed, method="SLSQP", bounds=bounds_perturbed,
+                             constraints=cons_perturbed, options={"maxiter": 500, "ftol": 1e-10, "eps": 1e-8})
+    v = res_perturbed.x if res_perturbed.success else v
+
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())
+```
+
+Output format (CRITICAL): respond with ONE Python code block and NOTHING else.
+Start your reply with ```python on its own line and end it with ```. Do not
+write any explanation before or after the code block.
+
+```python
+import numpy as np
+
+def run_packing():
+    ...
+    return centers, radii, float(radii.sum())
+```
+
+---
+## MUTATION DIRECTIVE (Band: GOOD)
+CURRENT STATUS: GOOD (MID-PACK).
+This program has a viable foundation but lacks the sophistication to reach elite performance. DIRECTIVE: Keep the core architecture but replace or overhaul a major sub-component. Introduce advanced heuristics, hybridize the optimizer (e.g., add a local polish step after a global search), or fundamentally change how boundary conditions are enforced.
+
+### Specific Tactic to Apply:
+> Add a two-stage optimization pipeline: a coarse global search to find the general layout, followed by a tight local optimization (e.g., L-BFGS-B) to maximize radii.
+
+## TARGET PROGRAM TO IMPROVE (The Parent)
+```python
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = 5  # Fixed hexagonal grid with 5 columns for better spacing
+    rows = (n + cols - 1) // cols  # Ensure enough rows for 26 circles
+    
+    # Initialize positions using a hexagonal grid pattern
+    xs = []
+    ys = []
+    for i in range(n):
+        row = i // cols
+        col = i % cols
+        x = (col + 0.5) / cols
+        y = (row + 0.5) / rows
+        # Offset even rows for hexagonal packing
+        if row % 2 == 1:
+            x += 0.5 / cols
+        xs.append(x)
+        ys.append(y)
+    
+    r0 = 0.5 / cols - 1e-3
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = np.full(n, r0)
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    cons = []
+    for i in range(n):
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+    for i in range(n):
+        for j in range(i + 1, n):
+            def constraint_func(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                dist_sq = dx*dx + dy*dy
+                min_dist_sq = (v[3*i+2] + v[3*j+2])**2
+                return dist_sq - min_dist_sq
+            cons.append({"type": "ineq", "fun": constraint_func})
+
+    # First phase: global optimization with penalty for out-of-bounds and overlapping circles
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 1000, "ftol": 1e-10, "eps": 1e-8})
+    v = res.x if res.success else v0
+
+    # Second phase: dual-phase mutation strategy - reorder constraint resolution and apply controlled perturbation
+    # Rebuild constraints to prioritize non-overlapping radii over position optimization
+    cons_mutated = []
+    for i in range(n):
+        cons_mutated.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons_mutated.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        cons_mutated.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        cons_mutated.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+    for i in range(n):
+        for j in range(i + 1, n):
+            def constraint_func_mutated(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                dist_sq = dx*dx + dy*dy
+                min_dist_sq = (v[3*i+2] + v[3*j+2])**2
+                return dist_sq - min_dist_sq
+            cons_mutated.append({"type": "ineq", "fun": constraint_func_mutated})
+
+    # Apply controlled perturbation to the seed configuration
+    v_mutated = v.copy()
+    for i in range(n):
+        v_mutated[3*i] += np.random.uniform(-0.02, 0.02)
+        v_mutated[3*i+1] += np.random.uniform(-0.02, 0.02)
+        v_mutated[3*i+2] = np.clip(v_mutated[3*i+2], 1e-4, 0.5)
+
+    # Rebuild bounds for mutated configuration
+    bounds_mutated = []
+    for _ in range(n):
+        bounds_mutated += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    res_mutated = minimize(neg_sum_radii, v_mutated, method="SLSQP", bounds=bounds_mutated,
+                           constraints=cons_mutated, options={"maxiter": 1000, "ftol": 1e-10, "eps": 1e-8})
+    v = res_mutated.x if res_mutated.success else v
+
+    # Third phase: local refinement with stricter constraints
+    perturbation = 0.05
+    v_perturbed = v.copy()
+    np.random.seed(42)
+    for i in range(n):
+        v_perturbed[3*i] += np.random.uniform(-perturbation, perturbation)
+        v_perturbed[3*i+1] += np.random.uniform(-perturbation, perturbation)
+        v_perturbed[3*i+2] += np.random.uniform(-perturbation, perturbation)
+
+    # Rebuild bounds and constraints for perturbed configuration
+    bounds_perturbed = []
+    for _ in range(n):
+        bounds_perturbed += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+    
+    cons_perturbed = []
+    for i in range(n):
+        cons_perturbed.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons_perturbed.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        cons_perturbed.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        cons_perturbed.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+    for i in range(n):
+        for j in range(i + 1, n):
+            def constraint_func_perturbed(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                dist_sq = dx*dx + dy*dy
+                min_dist_sq = (v[3*i+2] + v[3*j+2])**2
+                return dist_sq - min_dist_sq
+            cons_perturbed.append({"type": "ineq", "fun": constraint_func_perturbed})
+
+    res_perturbed = minimize(neg_sum_radii, v_perturbed, method="SLSQP", bounds=bounds_perturbed,
+                             constraints=cons_perturbed, options={"maxiter": 500, "ftol": 1e-10, "eps": 1e-8})
+    v = res_perturbed.x if res_perturbed.success else v
+
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())
+```
+
+## HISTORICAL CONTEXT (The Grandparent)
+Review this to understand the trajectory of recent changes.
+```python
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = 5  # Fixed hexagonal grid with 5 columns for better spacing
+    rows = (n + cols - 1) // cols  # Ensure enough rows for 26 circles
+    
+    # Initialize positions using a hexagonal grid pattern
+    xs = []
+    ys = []
+    for i in range(n):
+        row = i // cols
+        col = i % cols
+        x = (col + 0.5) / cols
+        y = (row + 0.5) / rows
+        # Offset even rows for hexagonal packing
+        if row % 2 == 1:
+            x += 0.5 / cols
+        xs.append(x)
+        ys.append(y)
+    
+    r0 = 0.5 / cols - 1e-3
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = np.full(n, r0)
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    cons = []
+    for i in range(n):
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+    for i in range(n):
+        for j in range(i + 1, n):
+            def constraint_func(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                dist_sq = dx*dx + dy*dy
+                min_dist_sq = (v[3*i+2] + v[3*j+2])**2
+                return dist_sq - min_dist_sq
+            cons.append({"type": "ineq", "fun": constraint_func})
+
+    # First phase: global optimization with penalty for out-of-bounds and overlapping circles
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 1000, "ftol": 1e-10, "eps": 1e-8})
+    v = res.x if res.success else v0
+
+    # Second phase: expand smallest circles first with controlled perturbations
+    radii = v[2::3]
+    indices = np.argsort(radii)
+    v_expanded = v.copy()
+    v_expanded[2::3] = np.clip(v_expanded[2::3], 1e-4, 0.5)
+    for i in indices:
+        # Move the circle slightly to give more space for expansion
+        v_expanded[3*i] += np.random.uniform(-0.01, 0.01)
+        v_expanded[3*i+1] += np.random.uniform(-0.01, 0.01)
+        v_expanded[3*i+2] = np.clip(v_expanded[3*i+2], 1e-4, 0.5)
+
+    # Third phase: local refinement with perturbation and stricter constraints
+    perturbation = 0.05
+    v_perturbed = v_expanded.copy()
+    np.random.seed(42)
+    for i in range(n):
+        v_perturbed[3*i] += np.random.uniform(-perturbation, perturbation)
+        v_perturbed[3*i+1] += np.random.uniform(-perturbation, perturbation)
+        v_perturbed[3*i+2] += np.random.uniform(-perturbation, perturbation)
+
+    # Rebuild bounds and constraints for perturbed configuration
+    bounds_perturbed = []
+    for _ in range(n):
+        bounds_perturbed += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+    
+    cons_perturbed = []
+    for i in range(n):
+        cons_perturbed.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons_perturbed.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        cons_perturbed.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        cons_perturbed.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+    for i in range(n):
+        for j in range(i + 1, n):
+            def constraint_func_perturbed(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                dist_sq = dx*dx + dy*dy
+                min_dist_sq = (v[3*i+2] + v[3*j+2])**2
+                return dist_sq - min_dist_sq
+            cons_perturbed.append({"type": "ineq", "fun": constraint_func_perturbed})
+
+    res_perturbed = minimize(neg_sum_radii, v_perturbed, method="SLSQP", bounds=bounds_perturbed,
+                             constraints=cons_perturbed, options={"maxiter": 500, "ftol": 1e-10, "eps": 1e-8})
+    v = res_perturbed.x if res_perturbed.success else v_expanded
+
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())
+```
+
+## GLOBAL SOTA (Reference Only)
+This is the current best known solution. Understand its logic, but DO NOT copy it verbatim. Use it as an architectural north star.
+```python
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = 5
+    rows = (n + cols - 1) // cols
+    
+    xs = []
+    ys = []
+    for i in range(n):
+        row = i // cols
+        col = i % cols
+        x = (col + 0.5) / cols
+        y = (row + 0.5) / rows
+        if row % 2 == 1:
+            x += 0.5 / cols
+        xs.append(x)
+        ys.append(y)
+    
+    r0 = 0.5 / cols - 1e-3
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = np.full(n, r0)
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    cons = []
+    for i in range(n):
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+    for i in range(n):
+        for j in range(i + 1, n):
+            def constraint_func(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                dist_sq = dx*dx + dy*dy
+                min_dist_sq = (v[3*i+2] + v[3*j+2])**2
+                return dist_sq - min_dist_sq
+            cons.append({"type": "ineq", "fun": constraint_func})
+
+    # Phase 1: Initial optimization with penalty for out-of-bounds and overlapping circles
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 1000, "ftol": 1e-9})
+    v = res.x if res.success else v0
+
+    # Phase 2: Apply geometric transformation and perturbation
+    scale_factor = 1.1
+    rotated_v = v.copy()
+    rotated_v[0::3] *= scale_factor
+    rotated_v[1::3] *= scale_factor
+    rotated_v[1::3] += 0.1  # slight vertical shift to break symmetry
+    rotated_v[2::3] *= scale_factor
+
+    bounds_transformed = []
+    for _ in range(n):
+        bounds_transformed += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+    
+    cons_transformed = []
+    for i in range(n):
+        cons_transformed.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons_transformed.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        cons_transformed.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        cons_transformed.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+    for i in range(n):
+        for j in range(i + 1, n):
+            def constraint_func_transformed(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                dist_sq = dx*dx + dy*dy
+                min_dist_sq = (v[3*i+2] + v[3*j+2])**2
+                return dist_sq - min_dist_sq
+            cons_transformed.append({"type": "ineq", "fun": constraint_func_transformed})
+
+    res_transformed = minimize(neg_sum_radii, rotated_v, method="SLSQP", bounds=bounds_transformed,
+                              constraints=cons_transformed, options={"maxiter": 500, "ftol": 1e-9})
+    v = res_transformed.x if res_transformed.success else v
+
+    # Phase 3: Local refinement with controlled perturbation
+    perturbation = 0.03
+    v_perturbed = v.copy()
+    np.random.seed(42)
+    for i in range(n):
+        v_perturbed[3*i] += np.random.uniform(-perturbation, perturbation)
+        v_perturbed[3*i+1] += np.random.uniform(-perturbation, perturbation)
+        v_perturbed[3*i+2] += np.random.uniform(-perturbation, perturbation)
+
+    bounds_perturbed = []
+    for _ in range(n):
+        bounds_perturbed += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+    
+    cons_perturbed = []
+    for i in range(n):
+        cons_perturbed.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons_perturbed.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        cons_perturbed.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        cons_perturbed.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+    for i in range(n):
+        for j in range(i + 1, n):
+            def constraint_func_perturbed(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                dist_sq = dx*dx + dy*dy
+                min_dist_sq = (v[3*i+2] + v[3*j+2])**2
+                return dist_sq - min_dist_sq
+            cons_perturbed.append({"type": "ineq", "fun": constraint_func_perturbed})
+
+    res_perturbed = minimize(neg_sum_radii, v_perturbed, method="SLSQP", bounds=bounds_perturbed,
+                             constraints=cons_perturbed, options={"maxiter": 500, "ftol": 1e-9})
+    v = res_perturbed.x if res_perturbed.success else v
+
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())
+```
+
+## NEGATIVE EXEMPLAR (What Not To Do)
+This program is technically valid but performs terribly. Avoid its structural flaws.
+```python
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = int(np.ceil(np.sqrt(n)))
+    xs = (np.arange(n) % cols + 0.5) / cols
+    ys = (np.arange(n) // cols + 0.5) / cols
+    r0 = 0.5 / cols - 1e-3
+    v0 = np.empty(3 * n)
+    v0[0::3] = xs
+    v0[1::3] = ys
+    v0[2::3] = r0
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    cons = []
+    for i in range(n):
+        cons.append({"type": "ineq", "fun": (lambda i: lambda v: v[3*i] - v[3*i+2])(i)})
+        cons.append({"type": "ineq", "fun": (lambda i: lambda v: 1.0 - v[3*i] - v[3*i+2])(i)})
+        cons.append({"type": "ineq", "fun": (lambda i: lambda v: v[3*i+1] - v[3*i+2])(i)})
+        cons.append({"type": "ineq", "fun": (lambda i: lambda v: 1.0 - v[3*i+1] - v[3*i+2])(i)})
+    for i in range(n):
+        for j in range(i + 1, n):
+            cons.append({"type": "ineq",
+                          "fun": (lambda i, j: lambda v:
+                                  (v[3*i] - v[3*j])**2 + (v[3*i+1] - v[3*j+1])**2
+                                  - (v[3*i+2] + v[3*j+2])**2)(i, j)})
+
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 500, "ftol": 1e-9})
+    v = res.x if res.success else v0
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())
+```
+---
+## OUTPUT CONSTRAINTS (CRITICAL)
+1. You MUST think step-by-step first. Enclose your reasoning strictly within `<strategy>` and `</strategy>` tags.
+2. Analyze the differences between the parent, the SOTA, and the worst exemplars.
+3. Detail exactly how you will implement the specific tactic requested.
+4. After your strategy, output ONE complete, valid Python program.
+5. The code must be enclosed in ```python and ```, and it must be the LAST fenced block in your response.
+6. Do not include any explanation or prose outside of the strategy tags or code blocks.
+7. Ensure all required entrypoints and validation rules are perfectly preserved.

@@ -1,0 +1,85 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = 5  # Manual adjustment for a hexagonal grid
+    rows = (n + cols - 1) // cols  # Ensure enough rows for 26 circles
+    
+    # Initialize positions using a hexagonal grid pattern
+    xs = []
+    ys = []
+    for i in range(n):
+        row = i // cols
+        col = i % cols
+        x = (col + 0.5) / cols
+        y = (row + 0.5) / rows
+        # Offset even rows for hexagonal packing
+        if row % 2 == 1:
+            x += 0.5 / cols
+        xs.append(x)
+        ys.append(y)
+    
+    r0 = 0.5 / cols - 1e-3
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = np.full(n, r0)
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    # First phase: global optimization with initial constraints
+    cons_global = []
+    for i in range(n):
+        cons_global.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons_global.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        cons_global.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        cons_global.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+    for i in range(n):
+        for j in range(i + 1, n):
+            def constraint_func_global(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                return dx*dx + dy*dy - (v[3*i+2] + v[3*j+2])**2
+            cons_global.append({"type": "ineq", "fun": constraint_func_global})
+
+    res_global = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                         constraints=cons_global, options={"maxiter": 500, "ftol": 1e-9})
+    v_global = res_global.x if res_global.success else v0
+
+    # Second phase: local refinement with tighter constraints and perturbations
+    v_refine = v_global.copy()
+    for i in range(n):
+        v_refine[3*i] += np.random.uniform(-0.01, 0.01)
+        v_refine[3*i+1] += np.random.uniform(-0.01, 0.01)
+        v_refine[3*i+2] += np.random.uniform(-0.005, 0.005)
+
+    bounds_refine = []
+    for _ in range(n):
+        bounds_refine += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    cons_refine = []
+    for i in range(n):
+        cons_refine.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons_refine.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        cons_refine.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        cons_refine.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+    for i in range(n):
+        for j in range(i + 1, n):
+            def constraint_func_refine(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                return dx*dx + dy*dy - (v[3*i+2] + v[3*j+2])**2
+            cons_refine.append({"type": "ineq", "fun": constraint_func_refine})
+
+    res_refine = minimize(neg_sum_radii, v_refine, method="L-BFGS-B", bounds=bounds_refine,
+                         constraints=cons_refine, options={"maxiter": 500, "ftol": 1e-9})
+    v_final = res_refine.x if res_refine.success else v_global
+
+    centers = np.column_stack([v_final[0::3], v_final[1::3]])
+    radii = np.clip(v_final[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())

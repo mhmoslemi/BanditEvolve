@@ -105,20 +105,29 @@ class Engine:
         self.rl_buffer = []
         self.rl_group_size = int(getattr(cfg, "rl_group_size", 8))
         self.rl_train_every = int(getattr(cfg, "rl_train_every", 1))
+        self.rl_algo = str(getattr(cfg, "rl_algo", "grpo")).lower()
         if self.rl_enabled:
             from llm import TrainableLLM
             if isinstance(llm, TrainableLLM):
-                self.trainer = GRPOTrainer(llm, cfg)
+                if self.rl_algo == "a2c":
+                    from a2c import A2CTrainer
+                    self.trainer = A2CTrainer(llm, cfg)
+                else:
+                    self.trainer = GRPOTrainer(llm, cfg)
                 names = getattr(llm, "adapter_names", [])
                 if not getattr(llm, "per_band", True):
                     mode = "one shared adapter"
                 else:
                     mode = f"adapters on bands {names}"
-                print(f"[init] RL (GRPO) ON [{mode}]: group_size={self.rl_group_size} "
+                extra = (f" vf_coef={cfg.rl_vf_coef} vf_lr={cfg.rl_vf_lr}"
+                         if self.rl_algo == "a2c" else "")
+                print(f"[init] RL ({self.rl_algo.upper()}) ON [{mode}]: "
+                      f"group_size={self.rl_group_size} "
                       f"train_every={self.rl_train_every} "
                       f"ppo_epochs={cfg.rl_ppo_epochs} lr={cfg.rl_lr} "
                       f"kl={cfg.rl_kl_coef} clip={cfg.rl_clip_eps} "
-                      f"max_comp_tok={cfg.rl_max_completion_tokens}", flush=True)
+                      f"max_comp_tok={cfg.rl_max_completion_tokens}{extra}",
+                      flush=True)
             else:
                 print("[init] rl_enabled but the LLM is not trainable "
                       "(dummy backend?). Running the RL loop STRUCTURE with NO "
@@ -733,14 +742,19 @@ class Engine:
         # ---- GRPO update every train_every iterations (per-band adapters) ----
         if (self.trainer is not None and self.rl_buffer
                 and (it + 1) % self.rl_train_every == 0):
-            print(f"  GRPO update on {len(self.rl_buffer)} action sequences ...",
+            tag = self.rl_algo.upper()
+            print(f"  {tag} update on {len(self.rl_buffer)} action sequences ...",
                   flush=True)
             stats = self.trainer.update(self.rl_buffer)
             self.rl_buffer = []
-            print(f"  GRPO: adapters={stats.get('adapters', 0)} "
+            print(f"  {tag}: adapters={stats.get('adapters', 0)} "
                   f"pg={stats.get('pg', 0):+.5f} kl={stats.get('kl', 0):.5f} "
                   f"ratio={stats.get('ratio', 1):.4f} n={stats.get('n', 0)} "
                   f"tok={stats.get('tokens', 0)}", flush=True)
+            if "vf_loss" in stats:
+                print(f"  {tag} critic: vf_loss={stats['vf_loss']:.5f} "
+                      f"vf_gnorm={stats['vf_grad_norm']:.3f} "
+                      f"states={stats['vf_states']}", flush=True)
             for adapter, st in stats.get("per", {}).items():
                 print(f"    [{adapter:9s}] n={st['n']:<3d} pg={st['pg']:+.5f} "
                       f"kl={st['kl']:.5f} ratio={st['ratio']:.4f} "

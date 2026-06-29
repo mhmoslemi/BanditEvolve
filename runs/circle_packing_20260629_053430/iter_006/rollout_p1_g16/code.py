@@ -1,0 +1,114 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = 5
+    rows = (n + cols - 1) // cols
+    
+    xs = []
+    ys = []
+    for i in range(n):
+        row = i // cols
+        col = i % cols
+        x = (col + 0.5) / cols
+        y = (row + 0.5) / rows
+        if row % 2 == 1:
+            x += 0.5 / cols
+        xs.append(x)
+        ys.append(y)
+    
+    r0 = 0.5 / cols - 1e-3
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = np.full(n, r0)
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    def constraint_func(i, j, v):
+        dx = v[3*i] - v[3*j]
+        dy = v[3*i+1] - v[3*j+1]
+        dist_sq = dx*dx + dy*dy
+        min_dist_sq = (v[3*i+2] + v[3*j+2])**2
+        return dist_sq - min_dist_sq
+
+    cons = []
+    for i in range(n):
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+    for i in range(n):
+        for j in range(i + 1, n):
+            cons.append({"type": "ineq", "fun": lambda v, i=i, j=j: constraint_func(i, j, v)})
+
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 1000, "ftol": 1e-9})
+    v = res.x if res.success else v0
+
+    # Split into sub-components
+    sub_n = 2
+    sub_v = np.array_split(v, sub_n)
+    sub_bounds = np.array_split(bounds, sub_n)
+    sub_cons = []
+    for i in range(sub_n):
+        sub_con = []
+        for j in range(len(sub_v[i])):
+            sub_con.append({"type": "ineq", "fun": lambda v, j=j: v[3*j] - v[3*j+2]})
+            sub_con.append({"type": "ineq", "fun": lambda v, j=j: 1.0 - v[3*j] - v[3*j+2]})
+            sub_con.append({"type": "ineq", "fun": lambda v, j=j: v[3*j+1] - v[3*j+2]})
+            sub_con.append({"type": "ineq", "fun": lambda v, j=j: 1.0 - v[3*j+1] - v[3*j+2]})
+        sub_cons.append(sub_con)
+    for i in range(sub_n):
+        for j in range(i + 1, sub_n):
+            for k in range(len(sub_v[i])):
+                for l in range(len(sub_v[j])):
+                    def constraint_func_sub(v, i=i, j=j, k=k, l=l):
+                        dx = v[3*(i*len(sub_v[i])+k)] - v[3*(j*len(sub_v[j])+l)]
+                        dy = v[3*(i*len(sub_v[i])+k)+1] - v[3*(j*len(sub_v[j])+l)+1]
+                        dist_sq = dx*dx + dy*dy
+                        min_dist_sq = (v[3*(i*len(sub_v[i])+k)+2] + v[3*(j*len(sub_v[j])+l)+2])**2
+                        return dist_sq - min_dist_sq
+                    sub_cons[i].append({"type": "ineq", "fun": constraint_func_sub})
+    
+    res_sub = []
+    for i in range(sub_n):
+        res_sub.append(minimize(neg_sum_radii, sub_v[i], method="SLSQP", bounds=sub_bounds[i],
+                                constraints=sub_cons[i], options={"maxiter": 500, "ftol": 1e-9}))
+    v = np.concatenate([res_sub[i].x if res_sub[i].success else sub_v[i] for i in range(sub_n)])
+
+    # Reassemble and perturb
+    np.random.seed(42)
+    perturbation = 0.03
+    v_perturbed = v.copy()
+    for i in range(n):
+        v_perturbed[3*i] += np.random.uniform(-perturbation, perturbation)
+        v_perturbed[3*i+1] += np.random.uniform(-perturbation, perturbation)
+        v_perturbed[3*i+2] += np.random.uniform(-perturbation, perturbation)
+
+    bounds_perturbed = []
+    for _ in range(n):
+        bounds_perturbed += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+    
+    cons_perturbed = []
+    for i in range(n):
+        cons_perturbed.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons_perturbed.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        cons_perturbed.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        cons_perturbed.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+    for i in range(n):
+        for j in range(i + 1, n):
+            cons_perturbed.append({"type": "ineq", "fun": lambda v, i=i, j=j: constraint_func(i, j, v)})
+
+    res_perturbed = minimize(neg_sum_radii, v_perturbed, method="SLSQP", bounds=bounds_perturbed,
+                             constraints=cons_perturbed, options={"maxiter": 500, "ftol": 1e-9})
+    v = res_perturbed.x if res_perturbed.success else v
+
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())

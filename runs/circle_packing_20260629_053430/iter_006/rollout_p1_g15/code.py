@@ -1,0 +1,127 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = 5
+    rows = (n + cols - 1) // cols
+    
+    xs = []
+    ys = []
+    for i in range(n):
+        row = i // cols
+        col = i % cols
+        x = (col + 0.5) / cols
+        y = (row + 0.5) / rows
+        if row % 2 == 1:
+            x += 0.5 / cols
+        xs.append(x)
+        ys.append(y)
+    
+    r0 = 0.5 / cols - 1e-3
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = np.full(n, r0)
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    cons = []
+    for i in range(n):
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+    for i in range(n):
+        for j in range(i + 1, n):
+            def constraint_func(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                dist_sq = dx*dx + dy*dy
+                min_dist_sq = (v[3*i+2] + v[3*j+2])**2
+                return dist_sq - min_dist_sq
+            cons.append({"type": "ineq", "fun": constraint_func})
+
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 1000, "ftol": 1e-9})
+    v = res.x if res.success else v0
+
+    # Sub-component decomposition and optimization
+    sub_n = 2
+    sub_sizes = [13, 13]
+    sub_bounds = []
+    sub_cons = []
+    sub_v = np.empty(3 * n)
+    sub_v[::3] = v[::3]
+    sub_v[1::3] = v[1::3]
+    sub_v[2::3] = v[2::3]
+
+    def optimize_sub_component(start_idx, end_idx):
+        sub_v_sub = sub_v[3*start_idx:3*end_idx]
+        sub_bounds_sub = []
+        for _ in range(end_idx - start_idx):
+            sub_bounds_sub += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+        sub_cons_sub = []
+        for i in range(start_idx, end_idx):
+            sub_cons_sub.append({"type": "ineq", "fun": lambda v, i=i: v[3*(i - start_idx)] - v[3*(i - start_idx) + 2]})
+            sub_cons_sub.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*(i - start_idx)] - v[3*(i - start_idx) + 2]})
+            sub_cons_sub.append({"type": "ineq", "fun": lambda v, i=i: v[3*(i - start_idx) + 1] - v[3*(i - start_idx) + 2]})
+            sub_cons_sub.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*(i - start_idx) + 1] - v[3*(i - start_idx) + 2]})
+        for i in range(start_idx, end_idx):
+            for j in range(i + 1, end_idx):
+                def constraint_func_sub(v, i=i, j=j):
+                    dx = v[3*(i - start_idx)] - v[3*(j - start_idx)]
+                    dy = v[3*(i - start_idx) + 1] - v[3*(j - start_idx) + 1]
+                    dist_sq = dx*dx + dy*dy
+                    min_dist_sq = (v[3*(i - start_idx) + 2] + v[3*(j - start_idx) + 2])**2
+                    return dist_sq - min_dist_sq
+                sub_cons_sub.append({"type": "ineq", "fun": constraint_func_sub})
+        res_sub = minimize(neg_sum_radii, sub_v_sub, method="SLSQP", bounds=sub_bounds_sub,
+                           constraints=sub_cons_sub, options={"maxiter": 500, "ftol": 1e-9})
+        sub_v[3*start_idx:3*end_idx] = res_sub.x if res_sub.success else sub_v[3*start_idx:3*end_idx]
+    
+    optimize_sub_component(0, sub_sizes[0])
+    optimize_sub_component(sub_sizes[0], n)
+
+    # Reassemble sub-components with randomized spatial relationships
+    np.random.seed(42)
+    for i in range(sub_sizes[0]):
+        for j in range(sub_sizes[1]):
+            dx = np.random.uniform(-0.1, 0.1)
+            dy = np.random.uniform(-0.1, 0.1)
+            v[3*(sub_sizes[0] + j)] += dx
+            v[3*(sub_sizes[0] + j) + 1] += dy
+            v[3*(sub_sizes[0] + j) + 2] += np.random.uniform(-0.01, 0.01)
+
+    # Final optimization
+    bounds_final = []
+    for _ in range(n):
+        bounds_final += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+    
+    cons_final = []
+    for i in range(n):
+        cons_final.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons_final.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        cons_final.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        cons_final.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+    for i in range(n):
+        for j in range(i + 1, n):
+            def constraint_func_final(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                dist_sq = dx*dx + dy*dy
+                min_dist_sq = (v[3*i+2] + v[3*j+2])**2
+                return dist_sq - min_dist_sq
+            cons_final.append({"type": "ineq", "fun": constraint_func_final})
+
+    res_final = minimize(neg_sum_radii, v, method="SLSQP", bounds=bounds_final,
+                         constraints=cons_final, options={"maxiter": 500, "ftol": 1e-9})
+    v = res_final.x if res_final.success else v
+
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())

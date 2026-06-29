@@ -1,0 +1,139 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = 5
+    rows = (n + cols - 1) // cols
+    
+    xs = []
+    ys = []
+    for i in range(n):
+        row = i // cols
+        col = i % cols
+        x = (col + 0.5) / cols
+        y = (row + 0.5) / rows
+        if row % 2 == 1:
+            x += 0.5 / cols
+        xs.append(x)
+        ys.append(y)
+    
+    r0 = 0.5 / cols - 1e-3
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = np.full(n, r0)
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    def get_constraint(i, type_):
+        if type_ == "x_min":
+            return lambda v, i=i: v[3*i] - v[3*i+2]
+        elif type_ == "x_max":
+            return lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]
+        elif type_ == "y_min":
+            return lambda v, i=i: v[3*i+1] - v[3*i+2]
+        elif type_ == "y_max":
+            return lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]
+        elif type_ == "distance":
+            return lambda v, i=i: (v[3*i] - v[3*j])**2 + (v[3*i+1] - v[3*j+1])**2 - (v[3*i+2] + v[3*j+2])**2
+
+    cons = []
+    for i in range(n):
+        for type_ in ["x_min", "x_max", "y_min", "y_max"]:
+            cons.append({"type": "ineq", "fun": get_constraint(i, type_)})
+    for i in range(n):
+        for j in range(i + 1, n):
+            cons.append({"type": "ineq", "fun": lambda v, i=i, j=j: (v[3*i] - v[3*j])**2 + (v[3*i+1] - v[3*j+1])**2 - (v[3*i+2] + v[3*j+2])**2})
+
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 1000, "ftol": 1e-9})
+    v = res.x if res.success else v0
+
+    # Sub-component decomposition and independent optimization
+    sub1 = v[0:13]
+    sub2 = v[13:26]
+    sub1 = sub1.copy()
+    sub2 = sub2.copy()
+
+    # Optimize first sub-component
+    sub1_bounds = []
+    for _ in range(13):
+        sub1_bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    sub1_cons = []
+    for i in range(13):
+        for type_ in ["x_min", "x_max", "y_min", "y_max"]:
+            sub1_cons.append({"type": "ineq", "fun": get_constraint(i, type_)})
+    for i in range(13):
+        for j in range(i + 1, 13):
+            sub1_cons.append({"type": "ineq", "fun": lambda v, i=i, j=j: (v[3*i] - v[3*j])**2 + (v[3*i+1] - v[3*j+1])**2 - (v[3*i+2] + v[3*j+2])**2})
+
+    sub1_res = minimize(neg_sum_radii, sub1, method="SLSQP", bounds=sub1_bounds,
+                        constraints=sub1_cons, options={"maxiter": 500, "ftol": 1e-9})
+    sub1 = sub1_res.x if sub1_res.success else sub1
+
+    # Optimize second sub-component
+    sub2_bounds = []
+    for _ in range(13):
+        sub2_bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    sub2_cons = []
+    for i in range(13):
+        for type_ in ["x_min", "x_max", "y_min", "y_max"]:
+            sub2_cons.append({"type": "ineq", "fun": get_constraint(i, type_)})
+    for i in range(13):
+        for j in range(i + 1, 13):
+            sub2_cons.append({"type": "ineq", "fun": lambda v, i=i, j=j: (v[3*i] - v[3*j])**2 + (v[3*i+1] - v[3*j+1])**2 - (v[3*i+2] + v[3*j+2])**2})
+
+    sub2_res = minimize(neg_sum_radii, sub2, method="SLSQP", bounds=sub2_bounds,
+                        constraints=sub2_cons, options={"maxiter": 500, "ftol": 1e-9})
+    sub2 = sub2_res.x if sub2_res.success else sub2
+
+    # Randomized spatial relationship between sub-components
+    scale = 1.1
+    sub1_scaled = sub1.copy()
+    sub1_scaled[0::3] *= scale
+    sub1_scaled[1::3] *= scale
+    sub1_scaled[1::3] += 0.1  # slight vertical shift to break symmetry
+    sub1_scaled[2::3] *= scale
+
+    sub2_scaled = sub2.copy()
+    sub2_scaled[0::3] *= scale
+    sub2_scaled[1::3] *= scale
+    sub2_scaled[1::3] += 0.1  # slight vertical shift to break symmetry
+    sub2_scaled[2::3] *= scale
+
+    # Reassemble the configuration
+    v = np.concatenate([sub1_scaled, sub2_scaled])
+
+    # Add perturbation to small circles
+    indices = np.argsort(v[2::3])
+    for i in indices[:5]:  # Shake top 5 smallest circles
+        v[3*i] += np.random.uniform(-0.05, 0.05)
+        v[3*i+1] += np.random.uniform(-0.05, 0.05)
+        v[3*i+2] += np.random.uniform(-0.01, 0.01)
+
+    bounds_shaken = []
+    for _ in range(n):
+        bounds_shaken += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    cons_shaken = []
+    for i in range(n):
+        for type_ in ["x_min", "x_max", "y_min", "y_max"]:
+            cons_shaken.append({"type": "ineq", "fun": get_constraint(i, type_)})
+    for i in range(n):
+        for j in range(i + 1, n):
+            cons_shaken.append({"type": "ineq", "fun": lambda v, i=i, j=j: (v[3*i] - v[3*j])**2 + (v[3*i+1] - v[3*j+1])**2 - (v[3*i+2] + v[3*j+2])**2})
+
+    res_shaken = minimize(neg_sum_radii, v, method="SLSQP", bounds=bounds_shaken,
+                         constraints=cons_shaken, options={"maxiter": 500, "ftol": 1e-9})
+    v = res_shaken.x if res_shaken.success else v
+
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())

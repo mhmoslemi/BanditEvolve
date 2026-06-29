@@ -101,6 +101,12 @@ seed: 42
 # gradients). For RL prefer something like the commented overrides below.
 # ====================================================================
 rl_enabled: true
+# RL algorithm:
+#   grpo -> critic-free, group-max-anchored advantage (max-seeking).
+#   a2c  -> adds a learned value-head critic V(s); advantage = (r - V), still
+#           max-anchored (the critic regresses toward the group max). Tune the
+#           critic with rl_vf_coef / rl_vf_lr below.
+rl_algo: a2c
 # Bands that get a trainable LoRA adapter; the rest (weak) generate from the
 # frozen base and are never trained. Overrides rl_adapter_per_band.
 rl_adapter_bands: [good, near_sota, elite]
@@ -121,6 +127,9 @@ rl_reward_invalid: -0.1
 rl_reward_sterile: -0.05
 rl_adv_eps: 1.0e-6
 rl_min_group_std: 1.0e-8
+# A2C only (ignored when rl_algo: grpo):
+rl_vf_coef: 0.5             # weight on the critic (value) MSE loss
+rl_vf_lr: 1.0e-5            # critic (value head) learning rate
 
 # Recommended RL generation overrides (uncomment for an actual RL run; these
 # replace the frozen values above for memory):

@@ -1,0 +1,21 @@
+{
+  "record": {
+    "kind": "mutate",
+    "band": "good",
+    "arm_idx": 4,
+    "arm_source": "reflection",
+    "outcome": "valid",
+    "value": 2.620075442988638,
+    "dmu": -3.3084646133829665e-13,
+    "dsigma": 0.0
+  },
+  "eval": {
+    "per_seed": {
+      "0": 2.620075442988638
+    },
+    "value": 2.620075442988638,
+    "valid": true,
+    "raw": 2.620075442988638,
+    "msg": "ok"
+  }
+}

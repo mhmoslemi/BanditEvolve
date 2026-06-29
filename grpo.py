@@ -138,6 +138,7 @@ class RLSample:
     old_logp: "object"      # 1D float tensor [T] on CPU (behavior policy, detached)
     ref_logp: "object"      # 1D float tensor [T] on CPU (shared reference, detached)
     advantage: float
+    value_target: float = 0.0   # A2C only: critic regression target (group max); unused by GRPO
 
 
 # a banded group: (band, [(GenMeta, reward), ...])  -> all members share one prompt
