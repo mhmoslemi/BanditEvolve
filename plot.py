@@ -21,7 +21,6 @@ import math
 import random
 from scipy.optimize import minimize
 from scipy.spatial.distance import pdist, squareform
-
 import numpy as np
 
 def run_packing():
@@ -182,49 +181,41 @@ def run_packing():
                 radii = np.clip(v[2::3], 1e-6, None)
                 centers = np.column_stack([v[0::3], v[1::3]])
 
+    # Final pass to attempt infinitesimal radius inflation without moving centers
+
     # Apply geometric phase shift mutation
-    # Isolate and invert the smallest circles
-    sorted_indices = np.argsort(radii)
-    small_circle_indices = sorted_indices[:3]
-    modified_v = np.copy(v)
-    for idx in small_circle_indices:
-        i = idx
-        modified_v[3*i] = 1.0 - v[3*i]
-        modified_v[3*i+1] = 1.0 - v[3*i+1]
-    res = minimize(neg_sum_radii, modified_v, method="SLSQP", bounds=bounds,
+    # Phase 1: Apply controlled non-linear spatial transformation (exponential scaling)
+    transformed_v = np.copy(v)
+    transformed_v[0::3] = np.exp(v[0::3] - np.min(v[0::3]))
+    transformed_v[1::3] = np.exp(v[1::3] - np.min(v[1::3]))
+    transformed_v[2::3] = np.exp(v[2::3] - np.min(v[2::3]))
+    transformed_v[0::3] /= np.max(transformed_v[0::3])
+    transformed_v[1::3] /= np.max(transformed_v[1::3])
+    transformed_v[2::3] /= np.max(transformed_v[2::3])
+
+    # Phase 2: Re-optimize with transformed initial guess
+    res = minimize(neg_sum_radii, transformed_v, method="SLSQP", bounds=bounds,
                    constraints=cons, options={"maxiter": 500, "ftol": 1e-9})
-    modified_v = res.x if res.success else modified_v
-    modified_centers = np.column_stack([modified_v[0::3], modified_v[1::3]])
-    modified_radii = np.clip(modified_v[2::3], 1e-6, None)
+    v = res.x if res.success else transformed_v
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
 
-    if validate_packing(modified_centers, modified_radii)[0] and np.sum(modified_radii) > np.sum(radii):
-        v = modified_v
-        centers = modified_centers
-        radii = modified_radii
+    # Apply constraint inversion and re-optimization
+    # Identify the most restrictive constraint
+    max_tightness = np.max(constraint_tightness)
+    most_constrained_index = np.where(constraint_tightness == max_tightness)[0][0]
 
-    # Final cleanup pass: attempt to increase radii slightly without moving centers
-    # This step is only performed if the current solution is valid and does not cause overlap
-    if validate_packing(centers, radii)[0]:
-        for i in range(n):
-            # Try to increase radius by a small epsilon
-            new_radius = radii[i] + 1e-6
-            # Check if increasing this radius would cause overlap with any other circle
-            overlap = False
-            for j in range(n):
-                if i == j:
-                    continue
-                dx = centers[i, 0] - centers[j, 0]
-                dy = centers[i, 1] - centers[j, 1]
-                dist = np.sqrt(dx*dx + dy*dy)
-                if dist < new_radius + radii[j] - 1e-12:
-                    overlap = True
-                    break
-            if not overlap:
-                # Increase the radius and update the decision vector
-                v[3*i+2] = new_radius
-                # Update the radii and centers
-                radii = np.clip(v[2::3], 1e-6, None)
-                centers = np.column_stack([v[0::3], v[1::3]])
+    # Invert the constraint for the most constrained circle
+    # Create a modified objective function that encourages radius expansion
+    def modified_neg_sum_radii_with_inversion(v):
+        return -np.sum(v[2::3]) + 100 * (v[3*most_constrained_index] - v[3*most_constrained_index+2])
+    
+    # Re-optimize with the modified objective function
+    res = minimize(modified_neg_sum_radii_with_inversion, v, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 500, "ftol": 1e-9})
+    v = res.x if res.success else v
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
 
     # Final refinement: fine-tune tolerances and re-optimize
     res = minimize(neg_sum_radii, v, method="SLSQP", bounds=bounds,
@@ -233,67 +224,41 @@ def run_packing():
     centers = np.column_stack([v[0::3], v[1::3]])
     radii = np.clip(v[2::3], 1e-6, None)
 
-    # Apply radical geometric inversion: isolate the three smallest circles
-    sorted_indices = np.argsort(radii)
-    small_circle_indices = sorted_indices[:3]
-    # Swap positions of the smallest circles
-    for i in range(len(small_circle_indices)):
-        for j in range(i + 1, len(small_circle_indices)):
-            idx_i = small_circle_indices[i]
-            idx_j = small_circle_indices[j]
-            # Swap x and y positions
+    # Apply strategic geometric inversion
+    # Identify the three least constrained circles
+    least_constrained_indices = np.argsort(constraint_tightness)[:3]
+    
+    # Store their original positions and radii
+    original_positions = []
+    original_radii = []
+    for idx in least_constrained_indices:
+        original_positions.append((v[3*idx], v[3*idx+1]))
+        original_radii.append(v[3*idx+2])
+    
+    # Swap their positions with each other to invert their spatial relationships
+    for i in range(len(least_constrained_indices)):
+        for j in range(i + 1, len(least_constrained_indices)):
+            idx_i = least_constrained_indices[i]
+            idx_j = least_constrained_indices[j]
+            # Swap positions
             v[3*idx_i], v[3*idx_j] = v[3*idx_j], v[3*idx_i]
             v[3*idx_i+1], v[3*idx_j+1] = v[3*idx_j+1], v[3*idx_i+1]
-
-    # Re-optimize with modified initial guess using a weighted objective
-    def weighted_neg_sum_radii(v):
-        weighted_sum = 0
-        for i in range(n):
-            # Weight small circles by 1.5 and others by 1.0
-            if i in small_circle_indices:
-                weighted_sum -= 1.5 * v[3*i+2]
-            else:
-                weighted_sum -= v[3*i+2]
-        return weighted_sum
-
-    res = minimize(weighted_neg_sum_radii, v, method="SLSQP", bounds=bounds,
+    
+    # Re-optimize with modified objective function that encourages radius expansion
+    res = minimize(modified_neg_sum_radii_with_inversion, v, method="SLSQP", bounds=bounds,
                    constraints=cons, options={"maxiter": 500, "ftol": 1e-9})
     v = res.x if res.success else v
     centers = np.column_stack([v[0::3], v[1::3]])
     radii = np.clip(v[2::3], 1e-6, None)
 
-    # Validate the modified solution and choose the better one
-    if validate_packing(centers, radii)[0] and np.sum(radii) > np.sum(radii):
-        v = v
-        centers = centers
-        radii = radii
-
-    # Final cleanup pass: attempt to increase radii slightly without moving centers
-    # This step is only performed if the current solution is valid and does not cause overlap
-    if validate_packing(centers, radii)[0]:
-        for i in range(n):
-            # Try to increase radius by a small epsilon
-            new_radius = radii[i] + 1e-6
-            # Check if increasing this radius would cause overlap with any other circle
-            overlap = False
-            for j in range(n):
-                if i == j:
-                    continue
-                dx = centers[i, 0] - centers[j, 0]
-                dy = centers[i, 1] - centers[j, 1]
-                dist = np.sqrt(dx*dx + dy*dy)
-                if dist < new_radius + radii[j] - 1e-12:
-                    overlap = True
-                    break
-            if not overlap:
-                # Increase the radius and update the decision vector
-                v[3*i+2] = new_radius
-                # Update the radii and centers
-                radii = np.clip(v[2::3], 1e-6, None)
-                centers = np.column_stack([v[0::3], v[1::3]])
+    # Final refinement: fine-tune tolerances and re-optimize
+    res = minimize(neg_sum_radii, v, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 500, "ftol": 1e-12, "gtol": 1e-12, "eps": 1e-12})
+    v = res.x if res.success else v
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
 
     return centers, radii, float(radii.sum())
-
 # ====================================================================
 # Validation (same as reward.py)
 # ====================================================================

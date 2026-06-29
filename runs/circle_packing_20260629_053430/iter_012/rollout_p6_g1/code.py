@@ -1,0 +1,98 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = 5
+    rows = (n + cols - 1) // cols
+    
+    xs = []
+    ys = []
+    for i in range(n):
+        row = i // cols
+        col = i % cols
+        x = (col + 0.5) / cols
+        y = (row + 0.5) / rows
+        if row % 2 == 1:
+            x += 0.5 / cols
+        xs.append(x)
+        ys.append(y)
+    
+    r0 = 0.5 / cols - 1e-3
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = np.full(n, r0)
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    # Build constraints for position and radius
+    cons = []
+    for i in range(n):
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+    
+    # Add overlap constraints
+    for i in range(n):
+        for j in range(i + 1, n):
+            def constraint_func(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                dist_sq = dx*dx + dy*dy
+                min_dist_sq = (v[3*i+2] + v[3*j+2])**2
+                return np.log(dist_sq + 1e-12) - np.log(min_dist_sq + 1e-12)
+            cons.append({"type": "ineq", "fun": constraint_func})
+
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 1000, "ftol": 1e-10, "gtol": 1e-9})
+    v = res.x if res.success else v0
+
+    # Decouple position and radius for small circles
+    small_circle_indices = np.argsort(v[2::3])[:3]
+    small_circle_centers = v[0::3][small_circle_indices] * 1.1
+    small_circle_centers += np.random.uniform(-0.05, 0.05, size=small_circle_centers.shape)
+    small_circle_centers = np.clip(small_circle_centers, 0, 1)
+    small_circle_radii = v[2::3][small_circle_indices] * 1.15
+    small_circle_radii = np.clip(small_circle_radii, 1e-4, 0.5)
+
+    # Reconstruct v with decoupled small circles
+    v = v.copy()
+    for i in range(3):
+        v[3*small_circle_indices[i]] = small_circle_centers[i, 0]
+        v[3*small_circle_indices[i]+1] = small_circle_centers[i, 1]
+        v[3*small_circle_indices[i]+2] = small_circle_radii[i]
+
+    # Rebuild constraints with decoupled small circles
+    bounds_decoupled = []
+    for _ in range(n):
+        bounds_decoupled += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    cons_decoupled = []
+    for i in range(n):
+        cons_decoupled.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons_decoupled.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        cons_decoupled.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        cons_decoupled.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+    for i in range(n):
+        for j in range(i + 1, n):
+            def constraint_func_decoupled(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                dist_sq = dx*dx + dy*dy
+                min_dist_sq = (v[3*i+2] + v[3*j+2])**2
+                return np.log(dist_sq + 1e-12) - np.log(min_dist_sq + 1e-12)
+            cons_decoupled.append({"type": "ineq", "fun": constraint_func_decoupled})
+
+    res_decoupled = minimize(neg_sum_radii, v, method="SLSQP", bounds=bounds_decoupled,
+                             constraints=cons_decoupled, options={"maxiter": 1000, "ftol": 1e-10, "gtol": 1e-9})
+    v = res_decoupled.x if res_decoupled.success else v
+
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())

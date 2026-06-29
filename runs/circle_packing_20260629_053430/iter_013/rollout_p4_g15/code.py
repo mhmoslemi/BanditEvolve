@@ -1,0 +1,142 @@
+import numpy as np
+
+def run_packing():
+    n = 26
+    cols = 5
+    rows = (n + cols - 1) // cols
+    
+    xs = []
+    ys = []
+    for i in range(n):
+        row = i // cols
+        col = i % cols
+        x = (col + 0.5) / cols
+        y = (row + 0.5) / rows
+        if row % 2 == 1:
+            x += 0.5 / cols
+        xs.append(x)
+        ys.append(y)
+    
+    r0 = 0.5 / cols - 1e-3
+    v0 = np.empty(3 * n)
+    v0[0::3] = np.array(xs)
+    v0[1::3] = np.array(ys)
+    v0[2::3] = np.full(n, r0)
+
+    bounds = []
+    for _ in range(n):
+        bounds += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+
+    def neg_sum_radii(v):
+        return -np.sum(v[2::3])
+
+    def vectorized_overlap_constraint(v):
+        x = v[0::3]
+        y = v[1::3]
+        r = v[2::3]
+        dx = x[:, np.newaxis] - x[np.newaxis, :]
+        dy = y[:, np.newaxis] - y[np.newaxis, :]
+        dist_sq = dx**2 + dy**2
+        min_dist_sq = (r[:, np.newaxis] + r[np.newaxis, :])**2
+        return np.log(dist_sq + 1e-12) - np.log(min_dist_sq + 1e-12)
+
+    cons = []
+    for i in range(n):
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        cons.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+    
+    for i in range(n):
+        for j in range(i + 1, n):
+            def constraint_func(v, i=i, j=j):
+                dist_sq = (v[3*i] - v[3*j])**2 + (v[3*i+1] - v[3*j+1])**2
+                min_dist_sq = (v[3*i+2] + v[3*j+2])**2
+                return np.log(dist_sq + 1e-12) - np.log(min_dist_sq + 1e-12)
+            cons.append({"type": "ineq", "fun": constraint_func})
+
+    res = minimize(neg_sum_radii, v0, method="SLSQP", bounds=bounds,
+                   constraints=cons, options={"maxiter": 1500, "ftol": 1e-10, "gtol": 1e-9})
+    v = res.x if res.success else v0
+
+    # Apply nonlinear coordinate warping to induce structural divergence
+    def warp_coordinates(v):
+        x = v[0::3]
+        y = v[1::3]
+        r = v[2::3]
+        # Apply exponential scaling to x and y coordinates
+        x_warp = x * np.exp(0.1 * r)
+        y_warp = y * np.exp(0.1 * r)
+        # Apply slight vertical shift to break symmetry
+        y_warp += 0.05
+        # Apply exponential scaling to radii
+        r_warp = r * np.exp(0.1 * r)
+        return np.concatenate([x_warp, y_warp, r_warp])
+
+    v_warp = warp_coordinates(v)
+    v_warp[0::3] = np.clip(v_warp[0::3], 0.0, 1.0)
+    v_warp[1::3] = np.clip(v_warp[1::3], 0.0, 1.0)
+    v_warp[2::3] = np.clip(v_warp[2::3], 1e-4, 0.5)
+
+    # Rebuild bounds and constraints for warped configuration
+    bounds_warp = []
+    for _ in range(n):
+        bounds_warp += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+    
+    cons_warp = []
+    for i in range(n):
+        cons_warp.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons_warp.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        cons_warp.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        cons_warp.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+    for i in range(n):
+        for j in range(i + 1, n):
+            def constraint_func_warp(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                dist_sq = dx*dx + dy*dy
+                min_dist_sq = (v[3*i+2] + v[3*j+2])**2
+                return np.log(dist_sq + 1e-12) - np.log(min_dist_sq + 1e-12)
+            cons_warp.append({"type": "ineq", "fun": constraint_func_warp})
+
+    res_warp = minimize(neg_sum_radii, v_warp, method="SLSQP", bounds=bounds_warp,
+                       constraints=cons_warp, options={"maxiter": 800, "ftol": 1e-10, "gtol": 1e-9})
+    v = res_warp.x if res_warp.success else v_warp
+
+    # Apply targeted radius perturbation to smallest circles
+    radii = v[2::3]
+    indices = np.argsort(radii)
+    perturbation = 0.02
+    for idx in indices[:2]:  # Perturb smallest 2 circles
+        v[3*idx] += np.random.uniform(-perturbation, perturbation)
+        v[3*idx+1] += np.random.uniform(-perturbation, perturbation)
+        v[3*idx+2] += np.random.uniform(-perturbation, perturbation)
+
+    # Rebuild bounds and constraints for perturbed configuration
+    bounds_shaken = []
+    for _ in range(n):
+        bounds_shaken += [(0.0, 1.0), (0.0, 1.0), (1e-4, 0.5)]
+    
+    cons_shaken = []
+    for i in range(n):
+        cons_shaken.append({"type": "ineq", "fun": lambda v, i=i: v[3*i] - v[3*i+2]})
+        cons_shaken.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i] - v[3*i+2]})
+        cons_shaken.append({"type": "ineq", "fun": lambda v, i=i: v[3*i+1] - v[3*i+2]})
+        cons_shaken.append({"type": "ineq", "fun": lambda v, i=i: 1.0 - v[3*i+1] - v[3*i+2]})
+    for i in range(n):
+        for j in range(i + 1, n):
+            def constraint_func_shaken(v, i=i, j=j):
+                dx = v[3*i] - v[3*j]
+                dy = v[3*i+1] - v[3*j+1]
+                dist_sq = dx*dx + dy*dy
+                min_dist_sq = (v[3*i+2] + v[3*j+2])**2
+                return np.log(dist_sq + 1e-12) - np.log(min_dist_sq + 1e-12)
+            cons_shaken.append({"type": "ineq", "fun": constraint_func_shaken})
+
+    res_shaken = minimize(neg_sum_radii, v, method="SLSQP", bounds=bounds_shaken,
+                         constraints=cons_shaken, options={"maxiter": 600, "ftol": 1e-10, "gtol": 1e-9})
+    v = res_shaken.x if res_shaken.success else v
+
+    centers = np.column_stack([v[0::3], v[1::3]])
+    radii = np.clip(v[2::3], 1e-6, None)
+    return centers, radii, float(radii.sum())
